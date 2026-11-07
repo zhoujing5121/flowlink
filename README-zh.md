@@ -1,0 +1,119 @@
+# FlowLink
+
+FlowLink 是一个面向 Windows 的桌面自动化工具，用于录制浏览器操作流程、将其保存为结构化的动作轨迹，并通过 Playwright 回放。项目基于 Electron，录放能力由本地引擎提供，并通过 Chrome DevTools Protocol（CDP）附着到嵌入式 WebContentsView。
+
+## 功能
+
+- 在 Electron 应用中录制浏览器操作
+- 创建任务档案，并为每个任务保存多条录制
+- 回放包含步骤、断言、变量和等待的流程
+- 采集元素证据、截图、对话框、下载、标签页及 iframe 上下文
+- 通过候选定位器、指纹和多级解析定位元素
+- 重新录制流程并查看执行产物
+- 将任务和录制持久化到 Electron 用户数据目录
+- 打包成 Windows x64 ZIP
+
+## 环境要求
+
+- Windows x64
+- Node.js 20 或更高版本
+- npm
+- Electron 与 Playwright 依赖已通过 `package-lock.json` 安装
+
+## 安装与运行
+
+```powershell
+npm install
+npm run start
+```
+
+开发模式会打开 Electron DevTools：
+
+```powershell
+npm run dev
+```
+
+构建会生成：
+
+- `dist/main.js` 和 `dist/main.js.map`
+- `dist/preload.cjs` 和 `dist/preload.cjs.map`
+
+录制器从 `engine/recorder/capture/capture.js` 加载采集脚本。
+
+```powershell
+npm run build
+```
+
+## 打包 Windows 应用
+
+```powershell
+npm run package
+```
+
+打包脚本会使用 `electron-packager`，并生成：
+
+- `release\FlowLink-win32-x64\`
+- `release\FlowLink-Windows-x64.zip`
+
+打包脚本要求 Electron 包内包含 `ffmpeg.dll`；缺失时会停止打包归档。
+
+## 快速使用
+
+1. 创建或选择任务。
+2. 输入 HTTP 或 HTTPS 起始网址。
+3. 开始录制。
+4. 在嵌入式浏览器中执行操作。
+5. 停止录制，保存 flow 和 artifacts。
+6. 运行录制，在嵌入式浏览器中回放。
+7. 查看截图、步骤结果、下载内容和执行日志。
+
+## 目录结构
+
+```text
+src/                    Electron 主进程与 Preload 桥接
+renderer/               桌面界面与渲染进程 IPC 集成
+engine/
+  schema/               Flow JSON Schema、迁移、解析与校验
+  recorder/             页面采集、事件合流、流程规划与登录态
+  resolver/             元素候选与 frame 解析
+  executor/             回放、自愈、产物、标签页、对话框与下载
+capture/                构建时复制的页面采集脚本
+release/                已有打包产物目录
+dist/                   生成的构建产物
+```
+
+详细说明请阅读 [架构文档](docs/architecture.md)、[贡献指南](CONTRIBUTING.md) 和 [Agent 开发指令](AGENTS.md)。
+
+## 持久化数据
+
+Electron 用户数据目录中的状态位于：
+
+```text
+<userData>\flowlink\tasks.json
+<userData>\flowlink\flows\*.json
+<userData>\flowlink\artifacts\<flowId>\...
+```
+
+回放产物采用以下结构：
+
+```text
+artifacts\<flowId>\runs\<runId>\
+  result.json
+  <stepIndex>\before.png
+  <stepIndex>\after.png
+  <stepIndex>\snapshot.json
+  <stepIndex>\log.txt
+```
+
+## 安全说明
+
+- Preload 只向渲染进程暴露受控的 `window.flowlink` API。
+- 地址栏和 IPC 导航仅接受 HTTP、HTTPS。
+- 密码类型输入必须使用 `{{variable}}` 模板，禁止明文写入 flow。
+- 登录态包含 Cookie 和 local storage 凭据，不得提交到仓库。
+- 产物和下载文件名会经过路径清洗。
+- 内嵌页面的新窗口请求会被重定向到当前浏览器视图。
+
+## 当前状态
+
+仓库尚未提供项目自带的自动化测试脚本或 lint脚本。当前主要校验方式是 esbuild 构建、TypeScript 严格配置以及 Zod Flow 校验。改动完成后至少运行 `npm run build`。
