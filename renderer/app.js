@@ -28,18 +28,20 @@ const escapeHTML = (s) =>
     /[&<>"']/g,
     (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-      c
+        c
       ],
   );
-let appliedName = "",
-  appliedVersion = "";
-let appliedSearch = "",
-  activeStatus = "All",
-  currentFlow = null,
-  trigger = null,
-  initialName = "",
-  savedScroll = 0;
+
+let appliedName = "";
+let  appliedVersion = "";
+let appliedSearch = "";
+let activeStatus = "All";
+let currentFlow = null;
+let trigger = null;
+let initialName = "";
+let savedScroll = 0;
 const profileDrafts = new Map();
+
 function nextTaskflowCode() {
   return (
     "TASKFLOW-" +
@@ -51,6 +53,7 @@ function nextTaskflowCode() {
     ).padStart(3, "0")
   );
 }
+
 function saveProfile() {
   if (!validateProfileServices()) return;
   const draft = profileDraft(),
@@ -101,10 +104,27 @@ function renderVersionManagement() {
   $("versionManagementRows").innerHTML = draft.versions
     .map(
       (version, index) =>
-        `<div class="version-management-row"><div class="field version-value-field"><label class="field-label" for="${index === 0 ? "flowVersion" : "flowVersion" + index}">Version</label><input id="${index === 0 ? "flowVersion" : "flowVersion" + index}" value="${escapeHTML(version.name)}" readonly></div><div class="field version-state-field"><label class="field-label" for="${index === 0 ? "flowStatus" : "flowStatus" + index}">Status</label><div class="version-status-field"><select id="${index === 0 ? "flowStatus" : "flowStatus" + index}" data-version-index="${index}" aria-label="${escapeHTML(version.name)} status"><option value="Active" ${version.enabled ? "selected" : ""}>Active</option><option value="Deactive" ${!version.enabled ? "selected" : ""}>Deactive</option></select><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg></div></div></div>`,
+        `
+      <div class="version-management-row">
+        <div class="field version-value-field">
+          <label class="field-label" for="${index === 0 ? "flowVersion" : "flowVersion" + index}">Version</label>
+          <input id="${index === 0 ? "flowVersion" : "flowVersion" + index}" value="${escapeHTML(version.name)}" readonly>
+        </div>
+        <div class="field version-state-field">
+          <label class="field-label" for="${index === 0 ? "flowStatus" : "flowStatus" + index}">Status</label>
+          <div class="version-status-field">
+            <select id="${index === 0 ? "flowStatus" : "flowStatus" + index}" data-version-index="${index}" aria-label="${escapeHTML(version.name)} status">
+              <option value="Active" ${version.enabled ? "selected" : ""}>Active</option>
+              <option value="Deactive" ${!version.enabled ? "selected" : ""}>Deactive</option>
+            </select>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg>
+          </div>
+        </div>
+      </div>`,
     )
     .join("");
 }
+
 function commitVersionStatus(index, value) {
   const draft = profileDraft();
   draft.versions[index].enabled = value === "Active";
@@ -116,9 +136,20 @@ function commitVersionStatus(index, value) {
     render();
   }
 }
+
 function rowIcon(name, code, disabled = false) {
-  return `<button type="button" class="icon-button" aria-label="${name[0].toUpperCase() + name.slice(1)} ${code}" title="${name[0].toUpperCase() + name.slice(1)}" data-action="${name}" data-code="${code}" ${disabled ? "disabled" : ""}>${rowIcons[name]}</button>`;
+  return `
+  <button 
+    type="button" 
+    class="icon-button" 
+    aria-label="${name[0].toUpperCase() + name.slice(1)} ${code}" title="${name[0].toUpperCase() + name.slice(1)}" 
+    data-action="${name}" 
+    data-code="${code}" ${disabled ? "disabled" : ""}
+  >
+    ${rowIcons[name]}
+  </button>`;
 }
+
 function render() {
   const rows = flowData.filter(
     (f) =>
@@ -135,13 +166,34 @@ function render() {
     rows
       .map(
         (f) =>
-          `<tr><td><a class="code-link" href="#${f.code}" data-open="${f.code}">${f.code}</a></td><td>${escapeHTML(f.name)}</td><td><span class="flow-description" title="${escapeHTML(f.description)}">${escapeHTML(f.description)}</span></td><td>${escapeHTML(f.version)}</td><td><span class="flow-enabled ${f.enabled ? "active" : "deactive"}"><span class="flow-status-dot" aria-hidden="true"></span>${f.enabled ? "Active" : "Deactive"}</span></td><td class="action-cell"><div class="row-actions">${rowIcon("edit", f.code)}${rowIcon("run", f.code, true)}${rowIcon("delete", f.code, true)}</div></td></tr>`,
+          `
+        <tr>
+          <td>
+            <a class="code-link" href="#${f.code}" data-open="${f.code}">${f.code}</a>
+          </td>
+          <td>${escapeHTML(f.name)}</td>
+          <td><span class="flow-description" title="${escapeHTML(f.description)}">${escapeHTML(f.description)}</span></td>
+          <td>${escapeHTML(f.version)}</td>
+          <td>
+            <span class="flow-enabled ${f.enabled ? "active" : "deactive"}">
+              <span class="flow-status-dot" aria-hidden="true"></span>
+              ${f.enabled ? "Active" : "Deactive"}
+            </span>
+          </td>
+          <td class="action-cell">
+            <div class="row-actions">
+              ${rowIcon("edit", f.code)}${rowIcon("run", f.code, f.enabled)}${rowIcon("delete", f.code, true)}
+            </div>
+          </td>
+        </tr>`,
       )
       .join("") ||
     '<tr><td class="empty" colspan="6">No matching flows.</td></tr>';
+
   $("range").textContent = rows.length
-    ? `1–${rows.length} of ${rows.length} items`
-    : "0–0 of 0 items";
+  ? `1 - ${rows.length} of ${rows.length} items`
+  : "0 - 0 of 0 items";
+
   $("currentPage").disabled = !rows.length;
   document.querySelectorAll("[data-status]").forEach((b) => {
     const active = b.dataset.status === activeStatus;
@@ -149,6 +201,7 @@ function render() {
     b.tabIndex = active ? 0 : -1;
   });
 }
+
 function openDrawer(code, source) {
   currentFlow = code ? flowData.find((f) => f.code === code) : null;
   trigger = source;
@@ -157,6 +210,7 @@ function openDrawer(code, source) {
     ? code.replace("TASKFLOW", "Taskflow")
     : nextTaskflowCode().replace("TASKFLOW", "Taskflow");
   $("profileSaveStatus").textContent = "";
+  
   if (!code) {
     profileDrafts.delete("new");
     // Clear any leftover transient design state for the previous new-flow session.
@@ -166,17 +220,19 @@ function openDrawer(code, source) {
     }
     // initializeDrawerRecording will generate the final activeFlowKey for the new flow.
   }
+  
   const draft = profileDraft();
   $("flowName").value = draft.name;
   $("flowDescription").value = draft.description;
   initialName = draft.name;
   renderVersionManagement();
+  
   document
     .querySelectorAll("[data-service-index]")
     .forEach(
       (select) =>
-      (select.value =
-        draft.serviceLines[Number(select.dataset.serviceIndex)] || ""),
+        (select.value =
+          draft.serviceLines[Number(select.dataset.serviceIndex)] || ""),
     );
   closePopup("category");
   closePopup("service");
@@ -185,6 +241,7 @@ function openDrawer(code, source) {
   document.body.style.overflow = "hidden";
   $("flowName").focus({ preventScroll: true });
 }
+
 async function closeDrawer() {
   const session = recordingSession();
   if (session.stage === "recording") {
@@ -202,12 +259,14 @@ async function closeDrawer() {
   window.scrollTo({ top: savedScroll, behavior: "instant" });
   trigger?.focus({ preventScroll: true });
 }
+
 function closePopup(type) {
   const popup = $(type === "category" ? "categoryPopup" : "servicePopup");
   const button = $(type === "category" ? "category" : "serviceLine");
   if (popup) popup.hidden = true;
   if (button && popup) button.setAttribute("aria-expanded", "false");
 }
+
 function togglePopup(type) {
   const popup = $(type === "category" ? "categoryPopup" : "servicePopup");
   const button = $(type === "category" ? "category" : "serviceLine");
@@ -217,6 +276,7 @@ function togglePopup(type) {
   if (willOpen)
     $(type === "category" ? "categorySearch" : "serviceSearch").focus();
 }
+
 $("toggleNav").onclick = () => {
   const open = $("shell").classList.toggle("expanded");
   $("toggleNav").setAttribute("aria-expanded", String(open));
@@ -226,6 +286,7 @@ $("toggleNav").onclick = () => {
   );
   $("toggleNav").title = open ? "Collapse navigation" : "Expand navigation";
 };
+
 function updateFilterExpansion() {
   const button = $("expandFilters"),
     expanded = !$("advancedFilters").hidden,
@@ -240,10 +301,12 @@ function updateFilterExpansion() {
   button.querySelector("span").textContent = label;
   button.dataset.activeCount = !expanded && count ? String(count) : "";
 }
+
 $("expandFilters").onclick = () => {
   $("advancedFilters").hidden = !$("advancedFilters").hidden;
   updateFilterExpansion();
 };
+
 $("query").onsubmit = (e) => {
   e.preventDefault();
   appliedSearch = $("search").value.trim().toLowerCase();
@@ -253,6 +316,7 @@ $("query").onsubmit = (e) => {
   render();
   updateFilterExpansion();
 };
+
 $("reset").onclick = () => {
   $("search").value = "";
   $("filterName").value = "";
@@ -266,6 +330,7 @@ $("reset").onclick = () => {
   render();
   updateFilterExpansion();
 };
+
 document.querySelectorAll("[data-status]").forEach((b) => {
   b.onclick = () => {
     activeStatus = b.dataset.status;
@@ -285,6 +350,7 @@ document.querySelectorAll("[data-status]").forEach((b) => {
     tabs[index].focus();
   };
 });
+
 $("flowRows").onclick = (e) => {
   const link = e.target.closest("[data-open]");
   const edit = e.target.closest('[data-action="edit"]');
@@ -293,6 +359,7 @@ $("flowRows").onclick = (e) => {
     openDrawer(link.dataset.open, link);
   } else if (edit) openDrawer(edit.dataset.code, edit);
 };
+
 $("create").onclick = (e) => openDrawer(null, e.currentTarget);
 $("close").onclick = closeDrawer;
 $("profileSave").onclick = saveProfile;
@@ -316,6 +383,7 @@ $("drawer").addEventListener("cancel", (e) => {
   closeDrawer();
 });
 $("category").onclick = () => togglePopup("category");
+
 document.querySelectorAll("[data-service-index]").forEach((control) => {
   const save = () => {
     control.setCustomValidity("");
@@ -325,6 +393,7 @@ document.querySelectorAll("[data-service-index]").forEach((control) => {
   control.oninput = save;
   control.onchange = save;
 });
+
 for (const type of ["category"]) {
   $(type === "category" ? "categorySearch" : "serviceSearch").onkeydown = (
     e,
@@ -337,10 +406,12 @@ for (const type of ["category"]) {
     }
   };
 }
+
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#categoryField")) closePopup("category");
   if (!e.target.closest(".form-select")) closePopup("service");
 });
+
 function validateProfileServices() {
   for (const control of document.querySelectorAll(
     "#profilePanel input[required],#profilePanel select[required]",
@@ -352,6 +423,7 @@ function validateProfileServices() {
   }
   return true;
 }
+
 function embeddedBrowserHTML(route) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;background:#f7f8fa;font:14px Arial,'Microsoft YaHei',sans-serif;color:#111}button,input,select{font:inherit}header{height:46px;background:#005078;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:14px;font-weight:bold}header span{font-size:11px;font-weight:normal}nav{height:40px;background:#fff;display:flex;padding:0 14px;gap:16px;border-bottom:1px solid #dde3ea}nav button{border:0;background:none;color:#6d7d89;padding:0 6px;position:relative}nav button.active{color:#0084ce;border-bottom:2px solid #0084ce}main{padding:14px}.company{display:flex;align-items:center;gap:14px;margin-bottom:14px}.avatar{width:40px;height:40px;background:#e3f5ff;color:#0093d7;display:flex;align-items:center;justify-content:center;font-size:20px}h1{font-size:14px;margin:3px 0;font-weight:700}.company p{font-size:10px;color:#73828d;margin:5px 0}section{background:#fff;border:1px solid #dce3eb;padding:14px;margin-bottom:7px}h2{font-size:14px;margin:0 0 15px}dl{display:grid;grid-template-columns:34% 66%;gap:12px 8px;margin:0}dt{color:#788893}dd{margin:0}.saved{float:right;color:#07945d;font-size:12px}input,select{width:100%;height:30px;border:1px solid #d8dfe8;padding:3px 6px;background:white}.button{border:1px solid #007bc0;color:#007bc0;background:white;padding:6px 14px;margin-top:14px}</style></head><body><header>Indirect Procurement Workbench<span>Demo</span></header><nav>${["Suppliers", "Draft", "Receipts"].map((v) => `<button data-route="${v.toLowerCase()}" class="${route === v.toLowerCase() ? "active" : ""}">${v}</button>`).join("")}</nav><main>${route === "suppliers" ? `<div class="company"><div class="avatar">A</div><div><h1>安达设施服务（虚构）</h1><p>DEMO-V001 · Indirect Procurement / Facility Services</p></div></div><section><h2>Supplier master data</h2><dl><dt>Country / Currency</dt><dd>China / CNY</dd><dt>Purchasing contact</dt><dd>Supplier A · Demo contact</dd><dt>Supplier rating</dt><dd>B · Verified</dd><dt>Annual quotation</dt><dd>264,000.00</dd><dt>Total amount</dt><dd>292560</dd><dt>Delivery / SLA</dt><dd>12 days / 24-hour response</dd></dl></section><section><span class="saved">Saved</span><h2>Requirement draft</h2><dl><dt>Title</dt><dd>苏州示范工厂 2027 年度设施维护服务</dd><dt>Service date</dt><dd>2027-01-01</dd></dl></section>` : route === "draft" ? `<section><h2>Requirement draft</h2><dl><dt>Title</dt><dd><input value="苏州示范工厂 2027 年度设施维护服务" aria-label="Title"></dd><dt>Service date</dt><dd><input value="2027-01-01" aria-label="Service date" type="date"></dd><dt>Total amount</dt><dd><input value="292560" aria-label="Total amount"></dd></dl></section>` : `<section><h2>Receipts</h2></section>`}</main><script>document.addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)parent.postMessage({type:'flowlink-route',route:b.dataset.route},'*');});document.addEventListener('input',e=>{if(e.target.matches('input,select'))parent.postMessage({type:'flowlink-input',target:e.target.getAttribute('aria-label'),value:e.target.value},'*');});<\/script><\/body><\/html>`;
 }
@@ -412,6 +484,7 @@ function confirmWorkspaceAction(message) {
     $("actionConfirmCancel").focus();
   });
 }
+
 const recordingTestURL = "https://bosch.com.cn";
 // Browser tabs persist independently; one recording spans every active tab.
 const recordingSessions = new Map();
@@ -429,6 +502,7 @@ function designIcon(name) {
   };
   return `<svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || ""}"/></svg>`;
 }
+
 const recordingDeleteIcon = designIcon("delete");
 const summaryTabs = [
   "Process",
@@ -464,7 +538,9 @@ const leaveGroupSeed = [
     steps: ["确认审批人", "核对申请信息", "点击提交", "查看提交结果"],
   },
 ];
+
 const referenceOperation = leaveGroupSeed.flatMap((group) => group.steps);
+
 function testStepLabel(step, index) {
   if (!step) return `Step ${index + 1}`;
   const kind = step.kind || "action";
@@ -476,6 +552,7 @@ function testStepLabel(step, index) {
     : step.value || step.text || targetText || "";
   return `${kind}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
 }
+
 function testWorkspaceMarkup(item) {
   const steps = item?.testFlowSteps?.length
     ? item.testFlowSteps
@@ -484,18 +561,19 @@ function testWorkspaceMarkup(item) {
   const running = item?.testRunning === true;
   const rows = steps.length
     ? steps
-      .map((step, index) => {
-        const result = results[index];
-        const status = result?.status || "pending";
-        const error = result?.error?.message
-          ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
-          : "";
-        return `<div class="test-step status-${status}"><span class="step-auto-badge">Auto</span><span class="test-step-index">${String(index + 1).padStart(2, "0")}</span><span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
-      })
-      .join("")
+        .map((step, index) => {
+          const result = results[index];
+          const status = result?.status || "pending";
+          const error = result?.error?.message
+            ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
+            : "";
+          return `<div class="test-step status-${status}"><span class="test-step-index">${String(index + 1).padStart(2, "0")}</span><span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
+        })
+        .join("")
     : `<div class="test-empty">No executable steps in this recording.</div>`;
   return `<div class="test-workspace"><div class="test-toolbar"><button class="btn" id="runRecordingTest" type="button" ${running || !item?.recordingId ? "disabled" : ""}>${running ? "Running…" : "Run"}</button><button class="btn secondary" id="stopRecordingTest" type="button" ${!running ? "disabled" : ""}>Stop</button></div><div class="test-step-list" aria-live="polite">${rows}</div></div>`;
 }
+
 function resetTestExecutionStatus(item) {
   if (!item) return;
   const steps = item.testFlowSteps?.length
@@ -504,6 +582,7 @@ function resetTestExecutionStatus(item) {
   item.testRunning = false;
   item.testResults = steps.map(() => ({ status: "pending" }));
 }
+
 function analysisResultMarkup(active) {
   const item = currentAssistantItem(),
     steps = item?.steps || referenceOperation;
@@ -517,10 +596,12 @@ function analysisResultMarkup(active) {
   if (active === "Test") return testWorkspaceMarkup(item);
   return "";
 }
+
 let activeFlowKey = "TASKFLOW-001",
   drawerView = "Profile",
   recordingSequence = 1102,
   browserPageSequence = 0;
+
 function generatedRecordingName() {
   const now = new Date(),
     yyyy = String(now.getFullYear()),
@@ -528,6 +609,7 @@ function generatedRecordingName() {
     dd = String(now.getDate()).padStart(2, "0");
   return `RECORD-${yyyy}-${mm}-${dd}`;
 }
+
 function createBrowserPage(url = "", showGuide = false) {
   return {
     showGuide,
@@ -542,6 +624,7 @@ function createBrowserPage(url = "", showGuide = false) {
     frame: null,
   };
 }
+
 function recordingSession(key = activeFlowKey) {
   if (!recordingSessions.has(key)) {
     const first = createBrowserPage(recordingTestURL, true);
@@ -570,12 +653,14 @@ function recordingSession(key = activeFlowKey) {
   }
   return recordingSessions.get(key);
 }
+
 function activeBrowserPage(state = recordingSession()) {
   return (
     state.browserTabs.find((page) => page.id === state.activeBrowserTab) ||
     state.browserTabs[0]
   );
 }
+
 function syncBrowserSession(state = recordingSession()) {
   const page = activeBrowserPage(state);
   state.url = page.url;
@@ -585,11 +670,13 @@ function syncBrowserSession(state = recordingSession()) {
   state.draftURL = page.draftURL;
   return page;
 }
+
 function initializeDrawerRecording(code) {
   activeFlowKey = code || nextTaskflowCode();
   recordingSession();
   showDrawerTab("Profile");
 }
+
 function showDrawerTab(view) {
   const state = recordingSession();
   if (state.stage === "recording" && view !== "Design") return;
@@ -609,6 +696,7 @@ function showDrawerTab(view) {
   if (design) renderRecordingWorkspace();
   else renderAIPanel();
 }
+
 function circleSymbol(state) {
   const shape =
     state === "recording"
@@ -626,6 +714,7 @@ function circleSymbol(state) {
     "</svg>"
   );
 }
+
 const recordingGuideSteps = [
   "Paste a URL into the address bar and press Enter, before or after clicking Record.",
   "Click Record to begin recording.",
@@ -634,6 +723,7 @@ const recordingGuideSteps = [
   "Use + to open pages and switch between tabs while recording continues.",
   "Click Stop to finish. A numbered recording is added to the list.",
 ];
+
 function recordingGuideMarkup() {
   return (
     '<div class="recording-guide"><h3>Recording Guide</h3>' +
@@ -643,9 +733,11 @@ function recordingGuideMarkup() {
     "</div>"
   );
 }
+
 function browserGuideHTML(showGuide = true) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;padding:24px;background:#fff;color:#101416;font:16px/24px 'Bosch Sans Global','Segoe UI',Arial,sans-serif}.recording-guide h3{font-size:16px;line-height:24px;margin:0 0 32px;font-weight:700}.recording-guide p{margin:0 0 16px}</style></head><body>${showGuide ? recordingGuideMarkup() : ""}<\/body><\/html>`;
 }
+
 function ensureRecordingLayout() {
   const state = recordingSession();
   if (!state.workspaceElement) {
@@ -679,11 +771,13 @@ function ensureRecordingLayout() {
   $("drawer").classList.toggle("recording-open", state.stage === "recording");
   return state.workspaceElement;
 }
+
 function createBrowserSurface(state) {
   const browser = state.workspaceElement.querySelector(".recording-browser");
   state.browserElement = browser;
   return browser;
 }
+
 function mountBrowserSurface() {
   const state = recordingSession(),
     layout = state.workspaceElement,
@@ -725,6 +819,7 @@ function mountBrowserSurface() {
   updateBrowserChrome();
   bindAIDock();
 }
+
 function browserPageLabel(page) {
   if (!page.url) return "New tab";
   if (page.url.startsWith("local://procurement/"))
@@ -735,6 +830,7 @@ function browserPageLabel(page) {
     return page.url;
   }
 }
+
 function updateBrowserChrome() {
   const state = recordingSession(),
     page = syncBrowserSession(),
@@ -769,17 +865,17 @@ function updateBrowserChrome() {
       return;
     e.preventDefault();
     const index = state.browserTabs.findIndex(
-      (p) => p.id === tab.dataset.browserTab,
-    ),
+        (p) => p.id === tab.dataset.browserTab,
+      ),
       next =
         e.key === "Home"
           ? 0
           : e.key === "End"
             ? state.browserTabs.length - 1
             : (index +
-              (e.key === "ArrowRight" ? 1 : -1) +
-              state.browserTabs.length) %
-            state.browserTabs.length;
+                (e.key === "ArrowRight" ? 1 : -1) +
+                state.browserTabs.length) %
+              state.browserTabs.length;
     switchBrowserPage(state.browserTabs[next].id);
     tabs
       .querySelector(`[data-browser-tab="${state.activeBrowserTab}"]`)
@@ -818,6 +914,7 @@ function updateBrowserChrome() {
   $("profileTab").disabled = state.stage === "recording";
   $("previous").disabled = state.stage === "recording";
 }
+
 function syncSelectAll() {
   const state = recordingSession(),
     all = $("recordingAll");
@@ -827,6 +924,7 @@ function syncSelectAll() {
   all.checked = total > 0 && checked === total;
   all.indeterminate = checked > 0 && checked < total;
 }
+
 function bindRecordingList() {
   const state = recordingSession();
   renderRecordingItems();
@@ -839,6 +937,7 @@ function bindRecordingList() {
   updateRecordingActionButton();
   $("summarizeRecordings").onclick = summarizeRecordings;
 }
+
 function renderRecordingWorkspace() {
   const state = recordingSession(),
     focused = currentAssistantItem();
@@ -870,13 +969,34 @@ function renderRecordingWorkspace() {
   bindWorkspaceResize();
   renderAIPanel();
 }
+
 function renderRecordingItems() {
   const state = recordingSession();
   if (!$("recordingItems")) return;
   $("recordingItems").innerHTML = state.items
     .map(
       (item) =>
-        `<div class="recording-row ${state.focused === item.id ? "current" : ""}"><input type="checkbox" class="recording-check" data-recording-check="${item.id}" aria-label="Select ${escapeHTML(item.name)}" ${item.checked ? "checked" : ""}><button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>${item.summary ? '<span class="recording-badge merged">Refined</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}<button class="icon-button recording-delete" data-recording-delete="${item.id}" aria-label="Delete ${escapeHTML(item.name)}" title="Delete" ${state.stage === "recording" ? "disabled" : ""}>${recordingDeleteIcon}</button></div>`,
+        `
+      <div class="recording-row ${state.focused === item.id ? "current" : ""}">
+        <input 
+          type="checkbox" 
+          class="recording-check" 
+          data-recording-check="${item.id}" 
+          aria-label="Select ${escapeHTML(item.name)}" 
+          ${item.checked ? "checked" : ""}
+        >
+        <button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>
+        ${item.summary ? '<span class="recording-badge merged">Refined</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}
+        <button 
+          class="icon-button recording-delete" 
+          data-recording-delete="${item.id}" 
+          aria-label="Delete ${escapeHTML(item.name)}" 
+          title="Delete" 
+          ${state.stage === "recording" ? "disabled" : ""}
+        >
+          ${recordingDeleteIcon}
+        </button>
+      </div>`,
     )
     .join("");
   $("recordingItems").onchange = (e) => {
@@ -905,6 +1025,7 @@ function renderRecordingItems() {
   syncSelectAll();
   updateSummaryState();
 }
+
 function updateRecordingActionButton() {
   const button = $("prepareRecording"),
     state = recordingSession();
@@ -915,6 +1036,7 @@ function updateRecordingActionButton() {
   button.disabled = !!state.pending?.finishing || !!state.groupPreparing;
   button.onclick = recording ? finishBrowserRecording : prepareRecording;
 }
+
 function updateSummaryState() {
   const state = recordingSession(),
     button = $("summarizeRecordings");
@@ -929,6 +1051,7 @@ function updateSummaryState() {
       state.items.some((item) => item.checked && !item.analyzed);
   }
 }
+
 async function prepareRecording() {
   const state = recordingSession();
   if (state.stage === "recording") return;
@@ -951,6 +1074,7 @@ async function prepareRecording() {
   startBrowserRecording();
   if (!page.url) $("recordingAddress").focus();
 }
+
 function openRecordingURL() {
   const address = $("recordingAddress"),
     url = validatedRecordingURL(address.value);
@@ -961,6 +1085,7 @@ function openRecordingURL() {
   }
   navigateRecordingBrowser(url);
 }
+
 function startBrowserRecording() {
   const state = recordingSession();
   if (state.stage === "recording") return;
@@ -985,6 +1110,7 @@ function startBrowserRecording() {
   if (state.url && !state.pending.reRecordTarget)
     captureBrowserAction({ type: "navigate", url: state.url });
 }
+
 function validatedRecordingURL(value) {
   const input = String(value || "").trim();
   if (/^local:\/\/procurement\/(suppliers|draft|receipts)$/.test(input))
@@ -993,9 +1119,10 @@ function validatedRecordingURL(value) {
     const parsed = new URL(input);
     if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname)
       return parsed.href;
-  } catch { }
+  } catch {}
   return null;
 }
+
 async function finishBrowserRecording() {
   const state = recordingSession();
   if (state.stage !== "recording" || !state.pending || state.pending.finishing)
@@ -1043,9 +1170,11 @@ async function finishBrowserRecording() {
     }
   }, 500);
 }
+
 function updateCaptureControl() {
   updateBrowserChrome();
 }
+
 function captureBrowserAction(action) {
   const state = recordingSession();
   if (state.stage === "recording" && state.pending) {
@@ -1057,6 +1186,7 @@ function captureBrowserAction(action) {
     requestRecordingSnapshot();
   }
 }
+
 function navigateRecordingBrowser(
   url,
   addHistory = true,
@@ -1086,6 +1216,7 @@ function navigateRecordingBrowser(
     if (state.view !== "analysis") updateBrowserChrome();
   }
 }
+
 function moveRecordingHistory(direction) {
   const page = activeBrowserPage(),
     index = page.historyIndex + direction;
@@ -1099,6 +1230,7 @@ function moveRecordingHistory(direction) {
     updateBrowserChrome();
   } else navigateRecordingBrowser(page.history[index], false);
 }
+
 function loadRecordingFrame(page = activeBrowserPage()) {
   const frame = page.frame;
   if (!frame) return;
@@ -1110,8 +1242,8 @@ function loadRecordingFrame(page = activeBrowserPage()) {
     frame.srcdoc = html.replace(
       "<\/body>",
       "<script>(" +
-      embeddedSnapshotBridge.toString() +
-      ")();<\/script><\/body>",
+        embeddedSnapshotBridge.toString() +
+        ")();<\/script><\/body>",
     );
   } else {
     frame.removeAttribute("srcdoc");
@@ -1122,6 +1254,7 @@ function loadRecordingFrame(page = activeBrowserPage()) {
       requestRecordingSnapshot();
   };
 }
+
 function addBrowserPage() {
   const state = recordingSession(),
     page = createBrowserPage(recordingTestURL, false);
@@ -1138,6 +1271,7 @@ function addBrowserPage() {
   captureBrowserAction({ type: "tab-open", url: "", tabId: page.id });
   $("recordingAddress").focus();
 }
+
 function switchBrowserPage(id) {
   const state = recordingSession();
   if (
@@ -1150,6 +1284,7 @@ function switchBrowserPage(id) {
   captureBrowserAction({ type: "tab-switch", url: state.url, tabId: id });
   requestRecordingSnapshot();
 }
+
 function closeBrowserPage(id) {
   const state = recordingSession(),
     index = state.browserTabs.findIndex((page) => page.id === id);
@@ -1189,6 +1324,7 @@ function offsetFlowSteps(steps, offset) {
     return clone;
   });
 }
+
 function maxPageIndex(steps) {
   let max = 0;
   function visit(list) {
@@ -1205,6 +1341,7 @@ function maxPageIndex(steps) {
   visit(steps);
   return max;
 }
+
 function minimalElementRef(label) {
   const text = String(label || "");
   return {
@@ -1223,6 +1360,7 @@ function minimalElementRef(label) {
     description: text,
   };
 }
+
 function stepDetailToFlowStep(detail, stepId, pageIndex) {
   const base = {
     id: stepId,
@@ -1249,6 +1387,7 @@ function stepDetailToFlowStep(detail, stepId, pageIndex) {
     };
   return { ...base, kind: "click", target: minimalElementRef(detail.target) };
 }
+
 async function buildMergedFlow(chosen, combined) {
   const mergedSteps = [];
   let pageOffset = 0;
@@ -1300,6 +1439,7 @@ async function buildMergedFlow(chosen, combined) {
     steps: mergedSteps,
   };
 }
+
 function summarizeRecordings() {
   const state = recordingSession();
   const chosen = state.items.filter((item) => item.checked && item.analyzed);
@@ -1312,6 +1452,7 @@ function summarizeRecordings() {
     return;
   $("summaryDialog").showModal();
 }
+
 async function confirmRecordingSummary() {
   const state = recordingSession(),
     chosen = state.items.filter((item) => item.checked && item.analyzed);
@@ -1393,6 +1534,7 @@ async function confirmRecordingSummary() {
   syncSelectAll();
   document.querySelector('[data-recording-open="' + combined.id + '"]').focus();
 }
+
 function renderSummaryWorkspace() {
   const state = recordingSession(),
     item = currentAssistantItem(),
@@ -1496,6 +1638,7 @@ function renderSummaryWorkspace() {
     };
   });
 }
+
 async function deleteRecording(id) {
   const state = recordingSession();
   if (state.stage === "recording" || state.stage === "preparing") return;
@@ -1529,6 +1672,7 @@ async function deleteRecording(id) {
     document.querySelector('[data-recording-delete="' + next.id + '"]').focus();
   else $("prepareRecording").focus();
 }
+
 $("summaryCancel").onclick = () => {
   $("summaryDialog").close();
   $("summarizeRecordings").focus();
@@ -1569,6 +1713,7 @@ window.addEventListener("message", (e) => {
       tabId: page.id,
     });
 });
+
 $("profileTab").onclick = () => showDrawerTab("Profile");
 $("designTab").onclick = () => showDrawerTab("Design");
 $("previous").onclick = () => {
@@ -1600,13 +1745,16 @@ function currentAssistantItem() {
   const s = recordingSession();
   return s.items.find((item) => item.id === s.focused);
 }
+
 function currentAssistantContext() {
   const item = currentAssistantItem();
   return item?.analyzed ? item : recordingSession().guideAssistant;
 }
+
 function aiDockMarkup() {
   return `<button class="ai-dock" id="aiToggle" aria-label="AI" aria-expanded="${!!recordingSession().aiOpen}" aria-controls="recordingAssistant">Ai<small aria-hidden="true">✦</small></button>`;
 }
+
 function bindAIDock() {
   const toggle = $("aiToggle");
   if (toggle)
@@ -1617,6 +1765,7 @@ function bindAIDock() {
       if (state.aiOpen) $("assistantInput").focus();
     };
 }
+
 function syncFloatingAIDock(target) {
   const existing = document.querySelector(".ai-dock");
   document.querySelectorAll(".ai-dock").forEach((dock) => {
@@ -1634,11 +1783,13 @@ function syncFloatingAIDock(target) {
   target.insertAdjacentHTML("beforeend", aiDockMarkup());
   bindAIDock();
 }
+
 function ensureAssistantData(item) {
   item.steps ??= [...referenceOperation];
   item.chat ??= [];
   item.chatDraft ??= "";
 }
+
 function renderAIPanel() {
   const state = recordingSession(),
     recording = currentAssistantItem(),
@@ -1659,8 +1810,8 @@ function renderAIPanel() {
   const selectedGroup =
     recording?.analyzed && state.view === "analysis"
       ? ensureProcessGroups(recording).find(
-        (group) => group.id === recording.selectedGroup,
-      )
+          (group) => group.id === recording.selectedGroup,
+        )
       : null;
   $("recordingAssistant").classList.toggle(
     "has-group-context",
@@ -1669,12 +1820,13 @@ function renderAIPanel() {
   const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
   $("assistantSteps").innerHTML = selectedGroup
     ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
-    : aiOptionsMarkup + item.steps
-      .map(
-        (step, index) =>
-          `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
-      )
-      .join("");
+    : aiOptionsMarkup +
+      item.steps
+        .map(
+          (step, index) =>
+            `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
+        )
+        .join("");
   $("assistantSteps").onclick = (e) => {
     const option = e.target.closest("[data-ai-option]");
     if (option) {
@@ -1742,6 +1894,7 @@ function renderAIPanel() {
     }
   };
 }
+
 function invokeAIMerge(option, prompt) {
   const state = recordingSession(),
     recording = currentAssistantItem(),
@@ -1823,10 +1976,11 @@ function requestedStep(text) {
   const n =
     parts.length === 2
       ? (parts[0] ? digits[parts[0]] : 1) * 10 +
-      (parts[1] ? digits[parts[1]] : 0)
+        (parts[1] ? digits[parts[1]] : 0)
       : digits[m[1]];
   return Number.isFinite(n) ? n - 1 : null;
 }
+
 function submitAssistantMessage() {
   const item = currentAssistantContext();
   ensureAssistantData(item);
@@ -1834,6 +1988,7 @@ function submitAssistantMessage() {
   if (!message) return;
   invokeAIMerge("input", message);
 }
+
 function beginNodeRecording(item, index) {
   const state = recordingSession();
   state.view = "browser";
@@ -1855,11 +2010,13 @@ function beginNodeRecording(item, index) {
   loadRecordingFrame(page);
   startBrowserRecording();
 }
+
 function capturedActionText(action) {
   if (action.type === "navigate") return action.url;
   if (action.type === "input") return `${action.target}: ${action.value}`;
   return "";
 }
+
 function finishNodeRecording(state) {
   const pending = state.pending,
     item = state.items.find((item) => item.id === pending.reRecordTarget);
@@ -1928,6 +2085,7 @@ function finishNodeRecording(state) {
   renderRecordingWorkspace();
   $("assistantInput").focus();
 }
+
 function nativeUpdatedProcess(item) {
   return processMapMarkup(item);
 }
@@ -1954,6 +2112,7 @@ function ensureStepDetails(item) {
       role: index === 2 ? "textbox" : "link",
     }));
 }
+
 let processGroupSequence = 0;
 function ensureProcessGroups(item) {
   ensureAssistantData(item);
@@ -1962,9 +2121,9 @@ function ensureProcessGroups(item) {
     item.processGroups = leaveGroupSeed
       .map((seed) => {
         const count = Math.min(
-          seed.steps.length,
-          Math.max(0, item.steps.length - start),
-        ),
+            seed.steps.length,
+            Math.max(0, item.steps.length - start),
+          ),
           group = {
             id: "group-" + ++processGroupSequence,
             name: seed.name,
@@ -1994,6 +2153,7 @@ function ensureProcessGroups(item) {
     return view;
   });
 }
+
 const genericGroupIcon =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%2214%22 height=%2214%22 rx=%222%22 fill=%22none%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3Cpath d=%22M4 8h8M8 4v8%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3C/svg%3E";
 function groupFaviconUrl(url) {
@@ -2003,9 +2163,10 @@ function groupFaviconUrl(url) {
     const parsed = new URL(url);
     if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname)
       return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(parsed.hostname)}&sz=32`;
-  } catch { }
+  } catch {}
   return genericGroupIcon;
 }
+
 function buildProcessTabGroups(flowSteps, texts) {
   const groups = [];
   let currentTab = null,
@@ -2039,14 +2200,15 @@ function buildProcessTabGroups(flowSteps, texts) {
   return groups.length
     ? groups
     : [
-      {
-        id: "group-" + ++processGroupSequence,
-        name: "Tab 1",
-        count: texts.length,
-        tab: 1,
-      },
-    ];
+        {
+          id: "group-" + ++processGroupSequence,
+          name: "Tab 1",
+          count: texts.length,
+          tab: 1,
+        },
+      ];
 }
+
 function buildTabGroupsForItem(item) {
   ensureStepDetails(item);
   const groups = [];
@@ -2085,14 +2247,15 @@ function buildTabGroupsForItem(item) {
   return groups.length
     ? groups
     : [
-      {
-        id: "group-" + ++processGroupSequence,
-        name: "Tab 1",
-        count: 0,
-        tab: 1,
-      },
-    ];
+        {
+          id: "group-" + ++processGroupSequence,
+          name: "Tab 1",
+          count: 0,
+          tab: 1,
+        },
+      ];
 }
+
 function editableStepsMarkup(item) {
   if (!item) return "";
   ensureStepDetails(item);
@@ -2105,14 +2268,16 @@ function editableStepsMarkup(item) {
           const index = group.start + offset,
             detail = item.stepDetails[index],
             code = group.number + "-" + String(offset + 1).padStart(3, "0");
-          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span><span class="step-auto-badge">Auto</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
+          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
         })
         .join("")}</section>`;
     })
     .join("")}</div>`;
 }
+
 function normalizeStepKind(type) {
-  if (type === "open" || type === "navigate" || type === "打开页面") return "navigate";
+  if (type === "open" || type === "navigate" || type === "打开页面")
+    return "navigate";
   if (type === "input" || type === "填写" || type === "输入") return "input";
   if (type === "select" || type === "选择") return "select";
   if (type === "click") return "click";
@@ -2150,7 +2315,12 @@ function rebuildTestFlowFromItem(item) {
         ? {
             description: detail.target,
             candidates: [
-              { kind: "text", value: detail.target, score: 0, source: "record" },
+              {
+                kind: "text",
+                value: detail.target,
+                score: 0,
+                source: "record",
+              },
             ],
             observed: { tag: "div", text: detail.target },
           }
@@ -2171,7 +2341,9 @@ async function rebuildItemTestFlow(item) {
       const flow = await F.flow.load(item.flowFile);
       if (flow) {
         item.testFlowSteps = (flow.steps || []).map((step) => step);
-        item.testResults = item.testFlowSteps.map(() => ({ status: "pending" }));
+        item.testResults = item.testFlowSteps.map(() => ({
+          status: "pending",
+        }));
         return;
       }
     } catch {}
@@ -2219,6 +2391,7 @@ function bindStepEditor() {
       .forEach((detail) => (detail.hidden = !expanded));
   };
 }
+
 const metricChoices = [
   [
     "User",
@@ -2245,16 +2418,16 @@ function metricPreference() {
     try {
       const data = JSON.parse(
         localStorage.getItem("taskflow-metric-consent:" + activeFlowKey) ||
-        "null",
+          "null",
       );
       saved = Array.isArray(data?.metrics)
         ? data.metrics.filter((id) =>
-          metricChoices.some((group) =>
-            group[1].some((option) => option[0] === id),
-          ),
-        )
+            metricChoices.some((group) =>
+              group[1].some((option) => option[0] === id),
+            ),
+          )
         : [];
-    } catch { }
+    } catch {}
     const allIds = metricChoices.flatMap((group) => group[1]).map(([id]) => id);
     const selected = saved.length ? [...saved] : [...allIds];
     metricDrafts.set(activeFlowKey, {
@@ -2265,11 +2438,13 @@ function metricPreference() {
   }
   return metricDrafts.get(activeFlowKey);
 }
+
 function metricMarkup(item) {
   if (!item) return "";
   const state = metricPreference();
   return `<form class="metric-consent" id="metricConsent" aria-label="Metric collection preferences"><p class="sr-only" id="metricConsentHint">Select the metrics you agree to share for platform statistics. Submit your choices to save them. You can change your choices and submit again.</p><div class="metric-consent-groups">${metricChoices.map(([name, options]) => `<section class="metric-consent-group" aria-label="${name}"><h3>${name}</h3><div class="metric-consent-options">${options.map(([id, label]) => `<label class="metric-consent-row"><input type="checkbox" class="recording-check" data-metric-choice="${id}" ${state.selected.includes(id) ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></section>`).join("")}</div><div class="metric-consent-footer"><span role="status" id="metricConsentStatus">${escapeHTML(state.message)}</span><button class="btn" type="submit" id="metricSubmit" aria-describedby="metricConsentHint" disabled>Submit</button></div></form>`;
 }
+
 function bindMetricPreferences() {
   const form = $("metricConsent");
   if (!form) return;
@@ -2348,6 +2523,7 @@ function ensureReferenceFiles(item) {
   }
   return item.references;
 }
+
 function referenceFilesMarkup(item) {
   const files = ensureReferenceFiles(item);
   return `<div class="reference-management"><div class="reference-table-wrap"><table class="reference-table" aria-label="Reference files"><colgroup><col class="reference-check-column"><col class="reference-name-column"><col><col class="reference-actions-column"></colgroup><thead><tr><th scope="col" class="reference-check-cell"><input type="checkbox" class="recording-check" id="referenceSelectAll" aria-label="Select all reference files" ${files.length ? "" : "disabled"}></th><th scope="col">Name</th><th scope="col">Type</th><th scope="col" aria-label="File actions"></th></tr></thead><tbody>${files.map((file) => `<tr data-reference-row="${file.id}"><td class="reference-check-cell"><input type="checkbox" class="recording-check" data-reference-check="${file.id}" aria-label="Select ${escapeHTML(file.name)}" ${file.selected ? "checked" : ""}></td><td>${item.referenceEditing === file.id ? `<input class="reference-name-input" id="referenceNameInput" aria-label="File name" value="${escapeHTML(file.name)}" required>` : `<a class="reference-name" href="${file.url}" download="${escapeHTML(file.name)}">${escapeHTML(file.name)}</a>`}</td><td>${escapeHTML(file.type)}</td><td class="reference-action-cell"><div class="reference-row-actions"><button type="button" class="icon-button" data-reference-edit="${file.id}" aria-label="Edit ${escapeHTML(file.name)}" title="Edit">${designIcon("edit")}</button><button type="button" class="icon-button" data-reference-delete="${file.id}" aria-label="Delete ${escapeHTML(file.name)}" title="Delete">${recordingDeleteIcon}</button></div></td></tr>`).join("")}</tbody></table></div><div class="reference-footer"><input type="file" id="referenceFileInput" accept=".xlsx,.xls,.csv,.md,.markdown" multiple hidden><button type="button" class="btn secondary" id="referenceDownload" ${files.length ? "" : "disabled"}>Download</button><button type="button" class="btn secondary" id="referenceUpload">Upload</button></div></div>`;
@@ -2371,9 +2547,9 @@ function bindReferenceFiles() {
       .querySelectorAll("[data-reference-check]")
       .forEach(
         (check) =>
-        (check.checked = !!files.find(
-          (file) => file.id === check.dataset.referenceCheck,
-        )?.selected),
+          (check.checked = !!files.find(
+            (file) => file.id === check.dataset.referenceCheck,
+          )?.selected),
       );
   };
   all.onchange = () => {
@@ -2487,7 +2663,10 @@ function bindScreenshotZoom() {
     document.body.appendChild(overlay);
     overlay.showModal();
     overlay.onclick = (event) => {
-      if (event.target === overlay || event.target.closest(".screenshot-zoom-close")) {
+      if (
+        event.target === overlay ||
+        event.target.closest(".screenshot-zoom-close")
+      ) {
         overlay.close();
         overlay.remove();
       }
@@ -2498,7 +2677,60 @@ function bindScreenshotZoom() {
 function processMapMarkup(item) {
   if (!item) return "";
   const groups = ensureProcessGroups(item);
-  return `<div class="process-canvas" tabindex="0" aria-label="Process canvas"><div class="process-canvas-world">${groups.map((group) => `<section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}"><img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null"><button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">${group.number} · ${escapeHTML(group.name)}</button><div class="canvas-group-actions" ${item.selectedGroup === group.id ? "" : "hidden"}><button data-group-record="${group.id}">Re-record</button><button data-group-insert="before" data-group-id="${group.id}">Add recording before</button><button data-group-insert="after" data-group-id="${group.id}">Add recording after</button><button data-group-delete="${group.id}">Delete</button></div><div class="canvas-group-nodes">${group.steps.map((text, index) => `<div class="canvas-step" data-canvas-step-index="${group.start + index}"><span class="step-auto-badge">Auto</span><span>${group.number}-${String(index + 1).padStart(3, "0")}</span><span>${escapeHTML(text)}</span></div>`).join("")}</div></section>`).join("")}</div><div class="canvas-step-menu" id="canvasStepMenu" hidden><button data-step-modify>Modify</button><button data-step-break>Break</button></div><div class="canvas-view-controls"><button data-canvas-zoom="out" aria-label="Zoom out">−</button><span class="canvas-zoom-label">100%</span><button data-canvas-zoom="in" aria-label="Zoom in">+</button><button data-canvas-fit>Fit to canvas</button></div></div>`;
+  return `
+  <div class="process-canvas" tabindex="0" aria-label="Process canvas">
+    <div class="process-canvas-world">
+      ${groups.map((group) => `
+      <section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}">
+        <img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null">
+        <button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">
+          ${group.number} · ${escapeHTML(group.name)}
+        </button>
+        <div class="canvas-group-actions" ${item.selectedGroup === group.id ? "" : "hidden"}>
+          <button data-group-record="${group.id}">Re-record</button>
+          <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
+          <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
+          <button data-group-delete="${group.id}">Delete</button>
+        </div>
+        <div class="canvas-group-nodes">
+          ${group.steps.map((text, index) => `
+          <div class="canvas-step" data-canvas-step-index="${group.start + index}">
+            <span>${group.number}-${String(index + 1).padStart(3, "0")}</span>
+            <span>${escapeHTML(text)}</span>
+            <!-- 
+              // TODO: conditional manual icon
+              <span class="execution-mode-icon" role="img" aria-label="Manual" title="Manual">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="7" r="4"></circle>
+                  <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
+                </svg>
+              </span> 
+            -->
+            <span class="execution-mode-icon" role="img" aria-label="Automated" title="Automated">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="7" width="16" height="13" rx="2"></rect>
+                <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
+                <circle cx="9" cy="12" r=".5"></circle>
+                <circle cx="15" cy="12" r=".5"></circle>
+              </svg>
+            </span>
+          </div>`).join("")
+          }
+        </div>
+      </section>`).join("")
+      }
+    </div>
+    <div class="canvas-step-menu" id="canvasStepMenu" hidden>
+      <button data-step-modify>Modify</button>
+      <button data-step-break>Break</button>
+    </div>
+    <div class="canvas-view-controls">
+      <button data-canvas-zoom="out" aria-label="Zoom out">-</button>
+      <span class="canvas-zoom-label">100%</span>
+      <button data-canvas-zoom="in" aria-label="Zoom in">+</button>
+      <button data-canvas-fit>Fit to canvas</button>
+    </div>
+  </div>`;
 }
 let processCanvasObserver;
 function bindProcessMap() {
@@ -2757,7 +2989,7 @@ async function beginGroupRecording(item, groupId, mode) {
     try {
       const flow = await F.flow.load(item.flowFile);
       targetUrl = flow?.meta?.env?.startUrl || targetUrl;
-    } catch { }
+    } catch {}
   }
   if (!targetUrl || targetUrl === "about:blank") targetUrl = recordingTestURL;
   page.url = targetUrl;
@@ -2791,16 +3023,16 @@ function finishGroupRecording(state, pending, item) {
     Array.isArray(pending.recordedSteps) && pending.recordedSteps.length
       ? pending.recordedSteps
       : pending.actions
-        .map((action) =>
-          action.type === "input"
-            ? `在【${action.target}】中填写：${action.value}`
-            : action.type === "click"
-              ? `点击【${action.target}】`
-              : action.type === "navigate"
-                ? `打开 ${action.url}`
-                : "",
-        )
-        .filter(Boolean);
+          .map((action) =>
+            action.type === "input"
+              ? `在【${action.target}】中填写：${action.value}`
+              : action.type === "click"
+                ? `点击【${action.target}】`
+                : action.type === "navigate"
+                  ? `打开 ${action.url}`
+                  : "",
+          )
+          .filter(Boolean);
   if (steps.length) {
     ensureStepDetails(item);
     let position;
@@ -2950,8 +3182,8 @@ async function downloadReferenceArchive(item) {
   e.setUint32(12, centralSize, true);
   e.setUint32(16, offset, true);
   const url = URL.createObjectURL(
-    new Blob([...parts, ...central, end], { type: "application/zip" }),
-  ),
+      new Blob([...parts, ...central, end], { type: "application/zip" }),
+    ),
     link = document.createElement("a");
   link.href = url;
   link.download = item.name + ".zip";
@@ -3150,7 +3382,7 @@ function startRecordingMedia(state) {
         if (e.data.size) media.chunks.push(e.data);
       };
       media.recorder.start();
-    } catch { }
+    } catch {}
   }
   media.paint = () => {
     if (!media.frame) return;
@@ -3229,8 +3461,8 @@ function workspaceWidthBounds(layout) {
 }
 function setWorkspaceWidth(value) {
   const layout = $("designPanel").querySelector(
-    ".recording-layout:not([hidden])",
-  ),
+      ".recording-layout:not([hidden])",
+    ),
     separator = $("workspaceSplitter");
   if (!layout || !separator) return;
   const limits = workspaceWidthBounds(layout),
@@ -3244,8 +3476,8 @@ function setWorkspaceWidth(value) {
 function bindWorkspaceResize() {
   workspaceResizeObserver?.disconnect();
   const layout = $("designPanel").querySelector(
-    ".recording-layout:not([hidden])",
-  ),
+      ".recording-layout:not([hidden])",
+    ),
     separator = $("workspaceSplitter");
   if (!layout || !separator) return;
   const state = recordingSession();
@@ -3279,8 +3511,8 @@ function bindWorkspaceResize() {
   separator.onpointercancel = finish;
   separator.onkeydown = (e) => {
     const current = layout
-      .querySelector(".recording-list")
-      .getBoundingClientRect().width,
+        .querySelector(".recording-list")
+        .getBoundingClientRect().width,
       limits = workspaceWidthBounds(layout);
     let next;
     if (e.key === "ArrowLeft") next = current - 24;
