@@ -77,9 +77,9 @@ export type { RunOutcome } from './run.js'
  * - 只有 `opts.writeBack === true` 才写；否则只在 result.json / RunResult.selfHealed 里留痕；
  * - 写回时 `version + 1`、追加 `selfHealed[]`、并 `saveFlow(..., { backup: true })` 留 .bak。
  */
-export async function playOnPage(opts: PlayOnPageOptions): Promise<RunResult> {
-	const runId = makeId('run')
-	const outcome = await executeRunOnPage(opts, runId)
+export async function playOnPage(opts: PlayOnPageOptions, runId?: string): Promise<RunResult> {
+	const finalRunId = runId || makeId('run')
+	const outcome = await executeRunOnPage(opts, finalRunId)
 
 	if (opts.writeBack) {
 		if (!opts.flowPath) {

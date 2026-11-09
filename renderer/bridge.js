@@ -53,8 +53,8 @@
 					serviceLines: t.serviceLines || ['', '', '', ''],
 					recordings: t.recordings || [],
 				})
-				const session = recordingSessions.get(t.code)
-				if (session && Array.isArray(t.recordings)) {
+				const session = recordingSession(t.code)
+				if (Array.isArray(t.recordings)) {
 					for (const recording of t.recordings) {
 						if (session.items.some((item) => item.id === recording.id)) continue
 						session.items.push({
@@ -155,6 +155,7 @@
 			draft.description = patch.description
 			render()
 			$('profileSaveStatus').textContent = 'Saved.'
+			await _origCloseDrawer()
 		} catch (err) {
 			console.error('[bridge] 保存 Profile 失败：', err)
 			$('profileSaveStatus').textContent = 'Save failed: ' + err.message

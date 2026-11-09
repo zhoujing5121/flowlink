@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **UI:** Restore saved recordings into the Design tab after app restart.
+- **UI:** Refine side pane with three mock options that dispatch to the existing merge flow.
+- **UI:** "Auto" badge on every step in Process, Instruction, and Test views.
+- **UI:** Sidebar "Automation rate -%" indicator with a light blue background.
 - **Recording:** Replay the required flow prefix before re-recording or inserting a process node, then preserve the resulting browser state and active tab.
 - Repository documentation for English and Chinese users, architecture, contribution, agent development, and changelog maintenance.
 - Windows Electron/Playwright application build and packaging workflow.

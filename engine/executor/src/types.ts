@@ -61,6 +61,8 @@ export interface RunResult {
 	currentPageIndex?: number
 	/** 追加：flow 版本号（写回后会 +1） */
 	flowVersion?: number
+	/** 追加：回放期间捕获的视频帧路径列表 */
+	videoFrames?: string[]
 }
 
 export type SelfHealLevel = 'L2' | 'L3' | 'L4'

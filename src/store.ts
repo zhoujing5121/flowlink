@@ -63,37 +63,43 @@ interface TasksFile {
 export class TaskStore {
 	private tasks = new Map<string, Task>()
 	private loaded = false
+	private loadPromise?: Promise<void>
 
 	constructor(private readonly file: string) {}
 
 	private async ensureLoaded(): Promise<void> {
 		if (this.loaded) return
-		this.loaded = true
-		try {
-			const raw = JSON.parse(await readFile(this.file, 'utf8')) as TasksFile
-			for (const task of raw.tasks ?? []) {
-				if (task && typeof task.code === 'string') {
-					this.tasks.set(task.code, {
-						...task,
-						recordings: task.recordings ?? [],
-						serviceLines: task.serviceLines ?? ['', '', '', ''],
-					})
+		this.loadPromise ??= (async () => {
+			try {
+				const raw = JSON.parse(await readFile(this.file, 'utf8')) as TasksFile
+				for (const task of raw.tasks ?? []) {
+					if (task && typeof task.code === 'string') {
+						this.tasks.set(task.code, {
+							...task,
+							recordings: task.recordings ?? [],
+							serviceLines: task.serviceLines ?? ['', '', '', ''],
+						})
+					}
 				}
+			} catch {
+				/* 首次启动 / 文件损坏：按空库处理 */
+			} finally {
+				this.loaded = true
 			}
-		} catch {
-			/* 首次启动 / 文件损坏：按空库处理 */
-		}
+		})()
+		await this.loadPromise
 	}
 
 	private async persist(): Promise<void> {
-		const data: TasksFile = { tasks: this.list() }
+		const data: TasksFile = { tasks: await this.list() }
 		await mkdir(dirname(this.file), { recursive: true })
 		const tmp = `${this.file}.tmp`
 		await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
 		await rename(tmp, this.file)
 	}
 
-	list(): Task[] {
+	async list(): Promise<Task[]> {
+		await this.ensureLoaded()
 		return [...this.tasks.values()].sort((a, b) => a.code.localeCompare(b.code))
 	}
 

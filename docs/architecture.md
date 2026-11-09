@@ -46,7 +46,7 @@ Flow JSON files and recorder artifacts are written below:
 <userData>/flowlink/artifacts/
 ```
 
-Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid.
+Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid. On startup, the renderer reloads stored recordings into the Design tab so users can continue working across app restarts; transient UI state such as open tabs, focus, and panel sizes is intentionally not restored.
 
 ## Flow IR
 

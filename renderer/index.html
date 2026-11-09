@@ -12,8 +12,9 @@
     <div class="shell" id="shell">
       <aside class="navigation" aria-label="Application navigation">
         <div class="nav-top">
-          <span class="nav-brand">Taskflow</span
-          ><button
+          <span class="nav-brand">Taskflow</span>
+          <span class="automation-rate">Automation rate -%</span>
+          <button
             class="nav-toggle"
             id="toggleNav"
             aria-label="Expand navigation"
@@ -616,6 +617,203 @@
             </div>
           </div>
         </aside>
+        <template id="recordingLayoutTemplate">
+          <div class="recording-layout" hidden>
+            <section class="recording-list">
+              <label class="recording-select-all"
+                ><input
+                  type="checkbox"
+                  class="recording-check all"
+                  id="recordingAll"
+                />Material</label
+              >
+              <div class="recording-items" id="recordingItems"></div>
+              <div class="recording-actions">
+                <button class="btn secondary" id="summarizeRecordings">
+                  Refine
+                </button>
+                <button class="btn" id="prepareRecording">Record</button>
+              </div>
+            </section>
+            <div
+              class="workspace-splitter"
+              id="workspaceSplitter"
+              role="separator"
+              aria-label="Browser width"
+              aria-orientation="vertical"
+              tabindex="0"
+            ></div>
+            <section class="recording-browser">
+              <div class="capture-surface" id="captureSurface">
+                <div
+                  class="browser-page-tabs"
+                  id="browserPageTabs"
+                  role="tablist"
+                  aria-label="Browser pages"
+                ></div>
+                <div class="browser-toolbar">
+                  <div class="browser-navigation">
+                    <button
+                      class="browser-tool"
+                      id="recordingBack"
+                      aria-label="Back"
+                      title="Back"
+                    >
+                      <svg
+                        class="design-action-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M15 4 7 12l8 8" />
+                      </svg>
+                    </button>
+                    <button
+                      class="browser-tool"
+                      id="recordingForward"
+                      aria-label="Forward"
+                      title="Forward"
+                    >
+                      <svg
+                        class="design-action-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="m9 4 8 8-8 8" />
+                      </svg>
+                    </button>
+                    <button
+                      class="browser-tool reload"
+                      id="recordingReload"
+                      aria-label="Reload"
+                      title="Reload"
+                    >
+                      <svg
+                        class="design-action-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M19 8a8 8 0 1 0 1 8M19 3v5h-5" />
+                      </svg>
+                    </button>
+                  </div>
+                  <input
+                    class="browser-address"
+                    id="recordingAddress"
+                    aria-label="Website address"
+                    placeholder="Please enter"
+                    spellcheck="false"
+                  />
+                  <button
+                    class="browser-new-page"
+                    id="newBrowserPage"
+                    aria-label="New browser page"
+                    title="New page"
+                  >
+                    <svg
+                      class="design-action-icon"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path d="M12 4v16M4 12h16" />
+                    </svg>
+                  </button>
+                  <div id="captureControlHost"></div>
+                </div>
+                <div class="browser-frames" id="browserFrames"></div>
+              </div>
+            </section>
+            <section class="recording-results" hidden>
+              <div
+                class="summary-tabs"
+                role="tablist"
+                aria-label="Analysis views"
+              >
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Process"
+                  aria-selected="true"
+                  tabindex="0"
+                  id="summaryTabProcess"
+                  aria-controls="summaryResultPanel"
+                >
+                  Process
+                </button>
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Instruction"
+                  aria-selected="false"
+                  tabindex="-1"
+                  id="summaryTabSteps"
+                  aria-controls="summaryResultPanel"
+                >
+                  Instruction
+                </button>
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Reference"
+                  aria-selected="false"
+                  tabindex="-1"
+                  id="summaryTabReference"
+                  aria-controls="summaryResultPanel"
+                >
+                  Reference
+                </button>
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Metric"
+                  aria-selected="false"
+                  tabindex="-1"
+                  id="summaryTabMetric"
+                  aria-controls="summaryResultPanel"
+                >
+                  Metric
+                </button>
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Test"
+                  aria-selected="false"
+                  tabindex="-1"
+                  id="summaryTabTest"
+                  aria-controls="summaryResultPanel"
+                >
+                  Test
+                </button>
+                <button
+                  class="tab"
+                  role="tab"
+                  data-summary-tab="Record"
+                  aria-selected="false"
+                  tabindex="-1"
+                  id="summaryTabRecords"
+                  aria-controls="summaryResultPanel"
+                >
+                  Record
+                </button>
+              </div>
+              <div
+                class="summary-result-content"
+                id="summaryResultPanel"
+                role="tabpanel"
+                aria-labelledby="summaryTabProcess"
+                tabindex="0"
+              ></div>
+            </section>
+            <section class="test-tab-shell" hidden>
+              <div class="test-tab-body">
+                <div class="test-tab-browser-slot"></div>
+              </div>
+            </section>
+          </div>
+        </template>
       </div>
       <footer class="drawer-footer">
         <button class="btn" id="previous" hidden>Previous</button
@@ -666,7 +864,7 @@
           />
         </svg>
       </button>
-      <p id="summaryPrompt">Confirm AI-assistant?</p>
+      <p id="summaryPrompt">Confirm Refine?</p>
       <div class="summary-dialog-actions">
         <button class="btn secondary" id="summaryCancel" autofocus>
           Cancel</button

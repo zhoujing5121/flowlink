@@ -5867,9 +5867,83 @@ body .btn.secondary:disabled {
   color: var(--action-primary);
 }
 
-.flows .row-actions .icon-button:disabled,
-#designPanel .reference-row-actions .icon-button:disabled,
-#designPanel .recording-delete:disabled {
-  color: var(--action-disabled-text);
-  opacity: 1;
+/* Automation rate indicator shown at the top of the expanded sidebar. */
+.automation-rate {
+  display: none;
+  align-items: center;
+  margin-left: auto;
+  margin-right: 12px;
+  padding: 4px 12px;
+  background: #e6f1ff;
+  color: #007bc0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.expanded .automation-rate {
+  display: inline-flex;
+}
+
+/* Auto badge placed at the top-right of every step card. */
+.step-auto-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 8px;
+  background: #e6f1ff;
+  color: #007bc0;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  z-index: 1;
+}
+
+.instruction-step,
+.test-step {
+  position: relative;
+}
+
+/* AI assistant mock option buttons. */
+.assistant-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 16px;
+  border-bottom: 1px solid #e5e9ed;
+  margin-bottom: 8px;
+}
+
+.assistant-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 16px;
+  background: #e6f2fa;
+  border: 0;
+  color: #101416;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assistant-option:hover {
+  background: #cce6f5;
+  color: #00629a;
+}
+
+.assistant-option:active {
+  background: #b3daf0;
+}
+
+.assistant-option:focus-visible {
+  outline: 2px solid #007bc0;
+  outline-offset: -2px;
 }

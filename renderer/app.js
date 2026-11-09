@@ -8,89 +8,7 @@ const rowIcons = {
     '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M152 56H40V40h112zm-12 104c0 4.411-3.59 8-8 8H60c-4.412 0-8-3.589-8-8V64h16v56h8V64h16v56h8V64h16v56h8V64h16zM80 24h32c4.411 0 8 3.588 8 8H72c0-4.412 3.589-8 8-8m80 8h-32c0-8.822-7.178-16-16-16H80c-8.823 0-16 7.178-16 16H32v32h12v96c0 8.822 7.178 16 16 16h72c8.822 0 16-7.178 16-16V64h12z" /></svg>',
   run: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4 19 12 6 20Z" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>',
 };
-const flowData = [
-  {
-    code: "TASKFLOW-001",
-    name: "Bosch 间接采购 · 年度设施维护",
-    description:
-      "仅操作本地构建的 Bosch 场景静态演示。核验供应商主数据，创建需求草稿，比较报价并完成三单匹配。每个关键节点保存审计记录，遇到缺失字段时暂停并请求人工确认。",
-    version: "r2",
-    status: "Ready",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-002",
-    name: "采购04｜逾期巡检（待修复）",
-    description:
-      "检查采购订单到货日期与当前状态，识别逾期订单并输出巡检清单。当前模板仍需人工核对。",
-    version: "r3",
-    status: "Review",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-003",
-    name: "采购03｜采购草稿创建与人工接管",
-    description:
-      "在演示系统中创建采购订单草稿。按供应商名称和物料编码查找匹配记录，填写数量、单价和到货日期。保存后核对订单金额，不执行审批、到货或开票动作。",
-    version: "r3",
-    status: "Ready",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-004",
-    name: "采购01｜供应商档案巡检（待修复）",
-    description:
-      "核对供应商档案完整性与资质有效期，标记需要补充的信息，形成巡检结果。",
-    version: "r3",
-    status: "Review",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-005",
-    name: "采购02｜物料替代与缺失信息检查",
-    description:
-      "查找目标物料，检查计量单位、价格与可用库存，将缺失信息整理为清单。",
-    version: "r1",
-    status: "Ready",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-006",
-    name: "百度搜索",
-    description:
-      "在百度搜索指定关键词，识别自然搜索结果，整理标题和摘要。此 Demo 仅模拟浏览器执行过程。",
-    version: "r1",
-    status: "Ready",
-    category: "信息检索",
-  },
-  {
-    code: "TASKFLOW-007",
-    name: "采购05｜订单与到货记录交叉核对",
-    description:
-      "交叉核对采购订单、到货记录与发票信息，输出匹配结果和差异说明。",
-    version: "r1",
-    status: "Ready",
-    category: "采购",
-  },
-  {
-    code: "TASKFLOW-008",
-    name: "创建采购项目",
-    description:
-      "在演示采购站点创建一个项目，填写项目名称、负责人及预计完成日期，并保存项目草稿。",
-    version: "r2",
-    status: "Ready",
-    category: "采购",
-  },
-].map((flow, index) => ({
-  ...flow,
-  enabled: index !== 0,
-  versions: [
-    {
-      name: "V" + (String(flow.version).match(/\d+/)?.[0] || "1"),
-      enabled: index !== 0,
-    },
-  ],
-}));
+const flowData = [];
 
 const $ = (id) => {
   const root = document.querySelector(
@@ -122,32 +40,6 @@ let appliedSearch = "",
   initialName = "",
   savedScroll = 0;
 const profileDrafts = new Map();
-const savedProfileKey = "taskflow-saved-profiles-v1";
-let savedProfiles = {};
-try {
-  const value = JSON.parse(localStorage.getItem(savedProfileKey) || "{}");
-  if (value && typeof value === "object" && !Array.isArray(value))
-    savedProfiles = value;
-} catch { }
-for (const [code, saved] of Object.entries(savedProfiles)) {
-  if (
-    !/^TASKFLOW-\d+$/.test(code) ||
-    !saved ||
-    typeof saved.name !== "string" ||
-    typeof saved.description !== "string" ||
-    !Array.isArray(saved.versions)
-  )
-    continue;
-  const existing = flowData.find((flow) => flow.code === code);
-  if (existing) Object.assign(existing, saved);
-  else
-    flowData.push({
-      ...saved,
-      code,
-      category: saved.category || "",
-      status: saved.status || "Ready",
-    });
-}
 function nextTaskflowCode() {
   return (
     "TASKFLOW-" +
@@ -174,16 +66,6 @@ function saveProfile() {
       category: currentFlow?.category || "",
       status: currentFlow?.status || "Ready",
     };
-  try {
-    localStorage.setItem(
-      savedProfileKey,
-      JSON.stringify({ ...savedProfiles, [code]: snapshot }),
-    );
-  } catch {
-    $("profileSaveStatus").textContent = "Unable to save. Please try again.";
-    return;
-  }
-  savedProfiles[code] = snapshot;
   if (currentFlow) Object.assign(currentFlow, snapshot);
   else {
     currentFlow = snapshot;
@@ -197,6 +79,7 @@ function saveProfile() {
   draft.description = snapshot.description;
   render();
   $("profileSaveStatus").textContent = "Saved.";
+  closeDrawer();
 }
 
 function profileDraft() {
@@ -274,6 +157,15 @@ function openDrawer(code, source) {
     ? code.replace("TASKFLOW", "Taskflow")
     : nextTaskflowCode().replace("TASKFLOW", "Taskflow");
   $("profileSaveStatus").textContent = "";
+  if (!code) {
+    profileDrafts.delete("new");
+    // Clear any leftover transient design state for the previous new-flow session.
+    const orphanedNewCode = activeFlowKey;
+    if (orphanedNewCode && !flowData.find((f) => f.code === orphanedNewCode)) {
+      recordingSessions.delete(orphanedNewCode);
+    }
+    // initializeDrawerRecording will generate the final activeFlowKey for the new flow.
+  }
   const draft = profileDraft();
   $("flowName").value = draft.name;
   $("flowDescription").value = draft.description;
@@ -573,9 +465,6 @@ const leaveGroupSeed = [
   },
 ];
 const referenceOperation = leaveGroupSeed.flatMap((group) => group.steps);
-function recordingActionsMarkup() {
-  return '<div class="recording-actions"><button class="btn secondary" id="summarizeRecordings" disabled>AI-assistant</button><button class="btn" id="prepareRecording">Record</button></div>';
-}
 function testStepLabel(step, index) {
   if (!step) return `Step ${index + 1}`;
   const kind = step.kind || "action";
@@ -601,7 +490,7 @@ function testWorkspaceMarkup(item) {
         const error = result?.error?.message
           ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
           : "";
-        return `<div class="test-step status-${status}"><span class="test-step-index">${String(index + 1).padStart(2, "0")}</span><span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
+        return `<div class="test-step status-${status}"><span class="step-auto-badge">Auto</span><span class="test-step-index">${String(index + 1).padStart(2, "0")}</span><span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
       })
       .join("")
     : `<div class="test-empty">No executable steps in this recording.</div>`;
@@ -653,10 +542,10 @@ function createBrowserPage(url = "", showGuide = false) {
     frame: null,
   };
 }
-function recordingSession() {
-  if (!recordingSessions.has(activeFlowKey)) {
+function recordingSession(key = activeFlowKey) {
+  if (!recordingSessions.has(key)) {
     const first = createBrowserPage(recordingTestURL, true);
-    recordingSessions.set(activeFlowKey, {
+    recordingSessions.set(key, {
       stage: "guide",
       view: "browser",
       items: [],
@@ -679,7 +568,7 @@ function recordingSession() {
       },
     });
   }
-  return recordingSessions.get(activeFlowKey);
+  return recordingSessions.get(key);
 }
 function activeBrowserPage(state = recordingSession()) {
   return (
@@ -760,10 +649,9 @@ function browserGuideHTML(showGuide = true) {
 function ensureRecordingLayout() {
   const state = recordingSession();
   if (!state.workspaceElement) {
-    const layout = document.createElement("div");
-    layout.className = "recording-layout";
+    const template = document.getElementById("recordingLayoutTemplate");
+    const layout = template.content.firstElementChild.cloneNode(true);
     layout.dataset.flow = activeFlowKey;
-    layout.innerHTML = recordingListMarkup() + workspaceSplitterMarkup();
     state.workspaceElement = layout;
     $("designPanel").appendChild(layout);
   }
@@ -792,9 +680,7 @@ function ensureRecordingLayout() {
   return state.workspaceElement;
 }
 function createBrowserSurface(state) {
-  const browser = document.createElement("section");
-  browser.className = "recording-browser";
-  browser.innerHTML = `<div class="capture-surface" id="captureSurface"><div class="browser-page-tabs" id="browserPageTabs" role="tablist" aria-label="Browser pages"></div><div class="browser-toolbar"><div class="browser-navigation"><button class="browser-tool" id="recordingBack" aria-label="Back" title="Back">${designIcon("back")}</button><button class="browser-tool" id="recordingForward" aria-label="Forward" title="Forward">${designIcon("forward")}</button><button class="browser-tool reload" id="recordingReload" aria-label="Reload" title="Reload">${designIcon("reload")}</button></div><input class="browser-address" id="recordingAddress" aria-label="Website address" placeholder="Please enter" spellcheck="false"><button class="browser-new-page" id="newBrowserPage" aria-label="New browser page" title="New page">${designIcon("plus")}</button><div id="captureControlHost"></div></div><div class="browser-frames" id="browserFrames"></div></div>`;
+  const browser = state.workspaceElement.querySelector(".recording-browser");
   state.browserElement = browser;
   return browser;
 }
@@ -932,10 +818,6 @@ function updateBrowserChrome() {
   $("profileTab").disabled = state.stage === "recording";
   $("previous").disabled = state.stage === "recording";
 }
-function recordingListMarkup() {
-  const state = recordingSession();
-  return `<section class="recording-list"><label class="recording-select-all"><input type="checkbox" class="recording-check all" id="recordingAll" ${state.allExplicit ? "checked" : ""}>Material</label><div class="recording-items" id="recordingItems"></div>${recordingActionsMarkup()}</section>`;
-}
 function syncSelectAll() {
   const state = recordingSession(),
     all = $("recordingAll");
@@ -994,7 +876,7 @@ function renderRecordingItems() {
   $("recordingItems").innerHTML = state.items
     .map(
       (item) =>
-        `<div class="recording-row ${state.focused === item.id ? "current" : ""}"><input type="checkbox" class="recording-check" data-recording-check="${item.id}" aria-label="Select ${escapeHTML(item.name)}" ${item.checked ? "checked" : ""}><button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>${item.summary ? '<span class="recording-badge merged">Merged</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}<button class="icon-button recording-delete" data-recording-delete="${item.id}" aria-label="Delete ${escapeHTML(item.name)}" title="Delete" ${state.stage === "recording" ? "disabled" : ""}>${recordingDeleteIcon}</button></div>`,
+        `<div class="recording-row ${state.focused === item.id ? "current" : ""}"><input type="checkbox" class="recording-check" data-recording-check="${item.id}" aria-label="Select ${escapeHTML(item.name)}" ${item.checked ? "checked" : ""}><button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>${item.summary ? '<span class="recording-badge merged">Refined</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}<button class="icon-button recording-delete" data-recording-delete="${item.id}" aria-label="Delete ${escapeHTML(item.name)}" title="Delete" ${state.stage === "recording" ? "disabled" : ""}>${recordingDeleteIcon}</button></div>`,
     )
     .join("");
   $("recordingItems").onchange = (e) => {
@@ -1042,6 +924,7 @@ function updateSummaryState() {
     );
     button.disabled =
       state.stage === "recording" ||
+      state.stage === "preparing" ||
       checkedAnalyzed.length < 2 ||
       state.items.some((item) => item.checked && !item.analyzed);
   }
@@ -1421,19 +1304,12 @@ function summarizeRecordings() {
   const state = recordingSession();
   const chosen = state.items.filter((item) => item.checked && item.analyzed);
   if (
-    !chosen.length ||
+    chosen.length < 2 ||
     state.items.some((item) => item.checked && !item.analyzed) ||
     state.stage === "recording" ||
     state.stage === "preparing"
   )
     return;
-  if (chosen.length === 1) {
-    state.focused = chosen[0].id;
-    state.view = "analysis";
-    chosen[0].resultTab = "Process";
-    renderRecordingWorkspace();
-    return;
-  }
   $("summaryDialog").showModal();
 }
 async function confirmRecordingSummary() {
@@ -1499,6 +1375,7 @@ async function confirmRecordingSummary() {
     combined.recordingId = recording.id;
     combined.flowFile = recording.flowFile;
     combined.artifactsDir = recording.artifactsDir;
+    rebuildItemTestFlow(combined);
   } catch (err) {
     console.error("[merge] persist failed:", err);
   }
@@ -1528,47 +1405,44 @@ function renderSummaryWorkspace() {
   if (active !== "Test") state.testBrowserResetKey = "";
   const layout = ensureRecordingLayout();
   layout.classList.toggle("is-test", active === "Test");
-  let testShell = layout.querySelector(".test-tab-shell");
-  if (active === "Test") {
-    if (!testShell) {
-      testShell = document.createElement("div");
-      testShell.className = "test-tab-shell";
-      layout.appendChild(testShell);
-    }
-    testShell.hidden = false;
-  } else if (state.browserElement) {
-    if (testShell) {
-      testShell.hidden = true;
-    }
+  const testShell = layout.querySelector(".test-tab-shell"),
+    results = layout.querySelector(".recording-results"),
+    tabs = layout.querySelector(".summary-tabs"),
+    resultPanel = layout.querySelector("#summaryResultPanel");
+  testShell.hidden = active !== "Test";
+  if (active !== "Test" && state.browserElement) {
     state.browserElement.hidden = true;
     state.browserElement
       .querySelector('[id="aiToggle"]')
       ?.setAttribute("id", "browserAIToggle");
   }
-  let results = layout.querySelector(".recording-results");
-  if (!results) {
-    results = document.createElement("section");
-    results.className = "recording-results";
-    layout.appendChild(results);
-  }
   results.hidden = false;
-  if (active === "Test" && testShell) {
-    const tabsMarkup = `<div class="summary-tabs" role="tablist" aria-label="Analysis views">${summaryTabs.map((name) => `<button class="tab" role="tab" data-summary-tab="${name}" aria-selected="${name === active}" tabindex="${name === active ? 0 : -1}" id="${summaryTabId(name)}" aria-controls="summaryResultPanel">${name}</button>`).join("")}</div>`;
-    if (!testShell.querySelector(".test-tab-body"))
-      testShell.innerHTML =
-        tabsMarkup +
-        `<div class="test-tab-body"><div class="test-tab-browser-slot"></div></div>`;
+  if (active === "Test") {
+    testShell.prepend(tabs);
     const browserSlot = testShell.querySelector(".test-tab-browser-slot");
     if (state.browserElement) browserSlot.appendChild(state.browserElement);
     const body = testShell.querySelector(".test-tab-body");
     body.appendChild(results);
-    results.innerHTML = `<div class="summary-result-content ${active === "Reference" ? "reference-active" : active === "Process" ? "process-active" : active === "Metric" ? "metric-active" : ""}" id="summaryResultPanel" role="tabpanel" aria-labelledby="${summaryTabId(active)}" tabindex="0">${analysisResultMarkup(active)}</div>`;
   } else {
-    if (testShell?.hidden) {
-      layout.appendChild(results);
-    }
-    results.innerHTML = `<div class="summary-tabs" role="tablist" aria-label="Analysis views">${summaryTabs.map((name) => `<button class="tab" role="tab" data-summary-tab="${name}" aria-selected="${name === active}" tabindex="${name === active ? 0 : -1}" id="${summaryTabId(name)}" aria-controls="summaryResultPanel">${name}</button>`).join("")}</div><div class="summary-result-content ${active === "Reference" ? "reference-active" : active === "Process" ? "process-active" : active === "Metric" ? "metric-active" : ""}" id="summaryResultPanel" role="tabpanel" aria-labelledby="${summaryTabId(active)}" tabindex="0">${analysisResultMarkup(active)}</div>`;
+    results.prepend(tabs);
+    layout.appendChild(results);
   }
+  tabs.querySelectorAll("[data-summary-tab]").forEach((button) => {
+    const selected = button.dataset.summaryTab === active;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  resultPanel.className =
+    "summary-result-content " +
+    (active === "Reference"
+      ? "reference-active"
+      : active === "Process"
+        ? "process-active"
+        : active === "Metric"
+          ? "metric-active"
+          : "");
+  resultPanel.setAttribute("aria-labelledby", summaryTabId(active));
+  resultPanel.innerHTML = analysisResultMarkup(active);
   if (active === "Test" && state.browserElement) {
     state.browserElement.hidden = false;
     mountBrowserSurface();
@@ -1583,6 +1457,7 @@ function renderSummaryWorkspace() {
   bindProcessMap();
   bindReferenceFiles();
   bindMetricPreferences();
+  bindScreenshotZoom();
   const runButton = $("runRecordingTest");
   if (runButton)
     runButton.onclick = () => {
@@ -1593,10 +1468,7 @@ function renderSummaryWorkspace() {
     stopButton.onclick = () => {
       if (window.stopFlowlinkTest) window.stopFlowlinkTest(item);
     };
-  const tabButtons =
-    active === "Test" && testShell
-      ? testShell.querySelectorAll("[data-summary-tab]")
-      : results.querySelectorAll("[data-summary-tab]");
+  const tabButtons = tabs.querySelectorAll("[data-summary-tab]");
   tabButtons.forEach((button) => {
     button.onclick = () => {
       const nextTab = button.dataset.summaryTab;
@@ -1794,14 +1666,32 @@ function renderAIPanel() {
     "has-group-context",
     !!selectedGroup,
   );
+  const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
   $("assistantSteps").innerHTML = selectedGroup
     ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
-    : item.steps
+    : aiOptionsMarkup + item.steps
       .map(
         (step, index) =>
           `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
       )
       .join("");
+  $("assistantSteps").onclick = (e) => {
+    const option = e.target.closest("[data-ai-option]");
+    if (option) {
+      e.preventDefault();
+      invokeAIMerge(option.dataset.aiOption);
+      return;
+    }
+    if (selectedGroup) {
+      const button = e.target.closest("[data-ai-group-insert]");
+      if (button)
+        beginGroupRecording(
+          recording,
+          selectedGroup.id,
+          button.dataset.aiGroupInsert,
+        );
+    }
+  };
   if (selectedGroup) {
     $("assistantGroupRecord").onclick = () =>
       beginGroupRecording(recording, selectedGroup.id, "replace");
@@ -1812,15 +1702,6 @@ function renderAIPanel() {
         "aria-expanded",
         String(!menu.hidden),
       );
-    };
-    $("assistantGroupInsert").onclick = (e) => {
-      const button = e.target.closest("[data-ai-group-insert]");
-      if (button)
-        beginGroupRecording(
-          recording,
-          selectedGroup.id,
-          button.dataset.aiGroupInsert,
-        );
     };
   }
 
@@ -1861,6 +1742,59 @@ function renderAIPanel() {
     }
   };
 }
+function invokeAIMerge(option, prompt) {
+  const state = recordingSession(),
+    recording = currentAssistantItem(),
+    item = currentAssistantContext();
+  ensureAssistantData(item);
+  const optionLabels = {
+    merge: "Merge selected recordings",
+    generate: "Generate flow from description",
+    optimize: "Optimize current flow",
+    input: prompt || "User request",
+  };
+  const userText = prompt || optionLabels[option] || option;
+  item.chat.push({ role: "user", text: userText });
+  item.chatDraft = "";
+
+  const chosen = state.items.filter((entry) => entry.checked && entry.analyzed);
+
+  if (option === "merge" && chosen.length >= 2) {
+    item.chat.push({
+      role: "assistant",
+      text: "Merging selected recordings...",
+    });
+    renderAIPanel();
+    confirmRecordingSummary();
+    return;
+  }
+
+  if ((option === "merge" || option === "optimize") && recording?.analyzed) {
+    item.chat.push({
+      role: "assistant",
+      text: "AI mock: processing current flow (merge path placeholder).",
+    });
+    renderAIPanel();
+    return;
+  }
+
+  if (option === "generate" && prompt) {
+    item.chat.push({
+      role: "assistant",
+      text: "AI mock: generating flow from description (placeholder).",
+    });
+    renderAIPanel();
+    return;
+  }
+
+  item.chat.push({
+    role: "assistant",
+    text: "当前为本地交互示例，尚未连接 AI 服务。",
+  });
+  renderAIPanel();
+  $("assistantInput")?.focus();
+}
+
 function requestedStep(text) {
   const m =
     text.match(
@@ -1894,76 +1828,11 @@ function requestedStep(text) {
   return Number.isFinite(n) ? n - 1 : null;
 }
 function submitAssistantMessage() {
-  const state = recordingSession(),
-    recording = currentAssistantItem(),
-    item = currentAssistantContext();
+  const item = currentAssistantContext();
   ensureAssistantData(item);
   const message = $("assistantInput").value.trim();
   if (!message) return;
-  item.chat.push({ role: "user", text: message });
-  item.chatDraft = "";
-  const requested = requestedStep(message),
-    index = requested ?? item.selectedStep;
-  if (!recording?.analyzed) {
-    let response;
-    if (/重新录制|重录|re.?record/i.test(message))
-      response = "请先完成一次录制，再指定需要重新录制的步骤。";
-    else if (/网址|url/i.test(message))
-      response = recordingGuideSteps.slice(0, 2).join("\n");
-    else if (/登录|sign.?in/i.test(message)) response = recordingGuideSteps[2];
-    else if (/停止|结束|stop/i.test(message)) response = recordingGuideSteps[5];
-    else if (/开始|start/i.test(message)) response = recordingGuideSteps[1];
-    else if (/录制|步骤|流程|操作|record|help|steps/i.test(message))
-      response = recordingGuideSteps
-        .map((step, i) => `${i + 1}. ${step}`)
-        .join("\n");
-    else response = "当前为本地交互示例，尚未连接 AI 服务。";
-    item.chat.push({ role: "assistant", text: response });
-    renderAIPanel();
-    $("assistantInput").focus();
-    return;
-  }
-  if (/重新录制|重录|re.?record/i.test(message)) {
-    if (["preparing", "recording"].includes(state.stage)) {
-      item.chat.push({ role: "assistant", text: "请先结束当前录制。" });
-      renderAIPanel();
-      return;
-    }
-    if (!Number.isInteger(index) || index < 0 || index >= item.steps.length) {
-      item.chat.push({ role: "assistant", text: "请指定要重新录制的步骤。" });
-      renderAIPanel();
-      return;
-    }
-    item.chat.push({
-      role: "assistant",
-      text: "Select a major node such as 01 or 02 on the Process canvas, then choose Re-record.",
-    });
-    renderAIPanel();
-    return;
-  }
-  if (
-    Number.isInteger(requested) &&
-    requested >= 0 &&
-    requested < item.steps.length
-  ) {
-    item.selectedStep = requested;
-    item.chat.push({
-      role: "assistant",
-      text: `${requested + 1}. ${item.steps[requested]}`,
-    });
-  } else if (/流程|步骤|操作|process|workflow|steps/i.test(message)) {
-    item.chat.push({
-      role: "assistant",
-      text: item.steps.map((step, i) => `${i + 1}. ${step}`).join("\n"),
-    });
-  } else {
-    item.chat.push({
-      role: "assistant",
-      text: "当前为本地交互示例，尚未连接 AI 服务。",
-    });
-  }
-  renderAIPanel();
-  $("assistantInput").focus();
+  invokeAIMerge("input", message);
 }
 function beginNodeRecording(item, index) {
   const state = recordingSession();
@@ -2236,12 +2105,81 @@ function editableStepsMarkup(item) {
           const index = group.start + offset,
             detail = item.stepDetails[index],
             code = group.number + "-" + String(offset + 1).padStart(3, "0");
-          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
+          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span><span class="step-auto-badge">Auto</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
         })
         .join("")}</section>`;
     })
     .join("")}</div>`;
 }
+function normalizeStepKind(type) {
+  if (type === "open" || type === "navigate" || type === "打开页面") return "navigate";
+  if (type === "input" || type === "填写" || type === "输入") return "input";
+  if (type === "select" || type === "选择") return "select";
+  if (type === "click") return "click";
+  if (type === "key") return "key";
+  if (type === "hover") return "hover";
+  if (type === "scroll") return "scroll";
+  if (type === "switchTab") return "switchTab";
+  if (type === "openTab") return "openTab";
+  if (type === "closeTab") return "closeTab";
+  if (type === "dialog") return "dialog";
+  if (type === "upload") return "upload";
+  if (type === "wait") return "wait";
+  if (type === "assert") return "assert";
+  if (type === "extract") return "extract";
+  return type || "action";
+}
+
+function rebuildTestFlowFromItem(item) {
+  if (!item?.stepDetails) {
+    item.testFlowSteps = [];
+    item.testResults = [];
+    return;
+  }
+  const oldResults = item.testResults || [];
+  item.testFlowSteps = item.stepDetails.map((detail, index) => {
+    const text = item.steps?.[index] || "";
+    const kind = normalizeStepKind(detail.type);
+    return {
+      id: `step-${index}`,
+      kind,
+      url: detail.url || "",
+      value: detail.value || "",
+      text,
+      target: detail.target
+        ? {
+            description: detail.target,
+            candidates: [
+              { kind: "text", value: detail.target, score: 0, source: "record" },
+            ],
+            observed: { tag: "div", text: detail.target },
+          }
+        : undefined,
+      page: detail.tab > 1 ? { index: detail.tab - 1 } : undefined,
+    };
+  });
+  item.testResults = item.testFlowSteps.map(
+    (_, index) => oldResults[index] || { status: "pending" },
+  );
+}
+
+async function rebuildItemTestFlow(item) {
+  if (!item) return;
+  // Prefer the persisted flow file when the UI draft has not diverged.
+  if (item.flowFile && !item.nodeUpdates) {
+    try {
+      const flow = await F.flow.load(item.flowFile);
+      if (flow) {
+        item.testFlowSteps = (flow.steps || []).map((step) => step);
+        item.testResults = item.testFlowSteps.map(() => ({ status: "pending" }));
+        return;
+      }
+    } catch {}
+  }
+  // Fall back to the current UI draft so Process/Instruction edits show in Test.
+  rebuildTestFlowFromItem(item);
+}
+
 function bindStepEditor() {
   const panel = $("summaryResultPanel");
   if (!panel) return;
@@ -2259,6 +2197,7 @@ function bindStepEditor() {
       if (summary) summary.textContent = e.target.value;
     } else item.stepDetails[index][field] = e.target.value;
     item.nodeUpdates = true;
+    rebuildItemTestFlow(item);
     renderAIPanel();
   };
   panel.onclick = (e) => {
@@ -2534,10 +2473,32 @@ function bindReferenceFiles() {
   }
 }
 
+function bindScreenshotZoom() {
+  const panel = $("summaryResultPanel");
+  if (!panel) return;
+  panel.onclick = (e) => {
+    const trigger = e.target.closest("[data-screenshot-zoom]");
+    if (!trigger) return;
+    e.preventDefault();
+    const src = trigger.dataset.screenshotZoom;
+    const overlay = document.createElement("dialog");
+    overlay.className = "screenshot-zoom-overlay";
+    overlay.innerHTML = `<button type="button" class="screenshot-zoom-close" aria-label="Close">Close</button><img src="${escapeHTML(src)}" alt="Zoomed screenshot">`;
+    document.body.appendChild(overlay);
+    overlay.showModal();
+    overlay.onclick = (event) => {
+      if (event.target === overlay || event.target.closest(".screenshot-zoom-close")) {
+        overlay.close();
+        overlay.remove();
+      }
+    };
+  };
+}
+
 function processMapMarkup(item) {
   if (!item) return "";
   const groups = ensureProcessGroups(item);
-  return `<div class="process-canvas" tabindex="0" aria-label="Process canvas"><div class="process-canvas-world">${groups.map((group) => `<section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}"><img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null"><button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">${group.number} · ${escapeHTML(group.name)}</button><div class="canvas-group-actions" ${item.selectedGroup === group.id ? "" : "hidden"}><button data-group-record="${group.id}">Re-record</button><button data-group-insert="before" data-group-id="${group.id}">Add recording before</button><button data-group-insert="after" data-group-id="${group.id}">Add recording after</button><button data-group-delete="${group.id}">Delete</button></div><div class="canvas-group-nodes">${group.steps.map((text, index) => `<div class="canvas-step" data-canvas-step-index="${group.start + index}"><span>${group.number}-${String(index + 1).padStart(3, "0")}</span><span>${escapeHTML(text)}</span></div>`).join("")}</div></section>`).join("")}</div><div class="canvas-step-menu" id="canvasStepMenu" hidden><button data-step-modify>Modify</button><button data-step-break>Break</button></div><div class="canvas-view-controls"><button data-canvas-zoom="out" aria-label="Zoom out">−</button><span class="canvas-zoom-label">100%</span><button data-canvas-zoom="in" aria-label="Zoom in">+</button><button data-canvas-fit>Fit to canvas</button></div></div>`;
+  return `<div class="process-canvas" tabindex="0" aria-label="Process canvas"><div class="process-canvas-world">${groups.map((group) => `<section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}"><img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null"><button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">${group.number} · ${escapeHTML(group.name)}</button><div class="canvas-group-actions" ${item.selectedGroup === group.id ? "" : "hidden"}><button data-group-record="${group.id}">Re-record</button><button data-group-insert="before" data-group-id="${group.id}">Add recording before</button><button data-group-insert="after" data-group-id="${group.id}">Add recording after</button><button data-group-delete="${group.id}">Delete</button></div><div class="canvas-group-nodes">${group.steps.map((text, index) => `<div class="canvas-step" data-canvas-step-index="${group.start + index}"><span class="step-auto-badge">Auto</span><span>${group.number}-${String(index + 1).padStart(3, "0")}</span><span>${escapeHTML(text)}</span></div>`).join("")}</div></section>`).join("")}</div><div class="canvas-step-menu" id="canvasStepMenu" hidden><button data-step-modify>Modify</button><button data-step-break>Break</button></div><div class="canvas-view-controls"><button data-canvas-zoom="out" aria-label="Zoom out">−</button><span class="canvas-zoom-label">100%</span><button data-canvas-zoom="in" aria-label="Zoom in">+</button><button data-canvas-fit>Fit to canvas</button></div></div>`;
 }
 let processCanvasObserver;
 function bindProcessMap() {
@@ -2897,6 +2858,7 @@ function finishGroupRecording(state, pending, item) {
     );
     item.selectedGroup = selected?.id || enriched[0]?.id || null;
     item.nodeUpdates = true;
+    rebuildItemTestFlow(item);
   }
   item.resultTab = "Process";
   state.focused = item.id;
@@ -2928,6 +2890,7 @@ async function deleteProcessGroup(item, groupId) {
   item.processGroups = buildTabGroupsForItem(item);
   item.selectedGroup = null;
   item.nodeUpdates = true;
+  rebuildItemTestFlow(item);
   renderSummaryWorkspace();
 }
 
@@ -3255,14 +3218,11 @@ function recordingMediaMarkup(item) {
   const poster = media.posterFile
     ? `file:///${String(media.posterFile).replace(/\\/g, "/")}`
     : screenshots[0]?.image || "";
-  return `<div class="recording-media"><section class="recording-video">${media.videoURL ? `<video controls playsinline preload="metadata" aria-label="${escapeHTML(item?.name || "Recording")} video" src="${escapeHTML(media.videoURL)}"></video>` : poster ? `<div class="recording-frame-preview"><img src="${escapeHTML(poster)}" alt="${escapeHTML(item?.name || "Recording")} poster"><span>Recorded video frames</span></div>` : `<div class="recording-frame-preview recording-frame-empty">No recorded video frames found</div>`}<div class="recording-media-name">${escapeHTML(item?.name || "Recording")}${media.videoURL ? ".webm" : " - frame recording"}</div></section><div class="recording-screenshots">${screenshots.map((file) => `<a class="recording-screenshot-file" href="${file.image}" download="${escapeHTML(file.name)}"><img src="${file.image}" alt="${escapeHTML(file.name)}"><span>${escapeHTML(file.name)}</span></a>`).join("")}</div></div>`;
+  return `<div class="recording-media"><section class="recording-video">${media.videoURL ? `<video controls playsinline preload="metadata" aria-label="${escapeHTML(item?.name || "Recording")} video" src="${escapeHTML(media.videoURL)}"></video>` : poster ? `<div class="recording-frame-preview"><img src="${escapeHTML(poster)}" alt="${escapeHTML(item?.name || "Recording")} poster"><span>Recorded video frames</span></div>` : `<div class="recording-frame-preview recording-frame-empty">No recorded video frames found</div>`}<div class="recording-media-name">${escapeHTML(item?.name || "Recording")}${media.videoURL ? ".webm" : " - frame recording"}</div></section><div class="recording-screenshots">${screenshots.map((file) => `<button type="button" class="recording-screenshot-file" data-screenshot-zoom="${escapeHTML(file.image)}" aria-label="Zoom ${escapeHTML(file.name)}"><img src="${file.image}" alt="${escapeHTML(file.name)}"><span>${escapeHTML(file.name)}</span></button>`).join("")}</div></div>`;
 }
 
 // Native pointer and keyboard resizing. No layout labels or icons are added.
 let workspaceResizeObserver;
-function workspaceSplitterMarkup() {
-  return '<div class="workspace-splitter" id="workspaceSplitter" role="separator" aria-label="Browser width" aria-orientation="vertical" tabindex="0"></div>';
-}
 function workspaceWidthBounds(layout) {
   const total = layout.getBoundingClientRect().width;
   return { min: 298, max: Math.max(298, total - 16 - 320) };
