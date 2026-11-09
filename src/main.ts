@@ -173,7 +173,7 @@ function registerBrowserTab(tabId: string, view: WebContentsView): void {
 	})
 }
 
-function createBrowserTab(tabId: string, initialUrl = 'https://example.com'): WebContentsView {
+function createBrowserTab(tabId: string, initialUrl = 'https://bosch.com.cn'): WebContentsView {
 	const view = new WebContentsView({ webPreferences: { sandbox: true } })
 	mainWindow.contentView.addChildView(view)
 	view.setBounds(browserBounds)
@@ -248,7 +248,7 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	browserSurfaceVisible = false
 	syncBrowserVisibility()
 
-	const startUrl = initialUrl || 'https://example.com'
+	const startUrl = initialUrl || 'https://bosch.com.cn'
 	await browserView.webContents.loadURL(startUrl).catch(() => {})
 }
 
@@ -457,7 +457,7 @@ async function createWindow(): Promise<void> {
 
 	await mainWindow.loadFile(join(app.getAppPath(), 'renderer', 'index.html'))
 	try {
-		await browserView.webContents.loadURL('https://example.com')
+		await browserView.webContents.loadURL('https://bosch.com.cn')
 	} catch (err) {
 		console.error('[flowlink] 初始页面加载失败：', (err as Error).message)
 	}
@@ -601,14 +601,14 @@ function registerIpc(): void {
 		if (recStartPromise || recPromise || recStopPromise) {
 			await stopRecordingSession({ discard: true })
 		}
-		const normalized = String(initialUrl || 'https://example.com').trim() || 'https://example.com'
+		const normalized = String(initialUrl || 'https://bosch.com.cn').trim() || 'https://bosch.com.cn'
 		let startUrl = normalized
 		try {
 			const parsed = new URL(normalized)
-			if (!['http:', 'https:'].includes(parsed.protocol)) startUrl = 'https://example.com'
+			if (!['http:', 'https:'].includes(parsed.protocol)) startUrl = 'https://bosch.com.cn'
 			else startUrl = parsed.href
 		} catch {
-			startUrl = 'https://example.com'
+			startUrl = 'https://bosch.com.cn'
 		}
 
 		await resetBrowserTabs(startUrl)
@@ -626,7 +626,7 @@ function registerIpc(): void {
 				console.warn(`[flowlink] 新标签页录制附着失败：`, (err as Error).message)
 			}
 		}
-		return { tabId, url: browserViews.get(tabId)?.webContents.getURL() || 'https://example.com' }
+		return { tabId, url: browserViews.get(tabId)?.webContents.getURL() || 'https://bosch.com.cn' }
 	})
 	ipcMain.handle('browser:switchTab', (_event, tabId: string) => {
 		const next = browserViews.get(tabId)

@@ -412,7 +412,7 @@ function confirmWorkspaceAction(message) {
     $("actionConfirmCancel").focus();
   });
 }
-const recordingTestURL = "https://example.com";
+const recordingTestURL = "https://bosch.com.cn";
 // Browser tabs persist independently; one recording spans every active tab.
 const recordingSessions = new Map();
 function designIcon(name) {
