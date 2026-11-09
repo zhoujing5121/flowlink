@@ -99,6 +99,38 @@ const HOVER_LOOKBACK_MS = 600
 /** 采样上限，防止长录制把内存吃掉 */
 const MAX_SIGNATURE_SAMPLES = 600
 
+/** 正常结束但没有任何可回放步骤：调用方应静默取消，而不是写一份非法的空 flow。 */
+export class EmptyRecordingError extends Error {
+	constructor() {
+		super('录制未捕获任何步骤，未生成 recording')
+		this.name = 'EmptyRecordingError'
+	}
+}
+
+/** 初始化阶段的页面/CDP 调用也必须响应 Stop，不能等到 stopPromise 创建后才可取消。 */
+function withRecordingStop<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (!signal) return promise
+	if (signal.aborted) return Promise.reject(new EmptyRecordingError())
+	return new Promise<T>((resolve, reject) => {
+		const cleanup = () => signal.removeEventListener('abort', onAbort)
+		const onAbort = () => {
+			cleanup()
+			reject(new EmptyRecordingError())
+		}
+		signal.addEventListener('abort', onAbort, { once: true })
+		promise.then(
+			(value) => {
+				cleanup()
+				resolve(value)
+			},
+			(error) => {
+				cleanup()
+				reject(error)
+			},
+		)
+	})
+}
+
 export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const viewport = opts.viewport ?? DEFAULT_VIEWPORT
 	const headless = opts.headless ?? false
@@ -176,6 +208,47 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const samples: Array<{ ts: number; pageIndex: number; sig: PageSignature }> = []
 	let recordingActive = true
 
+	/** 当前动作所在标签页；openTab 本身也会切换当前页。 */
+	const tabState = { page: 0 }
+
+	/** 给 step 打标签页标记：index 0 可省略（回放默认从起点页开始） */
+	const markPage = (step: Step, index: number): Step =>
+		index > 0 ? ({ ...step, page: { index } } as Step) : step
+
+	/** 推入一条 step（带 page 标记 + onStep 回调；回调抛错不影响录制） */
+	const pushStep = (step: Step, pageIndex: number): void => {
+		const marked = markPage(step, pageIndex)
+		steps.push(marked)
+		if (!opts.onStep) return
+		try {
+			opts.onStep(marked)
+		} catch (err) {
+			warnings.push(`onStep 回调抛错：${(err as Error).message}`)
+		}
+	}
+
+	const primeNavigation = (target: Page): void => {
+		navigationReadyByPage.add(target)
+		lastNavigationUrlByPage.set(target, target.url())
+	}
+
+	/** 录制开始后创建的标签页：openTab 自己就是切页动作，不需要再补 switchTab。 */
+	const recordOpenedTab = (target: Page, knownIndex?: number): void => {
+		if (!recordingActive) return
+		const index = knownIndex ?? ensurePageIndex(target)
+		if (index <= 0) return
+		const openUrl = target.url()
+		pushStep(
+			{
+				kind: 'openTab',
+				id: `s${++stepSeq}`,
+				...(openUrl && openUrl !== 'about:blank' ? { url: openUrl } : {}),
+			},
+			index,
+		)
+		tabState.page = index
+	}
+
 	/* ---------------- 登录态（storageState profile） ---------------- */
 
 	const profile = await loadProfile(opts.storageStatePath)
@@ -246,20 +319,29 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			contextRef = context
 			page = existingPage
 			// keepNames 垫片：页面内采集/校验函数会经 page.evaluate 序列化
-			await page.addInitScript({ content: NAME_KEEPALIVE_SOURCE }).catch(() => {})
-			await page.evaluate(NAME_KEEPALIVE_SOURCE).catch(() => {})
+			await withRecordingStop(
+				page.addInitScript({ content: NAME_KEEPALIVE_SOURCE }).catch(() => {}),
+				opts.stopSignal,
+			)
+			await withRecordingStop(page.evaluate(NAME_KEEPALIVE_SOURCE).catch(() => {}), opts.stopSignal)
 			if (attachOnly) {
 				// Electron CDP context 里还有产品壳页面，禁止 context 级 addInitScript
-				await installCaptureOnPage(page, onEmit)
+				await withRecordingStop(installCaptureOnPage(page, onEmit), opts.stopSignal)
 				for (const additionalPage of additionalPages) {
 					if (additionalPage === page || additionalPage.isClosed()) continue
-					await additionalPage.addInitScript({ content: NAME_KEEPALIVE_SOURCE }).catch(() => {})
-					await additionalPage.evaluate(NAME_KEEPALIVE_SOURCE).catch(() => {})
-					await installCaptureOnPage(additionalPage, onEmit)
+					await withRecordingStop(
+						additionalPage.addInitScript({ content: NAME_KEEPALIVE_SOURCE }).catch(() => {}),
+						opts.stopSignal,
+					)
+					await withRecordingStop(
+						additionalPage.evaluate(NAME_KEEPALIVE_SOURCE).catch(() => {}),
+						opts.stopSignal,
+					)
+					await withRecordingStop(installCaptureOnPage(additionalPage, onEmit), opts.stopSignal)
 				}
 			} else {
-				await context.addInitScript({ content: NAME_KEEPALIVE_SOURCE })
-				await installCapture(context, onEmit)
+				await withRecordingStop(context.addInitScript({ content: NAME_KEEPALIVE_SOURCE }), opts.stopSignal)
+				await withRecordingStop(installCapture(context, onEmit), opts.stopSignal)
 			}
 		} else {
 			if (!browser) throw new Error('chromium.launch() 未返回 browser')
@@ -359,9 +441,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			context.on('page', (opened) => {
 				const idx = ensurePageIndex(opened)
 				attachPageListeners(opened)
-				if (idx > 0 && recordingActive) {
-					const openUrl = opened.url(); pushStep({ kind: 'openTab', id: `s${++stepSeq}`, ...(openUrl && openUrl !== 'about:blank' ? { url: openUrl } : {}) }, idx)
-				}
+				if (idx > 0) recordOpenedTab(opened, idx)
 			})
 		}
 
@@ -373,18 +453,26 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			attachPageListeners(additionalPage)
 		}
 		if (!opts.skipNavigate) {
-			await page.goto(opts.startUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-			await page.waitForLoadState('load').catch(() => {})
+			await withRecordingStop(
+				page.goto(opts.startUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }),
+				opts.stopSignal,
+			)
+			await withRecordingStop(page.waitForLoadState('load').catch(() => {}), opts.stopSignal)
 		} else {
-			await page.waitForLoadState('domcontentloaded').catch(() => {})
+			await withRecordingStop(
+				page.waitForLoadState('domcontentloaded').catch(() => {}),
+				opts.stopSignal,
+			)
 		}
 
-		const dpr = await page.evaluate(() => window.devicePixelRatio || 1).catch(() => 1)
+		const dpr = await withRecordingStop(
+			page.evaluate(() => window.devicePixelRatio || 1).catch(() => 1),
+			opts.stopSignal,
+		)
 		const startUrl = page.url()
 		for (const target of pagesByIndex.values()) {
 			if (target.isClosed()) continue
-			navigationReadyByPage.add(target)
-			lastNavigationUrlByPage.set(target, target.url())
+			primeNavigation(target)
 		}
 		const syncFrames = () => {
 			for (const target of pagesByIndex.values()) {
@@ -393,8 +481,11 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		}
 		syncFrames()
 		// 初始签名：第一个动作的「before」
-		await settleFrameStability(page).catch(() => {})
-		lastSigByPage.set(0, await snapshotPage(page, ensureFrameIndex))
+		await withRecordingStop(settleFrameStability(page).catch(() => {}), opts.stopSignal)
+		lastSigByPage.set(
+			0,
+			await withRecordingStop(snapshotPage(page, ensureFrameIndex), opts.stopSignal),
+		)
 
 		/* ---------- CDP：判断点击目标有没有 closed shadow root ----------
 		 * Spike A 结论：closed shadow 内部对页面 JS / Playwright locator / aria 都不可见，
@@ -446,10 +537,6 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		/** 动作所属的页面（pageIndex 缺省 = 0，即录制起点页） */
 		const pageOfAction = (action: CoalescedAction): Page =>
 			pagesByIndex.get(pageIndexOf(action, 0)) ?? page
-
-		/** 给 step 打标签页标记：index 0 可省略（回放默认从起点页开始） */
-		const markPage = (step: Step, index: number): Step =>
-			index > 0 ? ({ ...step, page: { index } } as Step) : step
 
 		/* ---------- 单个动作 → Step ---------- */
 
@@ -789,13 +876,17 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					syncFrames()
 					for (const target of additionalPages) {
 						if (target.isClosed()) continue
-						ensurePageIndex(target)
+						const pageIndex = ensurePageIndex(target)
 						if (!wiredPages.has(target)) {
 							await installCaptureOnPage(target, onEmit).catch(() => {})
 							attachPageListeners(target)
+							// 后附着页面也要记录地址栏导航；startup 之外的页面不能漏掉 baseline。
+							primeNavigation(target)
 							for (const frame of target.frames()) {
 								ensureFrameIndex(frame)
 							}
+							// 启动时已经 wired 的 additionalPages 是既有上下文，不应被记成新开页。
+							recordOpenedTab(target, pageIndex)
 						}
 					}
 					for (const [pageIndex, target] of pagesByIndex) {
@@ -860,26 +951,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			return flushChain
 		}
 
-		/** 跨批次状态：待定的 hover / 当前所在标签页 */
+		/** 跨批次状态：待定的 hover */
 		const pendingHovers: CoalescedAction[] = []
-		const tabState = { page: 0 }
 
 		const nextTsOf = (items: PlannedItem[], index: number): number | undefined => {
 			const next = items[index + 1]
 			if (!next) return undefined
 			return next.kind === 'action' ? next.action.ts : next.ts
-		}
-
-		/** 推入一条 step（带 page 标记 + onStep 回调；回调抛错不影响录制） */
-		const pushStep = (step: Step, pageIndex: number): void => {
-			const marked = markPage(step, pageIndex)
-			steps.push(marked)
-			if (!opts.onStep) return
-			try {
-				opts.onStep(marked)
-			} catch (err) {
-				warnings.push(`onStep 回调抛错：${(err as Error).message}`)
-			}
 		}
 
 		const processBatch = async (batch: RawEvent[]): Promise<void> => {
@@ -994,6 +1072,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		}
 		const onAbort = () => stop()
 		opts.stopSignal?.addEventListener('abort', onAbort, { once: true })
+		// IPC stop 可以早于录制初始化完成；已经 abort 的信号不会再发一次事件。
+		if (opts.stopSignal?.aborted) stop()
 		let onSigint: (() => void) | undefined
 		let savedSigintListeners: NodeJS.SignalsListener[] = []
 		if (!opts.drive) {
@@ -1098,7 +1178,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			)
 		}
 		if (!steps.length) {
-			// 启动导航是录制环境，不是用户动作，不写入 flow。
+			// 空录制是正常取消，不得交给 FlowSchema.min(1) 变成一次看似异常的校验失败。
+			throw new EmptyRecordingError()
 		}
 
 		const flow: Flow = {
@@ -1259,10 +1340,24 @@ function refineSteps(steps: Step[]): Step[] {
 		)
 	}
 	const out: Step[] = []
+	const mergedOpenTabs = new Set<string>()
 	for (const step of steps) {
 		const prev = out[out.length - 1]
 		const prevKey = prev ? keyOf(prev) : undefined
 		const curKey = keyOf(step)
+		// 新标签页的第一次地址栏导航是 openTab 的一部分，而不是第二个动作。
+		// 只合并第一次；后续主动导航仍保留为独立 navigate 步骤。
+		if (
+			step.kind === 'navigate' &&
+			prev?.kind === 'openTab' &&
+			(prev.page?.index ?? 0) === (step.page?.index ?? 0) &&
+			!mergedOpenTabs.has(prev.id)
+		) {
+			const merged = { ...prev, url: step.url, expect: step.expect ?? prev.expect } as Step
+			mergedOpenTabs.add(prev.id)
+			out[out.length - 1] = merged
+			continue
+		}
 		// 连续 input（同目标）→ 保留最后一次，沿用第一条的 id（时间线稳定）
 		if (step.kind === 'input' && prev?.kind === 'input' && prevKey && prevKey === curKey) {
 			out[out.length - 1] = { ...step, id: prev.id }

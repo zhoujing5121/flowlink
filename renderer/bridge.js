@@ -61,6 +61,8 @@
 							id: recording.id,
 							name: recording.name || recording.id,
 							analyzed: true,
+							recorded: true,
+							summary: !!recording.isMerged,
 							resultTab: 'Process',
 							url: '',
 							route: 'suppliers',
@@ -117,8 +119,10 @@
 	/* ================================================================
 	 * 2. saveProfile → IPC
 	 * ================================================================ */
-	saveProfile = function () {
-		if (!validateProfileServices()) return
+	let profileSaveInFlight = false
+	saveProfile = async function () {
+		if (profileSaveInFlight || !validateProfileServices()) return
+		if (!(await confirmWorkspaceAction('Save this taskflow profile?'))) return
 		const draft = profileDraft()
 		const code = currentFlow?.code || nextTaskflowCode()
 		const patch = {
@@ -132,29 +136,35 @@
 			category: currentFlow?.category || '',
 			status: currentFlow?.status || 'Ready',
 		}
-		F.tasks
-			.saveProfile(patch)
-			.then((task) => {
-				if (currentFlow) {
-					Object.assign(currentFlow, patch, { recordings: task.recordings || [] })
-				} else {
-					currentFlow = { ...emptyTask(code), ...patch, recordings: task.recordings || [] }
-					flowData.push(currentFlow)
-					profileDrafts.set(code, draft)
-					profileDrafts.delete('new')
-					activeFlowKey = code
-				}
-				$('drawerTitle').textContent = code.replace('TASKFLOW', 'Taskflow')
-				draft.name = patch.name
-				draft.description = patch.description
-				render()
-				$('profileSaveStatus').textContent = 'Saved.'
-			})
-			.catch((err) => {
-				console.error('[bridge] 保存 Profile 失败：', err)
-				$('profileSaveStatus').textContent = 'Save failed: ' + err.message
-			})
+		const button = $('profileSave')
+		profileSaveInFlight = true
+		button.disabled = true
+		try {
+			const task = await F.tasks.saveProfile(patch)
+			if (currentFlow) {
+				Object.assign(currentFlow, patch, { recordings: task.recordings || [] })
+			} else {
+				currentFlow = { ...emptyTask(code), ...patch, recordings: task.recordings || [] }
+				flowData.push(currentFlow)
+				profileDrafts.set(code, draft)
+				profileDrafts.delete('new')
+				activeFlowKey = code
+			}
+			$('drawerTitle').textContent = code.replace('TASKFLOW', 'Taskflow')
+			draft.name = patch.name
+			draft.description = patch.description
+			render()
+			$('profileSaveStatus').textContent = 'Saved.'
+		} catch (err) {
+			console.error('[bridge] 保存 Profile 失败：', err)
+			$('profileSaveStatus').textContent = 'Save failed: ' + err.message
+		} finally {
+			profileSaveInFlight = false
+			button.disabled = false
+		}
 	}
+	// index.html bound the original function before this bridge override was installed.
+	$('profileSave').onclick = () => saveProfile()
 
 	/* ================================================================
 	 * 3. 浏览器：替换 iframe mock → WebContentsView 定位 + IPC 导航
@@ -236,7 +246,6 @@
 	/** mountBrowserSurface：不创建 iframe，改为上报 #browserFrames 矩形 */
 	let boundsObserver = null
 	let lastBrowserBoundsKey = ''
-	let lastBrowserSurfaceWasTest = false
 	mountBrowserSurface = function () {
 		const state = recordingSession()
 		if (state.browserTabs[0] && !state.browserTabs[0].nativeId)
@@ -246,18 +255,12 @@
 		const testSlot = layout?.querySelector('.test-tab-browser-slot')
 		const isTestMode = Boolean(layout?.classList.contains('is-test') && testSlot)
 		const browserParent = isTestMode ? testSlot : layout
-		const enteringTestMode = isTestMode && !lastBrowserSurfaceWasTest
-		lastBrowserSurfaceWasTest = isTestMode
-		if (enteringTestMode && typeof resetTestBrowser === 'function') {
-			void resetTestBrowser(currentAssistantItem())
-		}
 		if (browser.parentElement !== browserParent) {
 			browserParent.appendChild(browser)
 		}
 		browser.hidden = false
-		/* 不创建 iframe —— #browserFrames 区域由 WebContentsView 覆盖 */
+		/* 不创建 iframe，也不在 mount 时清空容器——WebContentsView 由主进程复用。 */
 		const frames = $('browserFrames')
-		if (frames) frames.innerHTML = ''
 
 		/* 绑定地址栏 + 导航按钮 */
 		const address = $('recordingAddress')
@@ -310,7 +313,7 @@
 		}
 		const state = recordingSession()
 		const dock = document.querySelector('.ai-dock')
-		const reserveDock = state.stage === 'recording' && dock && dock.isConnected && !state.workspaceElement?.classList.contains('is-test')
+		const reserveDock = dock && dock.isConnected && !state.workspaceElement?.classList.contains('is-test')
 		const dockWidth = reserveDock ? Math.min(32, Math.max(0, rect.width - 2)) : 0
 		const boundsWidth = Math.max(1, Math.round(rect.width - dockWidth))
 		const boundsKey = `${Math.round(rect.x)},${Math.round(rect.y)},${boundsWidth},${Math.round(rect.height)}`
@@ -324,17 +327,30 @@
 		})
 	}
 
+	// Native WebContentsView content paints above renderer dialogs. Hide it for
+	// every workspace confirmation, then force a bounds update to restore it.
+	const showWorkspaceConfirmation = confirmWorkspaceAction
+	confirmWorkspaceAction = async function (message) {
+		await F.browser.hide().catch(() => undefined)
+		try {
+			return await showWorkspaceConfirmation(message)
+		} finally {
+			lastBrowserBoundsKey = ''
+			reportBrowserBounds()
+		}
+	}
+
 	/* ================================================================
 	 * 4. 录制：IPC engine
 	 * ================================================================ */
 
 	/** startBrowserRecording：调 IPC recording:start */
-	startBrowserRecording = async function () {
+	startBrowserRecording = async function (options = {}) {
 		const state = recordingSession()
 		if (state.stage === 'recording') return
 		const page = activeBrowserPage()
 		const draftUrl = validatedRecordingURL(page.draftURL)
-		if (draftUrl && draftUrl !== page.url) {
+		if (!options.preservePage && draftUrl && draftUrl !== page.url) {
 			try {
 				await navigateRecordingBrowser(draftUrl)
 			} catch {
@@ -368,28 +384,79 @@
 		/* 启动真实录制 */
 		const taskCode = currentFlow?.code || activeFlowKey
 		try {
-			await F.recording.start({ taskCode, startUrl })
+			const result = await F.recording.start({
+				taskCode,
+				startUrl,
+				preservePage: options.preservePage === true,
+			})
+			if (result?.reason === 'cancelled' || state.stage !== 'recording') return
 			console.log('[bridge] 录制已启动')
 		} catch (err) {
 			console.error('[bridge] 录制启动失败：', err)
+			if (state.stage !== 'recording') return
 			state.pending = null
 			state.stage = 'ready'
 			renderRecordingWorkspace()
 		}
 	}
 
+	const EMPTY_RECORDING_MESSAGE =
+		'No steps have been recorded. A recording without steps will not be saved. Stop recording?'
+
+	function exitEmptyRecording(state, pending, mediaResult) {
+		if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
+		const reRecordTarget = pending?.reRecordTarget
+		delete pending.finishing
+		if (state.pending === pending) state.pending = null
+		state.stage = reRecordTarget ? 'done' : 'ready'
+		state.view = reRecordTarget ? 'analysis' : 'browser'
+		state.focused = reRecordTarget || null
+		state.allExplicit = false
+		if (reRecordTarget) {
+			F.browser.hide()
+			if (state.browserElement) state.browserElement.hidden = true
+		}
+		renderRecordingWorkspace()
+		updateBrowserChrome()
+	}
+
 	/** finishBrowserRecording：调 IPC recording:stop，获取真实 flow */
-	finishBrowserRecording = async function () {
+	finishBrowserRecording = async function (options = {}) {
 		const state = recordingSession()
 		if (state.stage !== 'recording' || !state.pending || state.pending.finishing) return
 		const pending = state.pending
+		if (!options.skipEmptyConfirmation && !(pending.actions || []).length) {
+			if (!(await confirmWorkspaceAction(EMPTY_RECORDING_MESSAGE))) return
+			if (state.stage !== 'recording' || state.pending !== pending) return
+		}
 		pending.finishing = true
 		updateBrowserChrome()
-		const mediaResult = await stopRecordingMedia(state)
+		const discardWithoutSteps = !(pending.actions || []).length
+		const engineStop = F.recording.stop(discardWithoutSteps ? { discard: true } : undefined)
+		engineStop.catch(() => undefined)
+		const mediaStop = stopRecordingMedia(state)
+		if (discardWithoutSteps) {
+			// Empty Stop is intentionally fire-and-forget: browser/media failures must
+			// never keep the user trapped in recording mode.
+			void mediaStop.then((mediaResult) => {
+				if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
+			}).catch(() => undefined)
+			exitEmptyRecording(state, pending, { videoURL: '', videoDataUrl: '', screenshots: [] })
+			return
+		}
+		const mediaResult = await mediaStop.catch(() => ({
+			videoURL: '',
+			videoDataUrl: '',
+			screenshots: [],
+		}))
 		pending.media = mediaResult
 
 		try {
-			const result = await F.recording.stop()
+			const result = await engineStop
+			if (result?.reason === 'empty') {
+				exitEmptyRecording(state, pending, mediaResult)
+				return
+			}
 			if (!result?.recording) {
 				const fallbackSteps = (pending.actions || []).map((action) => {
 					if (action.type === 'click') return `点击【${action.target || '目标'}】`
@@ -400,6 +467,10 @@
 					if (action.type === 'tab-close') return '关闭标签页'
 					return action.type || '操作'
 				}).filter(Boolean)
+				if (!fallbackSteps.length) {
+					exitEmptyRecording(state, pending, mediaResult)
+					return
+				}
 				if (pending.groupId && state.items) {
 					const target = state.items.find((entry) => entry.id === pending.reRecordTarget)
 					if (target) {
@@ -435,6 +506,7 @@
 				}))
 				item.processGroups = buildGroupsFromSteps([])
 				item.analyzed = true
+				item.recorded = true
 				item.resultTab = 'Process'
 				item.media = mediaResult
 				const fallbackScreenshots = item.media.screenshots || []
@@ -468,27 +540,6 @@
 				flowSteps = flow.steps || []
 			} catch (err) {
 				console.error('[bridge] 加载 flow 失败：', err)
-			}
-
-			if (Array.isArray(pending.actions)) {
-				const hasOpenTab = flowSteps.some((step) => step.kind === 'openTab')
-				const hasCloseTab = flowSteps.some((step) => step.kind === 'closeTab')
-				const hasSwitchTab = flowSteps.some((step) => step.kind === 'switchTab')
-				const tabActions = pending.actions.filter((action) =>
-					action?.type === 'tab-open' || action?.type === 'tab-close' || action?.type === 'tab-switch'
-				)
-				let stepNumber = flowSteps.length
-				for (const action of tabActions) {
-					const pageIndex = state.browserTabs.findIndex((page) => page.nativeId === action.tabId)
-					const index = pageIndex > 0 ? pageIndex : 0
-					if (action.type === 'tab-open' && !hasOpenTab) {
-						flowSteps.push({ kind: 'openTab', id: `s${++stepNumber}`, url: action.url })
-					} else if (action.type === 'tab-switch' && !hasSwitchTab) {
-						flowSteps.push({ kind: 'switchTab', id: `s${++stepNumber}`, index })
-					} else if (action.type === 'tab-close' && !hasCloseTab) {
-						flowSteps.push({ kind: 'closeTab', id: `s${++stepNumber}`, index })
-					}
-				}
 			}
 
 			const number = ++recordingSequence
@@ -536,6 +587,7 @@
 			item.stepDetails = flowSteps.map(flowStepToDetail)
 			item.processGroups = buildGroupsFromSteps(flowSteps)
 			item.analyzed = true
+			item.recorded = true
 			delete item.finishing
 
 			if (pending.groupId && state.items) {
@@ -583,7 +635,7 @@
 	 *  local window.flowlink handle (F), which is out of scope there. */
 	beginGroupRecording = async function (item, groupId, mode) {
 		const state = recordingSession()
-		if (state.stage === 'recording') return
+		if (state.stage === 'recording' || state.groupPreparing) return
 		const group = ensureProcessGroups(item).find((g) => g.id === groupId)
 		if (!group) return
 
@@ -595,101 +647,148 @@
 					: 'Add a new recording after this node?'
 		if (!(await confirmWorkspaceAction(message))) return
 
+		state.groupPreparing = true
 		state.aiOpen = false
 		state.view = 'browser'
+		try {
+			let flow = null
+			if (item.flowFile) flow = await F.flow.load(item.flowFile)
+			const flowSteps = flow ? flatFlowSteps(flow.steps) : []
+			const boundary = group.start + (mode === 'after' ? group.count : 0)
+			const stepCount = Math.min(boundary, flowSteps.length)
+			let targetUrl = flow?.meta?.env?.startUrl || item.url || recordingTestURL
+			if (!targetUrl || targetUrl === 'about:blank') targetUrl = recordingTestURL
 
-		while (state.browserTabs.length > 1) {
-			const extra = state.browserTabs[state.browserTabs.length - 1]
-			try {
-				await F.browser.closeTab(extra.nativeId || extra.id)
-			} catch {}
-			state.browserTabs.pop()
-		}
-		if (state.browserTabs[0]) {
-			state.activeBrowserTab = state.browserTabs[0].id
-			state.browserTabs[0].nativeId ||= 'browser'
-			await F.browser.switchTab(state.browserTabs[0].nativeId).catch(() => {})
-		}
-
-		const page = activeBrowserPage(state)
-		let targetUrl = item.url || recordingTestURL
-		if (item.flowFile) {
-			try {
-				const flow = await F.flow.load(item.flowFile)
-				targetUrl = flow?.meta?.env?.startUrl || targetUrl
-			} catch {}
-		}
-		if (!targetUrl || targetUrl === 'about:blank') targetUrl = recordingTestURL
-
-		if (page) {
+			while (state.browserTabs.length > 1) {
+				const extra = state.browserTabs[state.browserTabs.length - 1]
+				try {
+					await F.browser.closeTab(extra.nativeId || extra.id)
+				} catch {}
+				state.browserTabs.pop()
+			}
+			const page = state.browserTabs[0]
+			if (!page) throw new Error('No browser page is available for group recording.')
+			state.activeBrowserTab = page.id
+			page.nativeId = 'browser'
 			page.url = targetUrl
 			page.draftURL = targetUrl
 			page.history = [targetUrl]
 			page.historyIndex = 0
-		}
-		state.url = targetUrl
-		state.route = targetUrl.match(/^local:\/\/procurement\/(suppliers|draft|receipts)$/)?.[1] || ''
-		syncBrowserSession(state)
+			state.url = targetUrl
+			state.route = targetUrl.match(/^local:\/\/procurement\/(suppliers|draft|receipts)$/)?.[1] || ''
+			syncBrowserSession(state)
+			renderRecordingWorkspace()
 
-		state.pending = {
-			reRecordTarget: item.id,
-			groupId,
-			groupMode: mode,
-			actions: [],
-			startedAt: Date.now(),
-		}
-		state.stage = 'ready'
-		state.view = 'browser'
-		state.focused = item.id
-		renderRecordingWorkspace()
+			const actualUrl = await F.browser.restart(targetUrl)
+			page.url = actualUrl || targetUrl
+			page.draftURL = page.url
+			syncBrowserSession(state)
 
-		await navigateRecordingBrowser(targetUrl)
-		await startBrowserRecording()
+			if (stepCount > 0) {
+				if (!item.recordingId) throw new Error('The recording needed for prefix replay is unavailable.')
+				const replay = await F.playback.runPrefix({
+					taskCode: currentFlow?.code || activeFlowKey,
+					recordingId: item.recordingId,
+					stepCount,
+				})
+				if (!replay?.ok) {
+					const failed = replay?.steps?.find((step) => step.status === 'fail')
+					throw new Error(failed?.error?.message || replay?.error || 'Prefix playback failed.')
+				}
+				const activeNativeId = replay.tabIds?.[replay.currentPageIndex ?? 0]
+				if (activeNativeId) {
+					const active = state.browserTabs.find((tab) => tab.nativeId === activeNativeId)
+					if (!active) throw new Error('The replayed active tab is unavailable for recording.')
+					state.activeBrowserTab = active.id
+					await F.browser.switchTab(activeNativeId)
+				}
+			}
+
+			syncBrowserSession(state)
+			state.pending = {
+				reRecordTarget: item.id,
+				groupId,
+				groupMode: mode,
+				actions: [],
+				startedAt: Date.now(),
+			}
+			state.stage = 'ready'
+			state.view = 'browser'
+			state.focused = item.id
+			renderRecordingWorkspace()
+			await startBrowserRecording({ preservePage: true })
+		} catch (err) {
+			console.error('[bridge] 节点重录准备失败：', err)
+			state.pending = null
+			state.stage = 'done'
+			state.view = 'analysis'
+			state.focused = item.id
+			item.resultTab = 'Process'
+			F.browser.hide()
+			renderRecordingWorkspace()
+			alert('Unable to prepare group recording: ' + (err?.message || String(err)))
+		} finally {
+			state.groupPreparing = false
+			updateRecordingActionButton()
+		}
 	}
 
 	/** Reset the browser workspace without deleting completed recordings. */
 	resetTestBrowser = async function (item) {
 		if (!item?.id) return
 		const state = recordingSession()
-		if (state.stage === 'recording') {
-			await finishBrowserRecording()
-		}
-		state.pending = null
-		state.stage = state.stage === 'recording' ? 'ready' : state.stage
-		while (state.browserTabs.length > 1) {
-			const extra = state.browserTabs[state.browserTabs.length - 1]
+		if (state.testResetPromise) return state.testResetPromise
+		const resetting = (async () => {
 			try {
-				await F.browser.closeTab(extra.nativeId || extra.id)
-			} catch {}
-			state.browserTabs.pop()
-		}
-		const page = state.browserTabs[0]
-		if (!page) return
-		page.nativeId ||= 'browser'
-		await F.browser.switchTab(page.nativeId).catch(() => {})
-		let startUrl = item.url || recordingTestURL
-		if (item.flowFile) {
-			try {
-				const flow = await F.flow.load(item.flowFile)
-				startUrl = flow?.meta?.env?.startUrl || startUrl
-			} catch {}
-		}
-		page.url = startUrl
-		page.draftURL = startUrl
-		page.history = [startUrl]
-		page.historyIndex = 0
-		syncBrowserSession(state)
+				if (state.stage === 'recording') await finishBrowserRecording()
+				state.pending = null
+				state.testBrowserResetKey = item.id
+				while (state.browserTabs.length > 1) {
+					const extra = state.browserTabs[state.browserTabs.length - 1]
+					try {
+						await F.browser.closeTab(extra.nativeId || extra.id)
+					} catch {}
+					state.browserTabs.pop()
+				}
+				const page = state.browserTabs[0]
+				if (!page) throw new Error('No browser page is available for Test mode.')
+				page.nativeId = 'browser'
+				state.activeBrowserTab = page.id
+				let startUrl = item.url || recordingTestURL
+				if (item.flowFile) {
+					try {
+						const flow = await F.flow.load(item.flowFile)
+						startUrl = flow?.meta?.env?.startUrl || startUrl
+					} catch {}
+				}
+				page.url = startUrl
+				page.draftURL = startUrl
+				page.history = [startUrl]
+				page.historyIndex = 0
+				syncBrowserSession(state)
+				const actualUrl = await F.browser.restart(startUrl)
+				page.url = actualUrl || startUrl
+				page.draftURL = page.url
+				page.history = [page.url]
+				page.historyIndex = 0
+			} catch (err) {
+				console.error('[bridge] 重置 Test 浏览器失败：', err)
+			} finally {
+				const remainInTest = state.testBrowserResetKey === item.id
+				state.pending = null
+				state.stage = 'done'
+				state.view = 'analysis'
+				if (remainInTest) item.resultTab = 'Test'
+				if (activeBrowserPage(state)) syncBrowserSession(state)
+				renderSummaryWorkspace()
+			}
+		})()
+		state.testResetPromise = resetting
 		try {
-			const actualUrl = await F.browser.restart(startUrl)
-			page.url = actualUrl || startUrl
-			page.draftURL = page.url
-			page.history = [page.url]
-			page.historyIndex = 0
-			state.stage = 'done'
-			state.pending = null
-			syncBrowserSession(state)
-		} catch {}
-		updateBrowserChrome()
+			await resetting
+		} finally {
+			state.testResetPromise = null
+		}
 	}
 
 	resetRecordingForNewSession = async function () {
@@ -774,7 +873,7 @@
 		await F.browser.switchTab(nativeId)
 		syncBrowserSession(state)
 		updateBrowserChrome()
-		captureBrowserAction({ type: 'tab-open', url: page.url, tabId: nativeId })
+		// The recorder emits openTab after the native page is attached; do not duplicate it here.
 
 		// Defensive: ensure the previously active tab keeps its original URL.
 		if (previousPage && previousUrl !== undefined) {
@@ -810,7 +909,7 @@
 		}
 		syncBrowserSession()
 		updateBrowserChrome()
-		captureBrowserAction({ type: 'tab-close', tabId: page.nativeId, url: page.url })
+		// The page close listener supplies closeTab to the engine recording.
 	}
 
 	/** Start a real canvas video recorder fed by native WebContentsView capture frames. */
@@ -837,28 +936,49 @@
 		ctx.fillRect(0, 0, canvas.width, canvas.height)
 		state.mediaCapture = { canvas, ctx, chunks, screenshots: [], recorder, stream, frame: null }
 	}
+	function withMediaDeadline(promise, timeoutMs = 1500) {
+		let timer
+		const deadline = new Promise((resolve) => {
+			timer = setTimeout(() => resolve(null), timeoutMs)
+		})
+		return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
+	}
+
 	stopRecordingMedia = async function (state) {
 		const media = state.mediaCapture
 		if (!media) return { videoURL: '', videoDataUrl: '', screenshots: [] }
+		const emptyResult = () => ({ videoURL: '', videoDataUrl: '', screenshots: media.screenshots || [] })
 		if (!media.recorder || media.recorder.state !== 'recording') {
 			media.stream?.getTracks().forEach((track) => track.stop())
 			state.mediaCapture = null
-			return { videoURL: '', videoDataUrl: '', screenshots: media.screenshots || [] }
+			return emptyResult()
 		}
-		await new Promise((resolve) => {
-			media.recorder.onstop = resolve
-			media.recorder.stop()
-		})
+		const stopped = await withMediaDeadline(new Promise((resolve) => {
+			media.recorder.onstop = () => resolve(true)
+			try {
+				media.recorder.stop()
+			} catch {
+				resolve(false)
+			}
+		}))
 		media.stream?.getTracks().forEach((track) => track.stop())
 		state.mediaCapture = null
+		if (stopped !== true) return emptyResult()
+
 		const blob = new Blob(media.chunks, { type: media.recorder.mimeType || 'video/webm' })
-		if (!blob.size) return { videoURL: '', videoDataUrl: '', screenshots: media.screenshots || [] }
+		if (!blob.size) return emptyResult()
 		const videoURL = URL.createObjectURL(blob)
-		const videoDataUrl = await new Promise((resolve) => {
+		const videoDataUrl = await withMediaDeadline(new Promise((resolve) => {
 			const reader = new FileReader()
 			reader.onload = () => resolve(String(reader.result || ''))
+			reader.onerror = () => resolve('')
+			reader.onabort = () => resolve('')
 			reader.readAsDataURL(blob)
-		})
+		}))
+		if (typeof videoDataUrl !== 'string' || !videoDataUrl) {
+			URL.revokeObjectURL(videoURL)
+			return emptyResult()
+		}
 		return { videoURL, videoDataUrl, screenshots: media.screenshots || [] }
 	}
 	requestRecordingSnapshot = function () {}
@@ -910,6 +1030,12 @@
 			case 'switchTab':
 				text = `切换到标签页 ${(step.index || 0) + 1}`
 				break
+			case 'openTab':
+				text = `打开新标签页${step.url ? ` ${step.url}` : ''}`
+				break
+			case 'closeTab':
+				text = `关闭标签页 ${(step.index || 0) + 1}`
+				break
 			case 'dialog':
 				text = `${step.action === 'accept' ? '确认' : '关闭'}对话框`
 				break
@@ -960,7 +1086,9 @@
 		for (let i = 0; i < steps.length; i++) {
 			const step = steps[i]
 			const tab = step.page?.index ?? 0
-			if (step.kind === 'navigate' && step.url) currentUrlByTab.set(tab, step.url)
+			if ((step.kind === 'navigate' || step.kind === 'openTab') && step.url) {
+				currentUrlByTab.set(tab, step.url)
+			}
 			const url = currentUrlByTab.get(tab) || ''
 			const key = `${tab}\n${url}`
 			if (!current || current.key !== key) {
@@ -1054,6 +1182,19 @@
 		}
 	}
 
+	window.stopFlowlinkTest = async function (item) {
+		if (!item?.testRunning) return
+		try {
+			await F.playback.stop()
+		} catch (err) {
+			console.error('[bridge] 停止测试失败：', err)
+		}
+		item.testRunning = false
+		const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
+		if (runningIndex >= 0) item.testResults[runningIndex] = { status: 'fail', error: { message: 'Stopped by user' } }
+		if (item.resultTab === 'Test') renderSummaryWorkspace()
+	}
+
 	async function runFlow(code) {
 		const task = flowData.find((f) => f.code === code)
 		if (!task || !task.recordings?.length) return
@@ -1101,7 +1242,7 @@
 		if (state.view !== 'analysis') updateBrowserChrome()
 	})
 
-	F.on('browser:tabOpened', ({ tabId, url }) => {
+	F.on('browser:tabOpened', async ({ tabId, url, active }) => {
 		const state = recordingSession()
 		const existing = state.browserTabs.find((item) => item.nativeId === tabId)
 		if (existing) return
@@ -1112,10 +1253,19 @@
 		page.history = [String(url || '')]
 		page.historyIndex = 0
 		state.browserTabs.push(page)
-		state.activeBrowserTab = page.id
+		if (active === true) {
+			try {
+				await F.browser.switchTab(tabId)
+			} catch (err) {
+				console.error('[bridge] 切换新标签页失败：', err)
+			}
+			state.activeBrowserTab = page.id
+		} else if (active !== false) {
+			state.activeBrowserTab = page.id
+		}
 		syncBrowserSession()
 		updateBrowserChrome()
-		captureBrowserAction({ type: 'tab-open', url: String(url || ''), tabId })
+		// Popup/native open is recorded by the engine after CDP attachment.
 	})
 
 	F.on('recording:captureFrame', ({ dataUrl, index, tabId, url }) => {
@@ -1248,14 +1398,20 @@
 	closeDrawer = async function () {
 		const session = recordingSession()
 		if (session.stage === 'recording') {
-			if (!await confirmWorkspaceAction('Stop recording and close?')) return
-			await finishBrowserRecording()
+			const empty = !(session.pending?.actions || []).length
+			const message = empty ? EMPTY_RECORDING_MESSAGE : 'Stop recording and close?'
+			if (!(await confirmWorkspaceAction(message))) return
+			await finishBrowserRecording({ skipEmptyConfirmation: true })
+			if (session.stage === 'recording') return
+		} else if (!(await confirmWorkspaceAction('Close this taskflow?'))) {
+			return
 		}
 		F.browser.hide()
 		boundsObserver?.disconnect()
 		boundsObserver = null
 		await _origCloseDrawer()
 	}
+	$('close').onclick = () => closeDrawer()
 
 	/* ================================================================
 	 * 9. 窗口大小变化时重新上报 bounds

@@ -20,10 +20,10 @@ const api = {
 
 	recording: {
 		/** 启动录制：主进程附着 CDP + recordOnPage，后台运行，步骤通过 on('recording:step') 推送 */
-		start: (opts: { taskCode: string; startUrl: string }) =>
+		start: (opts: { taskCode: string; startUrl: string; preservePage?: boolean }) =>
 			ipcRenderer.invoke('recording:start', opts),
-		/** 停止录制：abort stopSignal → 等 recordOnPage resolve → 返回 RecordingMeta */
-		stop: () => ipcRenderer.invoke('recording:stop'),
+		/** 停止录制；discard=true 时后台清理，调用方无需等待空录制收尾 */
+		stop: (opts?: { discard?: boolean }) => ipcRenderer.invoke('recording:stop', opts),
 		/** 导航内嵌浏览器 */
 		navigate: (url: string, tabId?: string) => ipcRenderer.invoke('recording:navigate', url, tabId),
 		goBack: (tabId?: string) => ipcRenderer.invoke('recording:goBack', tabId),
@@ -33,11 +33,18 @@ const api = {
 		currentUrl: () => ipcRenderer.invoke('recording:currentUrl'),
 		saveVideo: (opts: { recordingId: string; taskCode: string; dataUrl: string }) =>
 			ipcRenderer.invoke('recording:saveVideo', opts),
+		persistMerged: (opts: { taskCode: string; flow: unknown; name: string }) =>
+			ipcRenderer.invoke('recording:persistMerged', opts),
 	},
 
 	playback: {
 		run: (opts: { taskCode: string; recordingId: string }) =>
 			ipcRenderer.invoke('playback:run', opts),
+		/** 仅回放已有录制的前 N 步，为节点重录准备浏览器状态 */
+		runPrefix: (opts: { taskCode: string; recordingId: string; stepCount: number }) =>
+			ipcRenderer.invoke('playback:runPrefix', opts),
+		/** 中止当前正在运行的回放/测试 */
+		stop: () => ipcRenderer.invoke('playback:stop'),
 	},
 
 	flow: {

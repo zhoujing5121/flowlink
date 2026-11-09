@@ -236,6 +236,7 @@ export interface FlowContextRunOutcome {
 	dialogs: string[]
 	downloads: string[]
 	pages: number
+	currentPageIndex: number
 }
 
 export async function runFlowInBrowserContext(
@@ -276,6 +277,7 @@ export async function runFlowInBrowserContext(
 	// expect.download 只看"这一步开始之后"的下载
 	const downloadCursor = { current: 0 }
 	let observedPageCount = 1
+	let observedCurrentPageIndex = 0
 	const runStart = input.runStart
 
 	let browserCrashed = false
@@ -301,6 +303,8 @@ export async function runFlowInBrowserContext(
 			pages = new PageManager(context, pushLog, {
 				seed: seedPages,
 				watchNewPages: true,
+				onPage: opts.onPage,
+				openPage: opts.openPage,
 			})
 		} else {
 			const browser = input.browser
@@ -328,7 +332,10 @@ export async function runFlowInBrowserContext(
 			await context.addInitScript({ content: NAME_KEEPALIVE_SOURCE })
 			await context.newPage()
 			// 多标签页：index 0 = 起点页，之后按创建顺序追加（与录制端一致）
-			pages = new PageManager(context, pushLog)
+			pages = new PageManager(context, pushLog, {
+				onPage: opts.onPage,
+				openPage: opts.openPage,
+			})
 		}
 		let page: Page = pages.current()
 
@@ -529,6 +536,18 @@ export async function runFlowInBrowserContext(
 		}
 
 		for (const item of flat) {
+			if (opts.abortSignal?.aborted) {
+				const stepResult: StepResult = {
+					stepId: item.stepId,
+					kind: item.step.kind,
+					status: 'skip',
+					ms: 0,
+					error: { code: 'NOT_ACTIONABLE', message: '回放被用户中止' },
+				}
+				steps.push(stepResult)
+				opts.onStep?.(stepResult)
+				break
+			}
 			if (browserCrashed) {
 				const stepResult: StepResult = {
 					stepId: item.stepId,
@@ -632,10 +651,16 @@ export async function runFlowInBrowserContext(
 				// ---- 按类型执行 ----
 				if (rendered.kind === 'openTab') {
 					phase = 'action'
-					const opened = await pages.open(rendered.url)
-					page = opened.page
-					detail.pageIndex = opened.index
-					stepLogPush(`openTab ✓ 标签页 ${opened.index}${rendered.url ? `（${rendered.url}）` : ''}`)
+					try {
+						const opened = await pages.open(rendered.url)
+						page = opened.page
+						detail.pageIndex = opened.index
+						stepLogPush(`openTab ✓ 标签页 ${opened.index}${rendered.url ? `（${rendered.url}）` : ''}`)
+					} catch (openErr) {
+						const classified = classifyError(openErr, 'action')
+						classified.message = `openTab 失败：${classified.message}`
+						throw classified
+					}
 				} else if (rendered.kind === 'closeTab') {
 					phase = 'action'
 					await pages.close(rendered.index)
@@ -824,6 +849,7 @@ export async function runFlowInBrowserContext(
 			if (opts.stopOnFailure && detail.status === 'fail') break
 		}
 		observedPageCount = pages.count
+		observedCurrentPageIndex = pages.currentIndex
 	} finally {
 		// 每个 run 结束（无论成败）都尽力写回登录态：
 		// 放在最前面 —— context 还活着、也避免后面 keepOpen 的等待被人中途 kill 掉导致没保存。
@@ -850,6 +876,7 @@ export async function runFlowInBrowserContext(
 		dialogs: dialogManager.history,
 		downloads: downloads.list().map((record) => record.filename),
 		pages: observedPageCount,
+		currentPageIndex: observedCurrentPageIndex,
 	}
 }
 
@@ -910,6 +937,7 @@ export async function executeRunOnPage(
 		metrics: { totalMs, passCount, failCount },
 		artifactsDir: artifacts.runDir,
 		flowVersion: flow.version,
+		currentPageIndex: outcome.currentPageIndex,
 	}
 	if (heals.length > 0) {
 		result.selfHealed = heals.map(({ candidate: _candidate, ...rest }) => rest as SelfHealRecord)
@@ -998,6 +1026,7 @@ export async function executeRun(
 		metrics: { totalMs, passCount, failCount },
 		artifactsDir: artifacts.runDir,
 		flowVersion: flow.version,
+		currentPageIndex: outcome.currentPageIndex,
 	}
 	if (heals.length > 0) {
 		result.selfHealed = heals.map(({ candidate: _candidate, ...rest }) => rest as SelfHealRecord)

@@ -32,6 +32,8 @@ export interface RecordingMeta {
 	frames?: string[]
 	stepScreenshots?: string[]
 	lastRun?: RecordingLastRun
+	/** 是否由 AI-assistant 合并生成 */
+	isMerged?: boolean
 }
 
 export interface Task {
@@ -71,7 +73,11 @@ export class TaskStore {
 			const raw = JSON.parse(await readFile(this.file, 'utf8')) as TasksFile
 			for (const task of raw.tasks ?? []) {
 				if (task && typeof task.code === 'string') {
-					this.tasks.set(task.code, { recordings: [], serviceLines: ['', '', '', ''], ...task })
+					this.tasks.set(task.code, {
+						...task,
+						recordings: task.recordings ?? [],
+						serviceLines: task.serviceLines ?? ['', '', '', ''],
+					})
 				}
 			}
 		} catch {

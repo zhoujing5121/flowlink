@@ -10,7 +10,7 @@
  * 规划层纯函数（`plan.ts`）：标签页切换合成 / 对话框插入 / hover 意义过滤 / 下载与上传。
  * 登录态（`profile.ts`）：loadProfile / saveProfile（原子写），供 Studio / CLI / 单测复用。
  */
-export { record, recordOnPage } from './record.js'
+export { record, recordOnPage, EmptyRecordingError } from './record.js'
 export type { RecordOnPageOptions } from './record.js'
 export { coalesceEvents, summarizeAction, actionRawEvents } from './coalesce.js'
 export type { CoalesceOptions } from './coalesce.js'

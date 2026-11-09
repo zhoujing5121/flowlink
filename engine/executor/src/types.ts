@@ -8,6 +8,7 @@
  */
 import type { Flow, Step, ElementRef, Candidate } from '../../schema/src/index.js'
 import type { ResolveLevel } from '../../resolver/src/index.js'
+import type { Page } from 'playwright-core'
 
 /** AI 自愈客户端接口（从 @rr/ai 内联，仅类型——esbuild 打包时自动剥离） */
 export interface RepairInput {
@@ -56,6 +57,8 @@ export interface RunResult {
 	selfHealed?: SelfHealRecord[]
 	/** 追加：artifact 目录（绝对路径） */
 	artifactsDir?: string
+	/** 追加：回放结束时的活动标签页序号（供后续录制接管同一页面） */
+	currentPageIndex?: number
 	/** 追加：flow 版本号（写回后会 +1） */
 	flowVersion?: number
 }
@@ -88,6 +91,10 @@ export interface PlayOptions {
 	artifactsRoot?: string
 	ai?: RepairClient | null
 	onStep?: (r: StepResult) => void
+	/** 新标签页登记回调；宿主可据此同步原生标签页映射 */
+	onPage?: (page: Page, index: number) => void
+	/** Electron 等宿主的原生开页工厂；缺省使用 browserContext.newPage() */
+	openPage?: (url?: string) => Promise<Page>
 	/** 默认 1 */
 	runs?: number
 	/** 追加：日志回调（CLI 打印时间线用） */
@@ -131,6 +138,8 @@ export interface PlayOptions {
 	elementWaitMs?: number
 	/** 追加：动作前高亮目标元素（非 headless 时建议开），默认 false */
 	highlightSteps?: boolean
+	/** 追加：宿主可借此信号中止回放；被中止后剩余步骤标记为 skip，run 判失败。 */
+	abortSignal?: AbortSignal
 	/** 追加：非 headless 回放成功结束后，浏览器保持打开的时长（ms），默认 1200 */
 	keepOpenMs?: number
 	/** 追加：非 headless 回放失败后，浏览器保持打开的时长（ms），默认 15000 */

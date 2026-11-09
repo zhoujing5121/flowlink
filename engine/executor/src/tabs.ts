@@ -27,11 +27,14 @@ export interface StepPageLike {
 
 /**
  * 这一步应该在哪个标签页执行：
+ * - `openTab` → 先沿用当前页，由 run.ts 创建并切到新页；
  * - `step.page.index` 显式指定 → 用它；
  * - `switchTab` → 用它自己的 `index`（但 `step.page` 存在时以 `step.page` 为准）；
  * - 其它 → 沿用当前页（不切）。
  */
 export function resolveStepPageIndex(step: StepPageLike, currentIndex: number): number {
+	// openTab 先创建并切到新页；若预先按 page.index focus，会等待一个尚不存在的页。
+	if (step.kind === 'openTab') return currentIndex
 	if (step.page && typeof step.page.index === 'number') {
 		// 冲突时以 step.page 为准（契约约定）
 		if (step.kind === 'switchTab' && step.index !== undefined && step.index !== step.page.index) {
@@ -53,6 +56,10 @@ export interface PageManagerOptions {
 	seed?: Page[]
 	/** 是否监听 context 新开页；附着模式默认 false */
 	watchNewPages?: boolean
+	/** 新登记的页（含 seed）；宿主据此同步原生标签页映射 */
+	onPage?: (page: Page, index: number) => void
+	/** 宿主原生开页工厂；工厂负责可选 URL 导航 */
+	openPage?: (url?: string) => Promise<Page>
 }
 
 export class PageManager {
@@ -60,6 +67,8 @@ export class PageManager {
 	readonly #log: (msg: string) => void
 	readonly #slots: PageSlot[] = []
 	#current = 0
+	readonly #onPage: ((page: Page, index: number) => void) | undefined
+	readonly #openPage: ((url?: string) => Promise<Page>) | undefined
 
 	constructor(
 		context: BrowserContext,
@@ -68,6 +77,8 @@ export class PageManager {
 	) {
 		this.#context = context
 		this.#log = log
+		this.#onPage = options.onPage
+		this.#openPage = options.openPage
 		const seed = options.seed
 		if (seed && seed.length > 0) {
 			for (const page of seed) this.#append(page)
@@ -87,6 +98,7 @@ export class PageManager {
 		if (existing) return existing
 		const slot: PageSlot = { page, index: this.#slots.length, closed: false }
 		this.#slots.push(slot)
+		this.#onPage?.(page, slot.index)
 		page.on('close', () => {
 			slot.closed = true
 			this.#log(`标签页 ${slot.index} 已关闭`)
@@ -191,10 +203,11 @@ export class PageManager {
 	}
 
 	async open(url?: string): Promise<PageSlot> {
-		const page = await this.#context.newPage()
+		const page = this.#openPage ? await this.#openPage(url) : await this.#context.newPage()
 		const slot = this.#append(page)
 		this.#current = slot.index
-		if (url) await page.goto(url, { waitUntil: 'load', timeout: 30_000 })
+		// 宿主工厂已经按自己的安全边界完成导航；默认 Playwright 路径才在这里 goto。
+		if (url && !this.#openPage) await page.goto(url, { waitUntil: 'load', timeout: 30_000 })
 		this.#log(`打开标签页 ${slot.index}${url ? `（${url}）` : ''}`)
 		return slot
 	}

@@ -7,8 +7,8 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node build.mjs",
-    "start": "node build.mjs && electron .",
-    "dev": "node build.mjs && electron . --inspect=9229",
+    "start": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1",
+    "dev": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1 -Dev",
     "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --out=release --overwrite && node package.mjs"
   },
   "dependencies": {
@@ -18,7 +18,8 @@
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^33.4.11",
-    "esbuild": "^0.24.2"
+    "esbuild": "^0.24.2",
+    "typescript": "^7.0.2"
   },
   "allowScripts": {
     "electron@33.4.11": true,

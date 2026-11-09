@@ -7,9 +7,11 @@ FlowLink is a Windows desktop application for recording browser workflows, stori
 - Record browser actions inside the Electron app
 - Create task profiles and keep multiple recordings per task
 - Replay flows with ordered steps, assertions, variables, and waits
+- Open replay tabs through native Electron views and start every Test entry with a fresh single-tab browser
 - Capture element evidence, screenshots, dialogs, downloads, and frame/tab context
 - Resolve elements through multiple candidates and stable fingerprints
 - Re-record flows and review execution artifacts
+- Replay the required flow prefix before re-recording or inserting a process node, then continue from the resulting browser state
 - Persist tasks and recordings in the Electron user-data directory
 - Package the application as a Windows x64 ZIP
 
@@ -32,6 +34,14 @@ Development mode opens Electron DevTools:
 ```powershell
 npm run dev
 ```
+
+Both commands use `scripts/start.ps1` to select UTF-8 console input/output before launching Electron, keeping Chinese diagnostic logs readable in Windows terminals. When working in an existing PowerShell session, you can also apply the encoding before any output piping by invoking the launcher directly:
+
+```powershell
+& .\scripts\start.ps1
+```
+
+Use `& .\scripts\start.ps1 -Dev` for development mode. The setting is scoped to the current console session; no PowerShell profile or system locale is changed.
 
 The build command generates:
 
@@ -61,8 +71,8 @@ The package script uses `electron-packager`, then creates:
 2. Enter an HTTP or HTTPS start URL.
 3. Start recording.
 4. Perform browser actions.
-5. Stop recording to save the flow and artifacts.
-6. Run the recording to replay it in the embedded browser.
+5. Stop recording to save the flow and artifacts. If no steps were captured, Stop asks for confirmation and exits without creating a recording.
+6. Run the recording to replay it in the embedded browser. Native tab creation and its first navigation replay as one `openTab` action.
 7. Inspect screenshots, step results, downloads, and execution logs.
 
 ## Project layout
@@ -114,4 +124,4 @@ artifacts\<flowId>\runs\<runId>\
 
 ## Status and scope
 
-The repository currently has no project-owned automated test suite or lint script. Validation is provided by the strict build and Zod flow validation. Before completing a change, run at least `npm run build` and add targeted tests when introducing a test runner.
+The repository currently has no project-owned automated test suite or lint script. Validation is provided by the strict build, TypeScript compiler, and Zod flow validation. Before completing a change, run `npm run build` and `npx tsc --noEmit`, and add targeted tests when introducing a test runner.

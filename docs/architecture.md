@@ -17,7 +17,7 @@ Embedded WebContentsView
 
 `src/main.ts` creates the Electron window, embedded browser view, task store, IPC handlers, and recorder/playback sessions. It enables Electron CDP on a random port and waits for `DevToolsActivePort` before constructing `EngineBridge`.
 
-The embedded browser is a `WebContentsView`, not an iframe. `renderer/bridge.js` reports the DOM rectangle occupied by the browser surface; the main process moves and shows the native view at that rectangle.
+The embedded browser is a `WebContentsView`, not an iframe. `renderer/bridge.js` reports the DOM rectangle occupied by the browser surface; the main process moves and shows the native view at that rectangle. Native visibility has one explicit owner independent of `webContents.isLoading()`, so navigation and load completion do not blank the view or reveal it over dialogs. Workspace confirmations temporarily hide the native view, then restore the reported bounds.
 
 ## Preload boundary
 
@@ -72,9 +72,10 @@ Core step kinds include navigation, click, input, select, key, hover, scroll, dr
 5. Candidates and fingerprints are derived and validated.
 6. The element and nearby frame path are stored in `ElementRef`.
 7. Page signatures infer an expectation for the action.
-8. Stopping the recorder flushes pending actions and writes a validated flow.
+8. Native Electron tabs attached after recording starts produce an `openTab` step; the first same-tab navigation is merged into that step's `url` for replay.
+9. Stopping the recorder flushes pending actions and writes a validated flow. Stop also aborts in-flight startup navigation/CDP attachment rather than waiting for startup to finish. An empty Stop exits the renderer immediately and performs discard cleanup in the background. If no steps were captured, the recorder raises `EmptyRecordingError`; the main process treats this as clean cancellation and does not persist a recording.
 
-`EngineBridge` uses window markers to map Electron `WebContentsView` instances to Playwright `Page` objects. URL matching alone is not sufficient because multiple tabs may share an origin.
+`EngineBridge` uses window markers to map Electron `WebContentsView` instances to Playwright `Page` objects. URL matching alone is not sufficient because multiple tabs may share an origin. Pages supplied at recording startup are treated as existing context rather than newly opened tabs.
 
 ## Replay pipeline
 
@@ -83,6 +84,14 @@ The executor loads or receives a validated `Flow`, resolves elements, executes o
 Element resolution uses ordered candidates, role/text/locator validation, frame paths, fingerprints, and resolver logic. Replay stops after the first failure when `stopOnFailure` is enabled.
 
 Self-healing records are kept separate from observed facts. Healing is written back only when `writeBack=true` and a flow path is supplied; successful writes create a `.bak` copy and increment the flow version.
+
+## Group re-recording
+
+Re-record and Add-before replay the flattened steps before the selected process group; Add-after replays through the end of that group. `playback:runPrefix` constructs and validates an in-memory prefix flow without changing the original flow or run metadata.
+
+After a successful prefix run, `recording:start` uses `preservePage=true`, so it attaches to the resulting document without reloading it. Electron playback supplies a native `openPage` factory to the executor, avoiding unsupported CDP `Target.createTarget` calls. `EngineBridge` maps pages back to native tab IDs, and the executor reports the final active page index for the next recording session. Prefix failures return to the existing Process view without starting a new recording.
+
+Every Test entry performs one serialized recording-stop/reset operation. `browser:restart` awaits any in-flight stop before replacing views, leaving one fresh start-URL tab and preventing an old recording session from continuing into Test.
 
 ## Artifact layout
 

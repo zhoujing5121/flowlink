@@ -353,10 +353,14 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 			throw new StepFailure('NOT_ACTIONABLE', 'dialog 步骤应由 run.ts 的对话框管理逻辑处理')
 		}
 
-		case 'switchTab': {
+		case 'switchTab':
 			// 标签页切换由 run.ts 的 page 管理逻辑处理
 			throw new StepFailure('NOT_ACTIONABLE', 'switchTab 步骤应由 run.ts 的 page 管理逻辑处理')
-		}
+
+		case 'openTab':
+		case 'closeTab':
+			// 创建/关闭同样依赖 PageManager，不能退化成当前页上的普通 action。
+			throw new StepFailure('NOT_ACTIONABLE', `${step.kind} 步骤应由 run.ts 的 page 管理逻辑处理`)
 
 		default: {
 			const never: never = step

@@ -7,9 +7,11 @@ FlowLink 是一个面向 Windows 的桌面自动化工具，用于录制浏览�
 - 在 Electron 应用中录制浏览器操作
 - 创建任务档案，并为每个任务保存多条录制
 - 回放包含步骤、断言、变量和等待的流程
+- 通过原生 Electron 视图打开回放标签页，并在每次进入 Test 时提供全新的单标签浏览器
 - 采集元素证据、截图、对话框、下载、标签页及 iframe 上下文
 - 通过候选定位器、指纹和多级解析定位元素
 - 重新录制流程并查看执行产物
+- 重录或插入流程节点前回放所需前缀步骤，并从回放后的浏览器状态继续录制
 - 将任务和录制持久化到 Electron 用户数据目录
 - 打包成 Windows x64 ZIP
 
@@ -32,6 +34,14 @@ npm run start
 ```powershell
 npm run dev
 ```
+
+以上命令都会通过 `scripts/start.ps1` 在启动 Electron 前将控制台输入输出切换为 UTF-8，避免 Windows 终端中的中文诊断日志出现乱码。如果已经在 PowerShell 中工作，也可以直接调用启动脚本，让编码设置先于任何输出管道生效：
+
+```powershell
+& .\scripts\start.ps1
+```
+
+开发模式使用 `& .\scripts\start.ps1 -Dev`。该设置仅影响当前控制台会话，不会修改 PowerShell 配置文件或系统区域设置。
 
 构建会生成：
 
@@ -63,8 +73,8 @@ npm run package
 2. 输入 HTTP 或 HTTPS 起始网址。
 3. 开始录制。
 4. 在嵌入式浏览器中执行操作。
-5. 停止录制，保存 flow 和 artifacts。
-6. 运行录制，在嵌入式浏览器中回放。
+5. 停止录制，保存 flow 和 artifacts。如果没有捕获到步骤，停止时会要求确认，并直接退出而不生成录制。
+6. 运行录制，在嵌入式浏览器中回放。原生标签页创建及其首次导航会合并为一个 `openTab` 动作回放。
 7. 查看截图、步骤结果、下载内容和执行日志。
 
 ## 目录结构
@@ -116,4 +126,4 @@ artifacts\<flowId>\runs\<runId>\
 
 ## 当前状态
 
-仓库尚未提供项目自带的自动化测试脚本或 lint脚本。当前主要校验方式是 esbuild 构建、TypeScript 严格配置以及 Zod Flow 校验。改动完成后至少运行 `npm run build`。
+仓库尚未提供项目自带的自动化测试脚本或 lint 脚本。当前主要校验方式是 esbuild 构建、TypeScript 编译器严格配置以及 Zod Flow 校验。改动完成后运行 `npm run build` 和 `npx tsc --noEmit`；引入测试框架后再补充针对性测试。
