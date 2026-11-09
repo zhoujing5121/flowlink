@@ -1921,31 +1921,9 @@ h1 {
   padding: 8px 16px 16px;
 }
 
-.test-workspace {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.test-toolbar {
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  border-bottom: 1px solid #d7dee7;
-  padding: 0 16px;
-  flex: 0 0 56px;
-}
-
-.test-step-list {
-  padding: 8px 16px 16px;
-}
-
 .test-step {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: start;
   gap: 12px;
   min-height: 48px;
@@ -1953,10 +1931,33 @@ h1 {
   border-bottom: 1px solid #edf0f2;
 }
 
-.test-step-index {
-  color: #73777d;
-  font-size: 12px;
-  line-height: 24px;
+.test-step-icon {
+  display: flex;
+  width: 20px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+.test-step-icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.test-step-icon.status-pending svg {
+  width: 16px;
+  height: 16px;
+}
+
+.test-step-icon.status-running svg {
+  animation: test-step-spin 1s linear infinite;
+}
+
+@keyframes test-step-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .test-step-name {
@@ -2030,6 +2031,7 @@ h1 {
 }
 
 .test-tab-shell {
+  position: relative;
   display: grid;
   grid-template-rows: 56px minmax(0, 1fr);
   height: 100%;
@@ -2044,7 +2046,7 @@ h1 {
 
 .test-tab-body {
   display: grid;
-  grid-template-columns: minmax(360px, 60%) minmax(320px, 40%);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   min-height: 0;
 }
@@ -2053,7 +2055,14 @@ h1 {
   min-width: 0;
   min-height: 320px;
   padding: 8px;
-  border-right: 1px solid #c5cdd4;
+}
+
+.test-tab-shell.has-visible-ai-dock .test-tab-browser-slot {
+  padding-right: 40px;
+}
+
+.recording-layout.is-test .ai-dock {
+  z-index: 3;
 }
 
 .test-tab-shell {
@@ -2065,11 +2074,6 @@ h1 {
   height: 100%;
   border: 0;
   padding: 0;
-  min-height: 320px;
-}
-
-.recording-layout.is-test .recording-results {
-  border: 0;
   min-height: 320px;
 }
 
@@ -3455,11 +3459,15 @@ body {
   flex: 0 0 auto;
 }
 
-.canvas-step > span:nth-child(1) {
+.canvas-step > span:nth-child(2) {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.canvas-step > .execution-mode-icon {
+  flex: 0 0 24px;
 }
 
 .canvas-step:not(:last-child):after {
@@ -3485,15 +3493,13 @@ body {
 
 .canvas-group-actions {
   position: absolute;
-  left: calc(100% + 16px);
+  left: 0;
   top: 0;
   display: flex;
   gap: 0;
   white-space: nowrap;
   background: #fff;
   border: 1px solid #c5cdd4;
-  transform: scale(var(--canvas-action-scale, 1));
-  transform-origin: 0 0;
   z-index: 5;
   cursor: default;
 }
@@ -3836,10 +3842,6 @@ body {
   padding-bottom: 24px;
 }
 
-.drawer.ai-open .canvas-group-actions {
-  display: none;
-}
-
 /* Major-node menu follows the vertical action list in the reference. */
 #designPanel .canvas-group-actions {
   flex-direction: column;
@@ -4161,8 +4163,8 @@ body {
 }
 
 .assistant-steps {
-  flex: 0 1 320px;
-  min-height: 160px;
+  flex: 0 1 600px;
+  min-height: 600px;
   overflow-y: auto;
   padding: 16px 16px 0;
 }
@@ -4451,14 +4453,20 @@ body {
   }
 }
 
-/* All recording steps are displayed directly, without a nested scrolling area. */
+/* Keep long step lists inside the assistant so chat and composer remain visible. */
 .assistant-steps {
-  flex: 0 0 auto;
+  flex: 1 1 0;
   min-height: 0;
   max-height: none;
   height: auto;
-  overflow: visible;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 8px 16px;
+}
+
+.recording-assistant:not(.has-test-steps) .assistant-steps {
+  flex: 1 1 0;
 }
 
 .assistant-step {
@@ -4474,6 +4482,13 @@ body {
   background: #fff;
 }
 
+.assistant-step > span:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .assistant-step-number {
   flex: 0 0 16px;
   line-height: 18px;
@@ -4485,6 +4500,9 @@ body {
 }
 
 .assistant-chat {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding-top: 8px;
   scrollbar-width: none;
 }
@@ -4589,6 +4607,50 @@ body {
   padding: 24px 16px 8px;
 }
 
+.recording-assistant.has-test-steps .assistant-steps {
+  flex: 2.5 1 0;
+  min-height: 0;
+  max-height: none;
+  height: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: 0;
+}
+
+.assistant-test-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid #d7dee7;
+  background: #fff;
+}
+
+.assistant-test-steps {
+  padding-top: 8px;
+}
+
+.test-progress-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0 8px;
+  border-bottom: 1px solid #d7dee7;
+  color: #52585e;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.test-progress-heading strong,
+.test-progress-heading span {
+  color: #101416;
+}
+
 .assistant-step {
   border: 0;
   min-height: 32px;
@@ -4613,6 +4675,32 @@ body {
 .assistant-composer {
   padding: 8px 8px 0;
   flex: 0 0 auto;
+}
+
+.execution-monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  font: 400 16px/24px var(--font-ui);
+  color: #007BC0
+}
+
+.execution-monitor>div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px
+}
+
+.execution-monitor>div>span:last-child {
+  white-space: nowrap;
+  text-align: right
+}
+
+.execution-monitor[hidden] {
+  display: none
 }
 
 .assistant-input-box {

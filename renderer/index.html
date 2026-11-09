@@ -12,7 +12,6 @@
       <aside class="navigation" aria-label="Application navigation">
         <div class="nav-top">
           <span class="nav-brand">Taskflow</span>
-          <span class="automation-rate">Automation rate -%</span>
           <button
             class="nav-toggle"
             id="toggleNav"
@@ -594,6 +593,17 @@
             aria-live="polite"
           ></div>
           <div class="assistant-composer">
+            <div
+              class="execution-monitor"
+              id="executionMonitor"
+              aria-label="Execution monitoring"
+            >
+              <div>
+                <span>Average execution duration</span><span>2.2 s</span>
+              </div>
+              <div><span>Automation rate</span><span>64%</span></div>
+              <div><span>Click count</span><span>0</span></div>
+            </div>
             <div class="assistant-input-box">
               <textarea
                 id="assistantInput"

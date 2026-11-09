@@ -553,13 +553,12 @@ function testStepLabel(step, index) {
   return `${kind}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
 }
 
-function testWorkspaceMarkup(item) {
+function testStepRowsMarkup(item) {
   const steps = item?.testFlowSteps?.length
     ? item.testFlowSteps
     : item?.steps || [];
   const results = item?.testResults || [];
-  const running = item?.testRunning === true;
-  const rows = steps.length
+  return steps.length
     ? steps
         .map((step, index) => {
           const result = results[index];
@@ -567,11 +566,40 @@ function testWorkspaceMarkup(item) {
           const error = result?.error?.message
             ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
             : "";
-          return `<div class="test-step status-${status}"><span class="test-step-index">${String(index + 1).padStart(2, "0")}</span><span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
+          return `<div class="test-step status-${status}">${testStepStatusIcon(status)}<span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
         })
         .join("")
     : `<div class="test-empty">No executable steps in this recording.</div>`;
-  return `<div class="test-workspace"><div class="test-toolbar"><button class="btn" id="runRecordingTest" type="button" ${running || !item?.recordingId ? "disabled" : ""}>${running ? "Running…" : "Run"}</button><button class="btn secondary" id="stopRecordingTest" type="button" ${!running ? "disabled" : ""}>Stop</button></div><div class="test-step-list" aria-live="polite">${rows}</div></div>`;
+}
+
+function testProgressHeadingMarkup(item) {
+  const steps = item?.testFlowSteps?.length
+    ? item.testFlowSteps
+    : item?.steps || [];
+  const succeeded = (item?.testResults || []).filter(
+    (result) => result?.status === "pass",
+  ).length;
+  return `<div class="test-progress-heading"><strong>Progress</strong><span>${succeeded} / ${steps.length}</span></div>`;
+}
+
+function testStepStatusIcon(status) {
+  const icons = {
+    pending:
+      '<circle cx="12" cy="12" r="8" fill="#f2c811" aria-hidden="true"/>',
+    running:
+      '<circle class="test-step-spinner" cx="12" cy="12" r="8" fill="none" stroke="#007bc0" stroke-width="3" stroke-dasharray="34 16" aria-hidden="true"/>',
+    pass: '<circle cx="12" cy="12" r="10" fill="#00884a"/><path d="m7 12 3.2 3.2L17 8.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    fail: '<circle cx="12" cy="12" r="10" fill="#b00020"/><path d="m8.5 8.5 7 7m0-7-7 7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
+  };
+  const label =
+    status === "pass"
+      ? "Passed"
+      : status === "fail"
+        ? "Failed"
+        : status === "running"
+          ? "Running"
+          : "Pending";
+  return `<span class="test-step-icon status-${status}" role="img" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[status] || icons.pending}</svg></span>`;
 }
 
 function resetTestExecutionStatus(item) {
@@ -593,7 +621,7 @@ function analysisResultMarkup(active) {
   if (active === "Instruction") return editableStepsMarkup(item);
   if (active === "Reference") return referenceFilesMarkup(item);
   if (active === "Metric") return metricMarkup(item);
-  if (active === "Test") return testWorkspaceMarkup(item);
+  if (active === "Test") return "";
   return "";
 }
 
@@ -1041,14 +1069,10 @@ function updateSummaryState() {
   const state = recordingSession(),
     button = $("summarizeRecordings");
   if (button) {
-    const checkedAnalyzed = state.items.filter(
-      (item) => item.checked && item.analyzed,
-    );
     button.disabled =
       state.stage === "recording" ||
       state.stage === "preparing" ||
-      checkedAnalyzed.length < 2 ||
-      state.items.some((item) => item.checked && !item.analyzed);
+      !state.items.some((item) => item.checked);
   }
 }
 
@@ -1558,13 +1582,11 @@ function renderSummaryWorkspace() {
       .querySelector('[id="aiToggle"]')
       ?.setAttribute("id", "browserAIToggle");
   }
-  results.hidden = false;
+  results.hidden = active === "Test";
   if (active === "Test") {
     testShell.prepend(tabs);
     const browserSlot = testShell.querySelector(".test-tab-browser-slot");
     if (state.browserElement) browserSlot.appendChild(state.browserElement);
-    const body = testShell.querySelector(".test-tab-body");
-    body.appendChild(results);
   } else {
     results.prepend(tabs);
     layout.appendChild(results);
@@ -1584,14 +1606,15 @@ function renderSummaryWorkspace() {
           ? "metric-active"
           : "");
   resultPanel.setAttribute("aria-labelledby", summaryTabId(active));
-  resultPanel.innerHTML = analysisResultMarkup(active);
+  resultPanel.innerHTML =
+    active === "Test" ? "" : analysisResultMarkup(active);
   if (active === "Test" && state.browserElement) {
     state.browserElement.hidden = false;
     mountBrowserSurface();
   }
   $("profileTab").disabled = false;
   $("previous").disabled = false;
-  syncFloatingAIDock(results);
+  syncFloatingAIDock(active === "Test" ? testShell : results);
   bindRecordingList();
   bindWorkspaceResize();
   renderAIPanel();
@@ -1600,22 +1623,13 @@ function renderSummaryWorkspace() {
   bindReferenceFiles();
   bindMetricPreferences();
   bindScreenshotZoom();
-  const runButton = $("runRecordingTest");
-  if (runButton)
-    runButton.onclick = () => {
-      if (window.runFlowlinkTest) window.runFlowlinkTest(item);
-    };
-  const stopButton = $("stopRecordingTest");
-  if (stopButton)
-    stopButton.onclick = () => {
-      if (window.stopFlowlinkTest) window.stopFlowlinkTest(item);
-    };
   const tabButtons = tabs.querySelectorAll("[data-summary-tab]");
   tabButtons.forEach((button) => {
     button.onclick = () => {
       const nextTab = button.dataset.summaryTab;
       if (item.resultTab === "Test" || nextTab === "Test")
         resetTestExecutionStatus(item);
+      if (nextTab === "Test") state.aiOpen = true;
       item.resultTab = nextTab;
       renderSummaryWorkspace();
       $(summaryTabId(item.resultTab)).focus();
@@ -1632,6 +1646,7 @@ function renderSummaryWorkspace() {
       const nextTab = summaryTabs[index];
       if (item.resultTab === "Test" || nextTab === "Test")
         resetTestExecutionStatus(item);
+      if (nextTab === "Test") state.aiOpen = true;
       item.resultTab = nextTab;
       renderSummaryWorkspace();
       $(summaryTabId(item.resultTab)).focus();
@@ -1794,10 +1809,17 @@ function renderAIPanel() {
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext(),
+    testTab = recording?.resultTab === "Test",
     open = drawerView === "Design" && state.aiOpen;
   $("drawer").classList.toggle("ai-open", !!open);
   $("recordingAssistant").hidden = !open;
   $("aiToggle")?.setAttribute("aria-expanded", String(!!open));
+  $("recordingAssistant").classList.toggle("has-test-steps", testTab);
+  $("executionMonitor").hidden = !testTab || !open;
+  const testShell = recordingSession().workspaceElement?.querySelector(
+    ".test-tab-shell",
+  );
+  testShell?.classList.toggle("has-visible-ai-dock", testTab && !open);
   if (!open) return;
   ensureAssistantData(item);
   bindAssistantResize();
@@ -1807,6 +1829,10 @@ function renderAIPanel() {
     renderAIPanel();
     $("aiToggle")?.focus();
   };
+  $("assistantSteps").setAttribute(
+    "aria-label",
+    testTab ? "Test steps" : "Recording steps",
+  );
   const selectedGroup =
     recording?.analyzed && state.view === "analysis"
       ? ensureProcessGroups(recording).find(
@@ -1815,11 +1841,21 @@ function renderAIPanel() {
       : null;
   $("recordingAssistant").classList.toggle(
     "has-group-context",
-    !!selectedGroup,
+    !!selectedGroup && !testTab,
   );
   const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
-  $("assistantSteps").innerHTML = selectedGroup
-    ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
+  $("assistantSteps").innerHTML = testTab
+    ? `
+    <div class="assistant-test-toolbar">
+      <button class="btn" id="runRecordingTest" type="button" ${recording?.testRunning || !recording?.recordingId ? "disabled" : ""}>
+        ${recording?.testRunning ? "Running…" : "Run"}
+      </button>
+      <button class="btn secondary" id="stopRecordingTest" type="button" ${!recording?.testRunning ? "disabled" : ""}>Stop</button>
+    </div>
+    ${testProgressHeadingMarkup(recording)}
+    <div class="assistant-test-steps" aria-live="polite">${testStepRowsMarkup(recording)}</div>`
+    : selectedGroup
+      ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
     : aiOptionsMarkup +
       item.steps
         .map(
@@ -1827,7 +1863,20 @@ function renderAIPanel() {
             `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
         )
         .join("");
+  const runButton = $("runRecordingTest");
+  if (runButton)
+    runButton.onclick = () => {
+      if (recording && window.runFlowlinkTest)
+        window.runFlowlinkTest(recording);
+    };
+  const stopButton = $("stopRecordingTest");
+  if (stopButton)
+    stopButton.onclick = () => {
+      if (recording && window.stopFlowlinkTest)
+        window.stopFlowlinkTest(recording);
+    };
   $("assistantSteps").onclick = (e) => {
+    if (testTab) return;
     const option = e.target.closest("[data-ai-option]");
     if (option) {
       e.preventDefault();
@@ -2372,24 +2421,29 @@ function bindStepEditor() {
     rebuildItemTestFlow(item);
     renderAIPanel();
   };
-  panel.onclick = (e) => {
-    const button = e.target.closest("[data-instruction-expand]"),
-      item = currentAssistantItem();
-    if (!button || !item) return;
-    const id = button.dataset.instructionExpand,
-      expanded = button.getAttribute("aria-expanded") !== "true";
-    item.instructionExpanded ??= [];
-    item.instructionExpanded = item.instructionExpanded.filter(
-      (value) => value !== id,
-    );
-    if (expanded) item.instructionExpanded.push(id);
-    button.setAttribute("aria-expanded", String(expanded));
-    button.querySelector("span").textContent = expanded ? "Collapse" : "Expand";
-    button
-      .closest(".steps-group")
-      .querySelectorAll("[data-group-details]")
-      .forEach((detail) => (detail.hidden = !expanded));
-  };
+  if (!panel.dataset.instructionExpandBound) {
+    panel.addEventListener("click", (e) => {
+      const button = e.target.closest("[data-instruction-expand]"),
+        item = currentAssistantItem();
+      if (!button || !item) return;
+      const id = button.dataset.instructionExpand,
+        expanded = button.getAttribute("aria-expanded") !== "true";
+      item.instructionExpanded ??= [];
+      item.instructionExpanded = item.instructionExpanded.filter(
+        (value) => value !== id,
+      );
+      if (expanded) item.instructionExpanded.push(id);
+      button.setAttribute("aria-expanded", String(expanded));
+      button.querySelector("span").textContent = expanded
+        ? "Collapse"
+        : "Expand";
+      button
+        .closest(".steps-group")
+        .querySelectorAll("[data-group-details]")
+        .forEach((detail) => (detail.hidden = !expanded));
+    });
+    panel.dataset.instructionExpandBound = "true";
+  }
 }
 
 const metricChoices = [
@@ -2651,8 +2705,8 @@ function bindReferenceFiles() {
 
 function bindScreenshotZoom() {
   const panel = $("summaryResultPanel");
-  if (!panel) return;
-  panel.onclick = (e) => {
+  if (!panel || panel.dataset.screenshotZoomBound) return;
+  panel.addEventListener("click", (e) => {
     const trigger = e.target.closest("[data-screenshot-zoom]");
     if (!trigger) return;
     e.preventDefault();
@@ -2671,7 +2725,8 @@ function bindScreenshotZoom() {
         overlay.remove();
       }
     };
-  };
+  });
+  panel.dataset.screenshotZoomBound = "true";
 }
 
 function processMapMarkup(item) {
@@ -2686,12 +2741,6 @@ function processMapMarkup(item) {
         <button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">
           ${group.number} · ${escapeHTML(group.name)}
         </button>
-        <div class="canvas-group-actions" ${item.selectedGroup === group.id ? "" : "hidden"}>
-          <button data-group-record="${group.id}">Re-record</button>
-          <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
-          <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
-          <button data-group-delete="${group.id}">Delete</button>
-        </div>
         <div class="canvas-group-nodes">
           ${group.steps.map((text, index) => `
           <div class="canvas-step" data-canvas-step-index="${group.start + index}">
@@ -2720,6 +2769,17 @@ function processMapMarkup(item) {
       </section>`).join("")
       }
     </div>
+    ${groups
+      .map(
+        (group) => `
+    <div class="canvas-group-actions" data-group-actions="${group.id}" ${item.selectedGroup === group.id ? "" : "hidden"}>
+      <button data-group-record="${group.id}">Re-record</button>
+      <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
+      <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
+      <button data-group-delete="${group.id}">Delete</button>
+    </div>`,
+      )
+      .join("")}
     <div class="canvas-step-menu" id="canvasStepMenu" hidden>
       <button data-step-modify>Modify</button>
       <button data-step-break>Break</button>
@@ -2740,15 +2800,39 @@ function bindProcessMap() {
     item = currentAssistantItem();
   if (!canvas || !item) return;
   const world = canvas.querySelector(".process-canvas-world");
+  const placeGroupActions = () => {
+    const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
+        (element) => element.dataset.canvasGroup === item.selectedGroup,
+      ),
+      actions = [...canvas.querySelectorAll("[data-group-actions]")].find(
+        (element) => element.dataset.groupActions === item.selectedGroup,
+      );
+    if (!group || !actions || actions.hidden) return;
+    const canvasRect = canvas.getBoundingClientRect(),
+      groupRect = group.getBoundingClientRect(),
+      width = actions.offsetWidth,
+      height = actions.offsetHeight,
+      gap = 16;
+    let left = groupRect.right - canvasRect.left + gap;
+    if (left + width > canvas.clientWidth)
+      left = groupRect.left - canvasRect.left - width - gap;
+    left = Math.max(8, Math.min(canvas.clientWidth - width - 8, left));
+    const top = Math.max(
+      8,
+      Math.min(canvas.clientHeight - height - 8, groupRect.top - canvasRect.top),
+    );
+    actions.style.left = `${left}px`;
+    actions.style.top = `${top}px`;
+  };
   let zoom = 1,
     x = 0,
     y = 0,
     drag = null;
   const paint = () => {
-    world.style.setProperty("--canvas-action-scale", String(1 / zoom));
     world.style.transform = `translate(${x}px,${y}px) scale(${zoom})`;
     canvas.querySelector(".canvas-zoom-label").textContent =
       Math.round(zoom * 100) + "%";
+    placeGroupActions();
   };
   const fit = () => {
     zoom = Math.min(
@@ -2775,7 +2859,7 @@ function bindProcessMap() {
   processCanvasObserver = new ResizeObserver(fit);
   processCanvasObserver.observe(canvas);
   processCanvasObserver.observe(world);
-  panel.onclick = (e) => {
+  canvas.onclick = (e) => {
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
     const select =
       e.target.closest("[data-group-select]") ||
@@ -2788,11 +2872,14 @@ function bindProcessMap() {
       canvas.querySelectorAll("[data-canvas-group]").forEach((group) => {
         const selected = group.dataset.canvasGroup === item.selectedGroup;
         group.classList.toggle("selected", selected);
-        group.querySelector(".canvas-group-actions").hidden = !selected;
         group
           .querySelector(".canvas-group-heading")
           .setAttribute("aria-pressed", String(selected));
       });
+      canvas.querySelectorAll("[data-group-actions]").forEach((actions) => {
+        actions.hidden = actions.dataset.groupActions !== item.selectedGroup;
+      });
+      placeGroupActions();
       renderAIPanel();
     } else if (
       !e.target.closest(".canvas-view-controls,.canvas-group-actions")
@@ -2800,11 +2887,13 @@ function bindProcessMap() {
       item.selectedGroup = null;
       canvas.querySelectorAll("[data-canvas-group]").forEach((group) => {
         group.classList.remove("selected");
-        group.querySelector(".canvas-group-actions").hidden = true;
         group
           .querySelector(".canvas-group-heading")
           .setAttribute("aria-pressed", "false");
       });
+      canvas
+        .querySelectorAll("[data-group-actions]")
+        .forEach((actions) => (actions.hidden = true));
       renderAIPanel();
     }
     const record = e.target.closest("[data-group-record]"),
@@ -2872,12 +2961,14 @@ function bindProcessMap() {
       item.selectedGroup = null;
       canvas.querySelectorAll(".canvas-group").forEach((g) => {
         g.classList.remove("selected");
-        g.querySelector(".canvas-group-actions").hidden = true;
         g.querySelector(".canvas-group-heading").setAttribute(
           "aria-pressed",
           "false",
         );
       });
+      canvas
+        .querySelectorAll("[data-group-actions]")
+        .forEach((actions) => (actions.hidden = true));
       renderAIPanel();
     }
   };
