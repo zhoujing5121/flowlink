@@ -525,6 +525,7 @@ function designIcon(name) {
     edit: "m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4ZM13 7l3 3",
     up: "M12 20V4M5 11l7-7 7 7",
     down: "M12 4v16M5 13l7 7 7-7",
+    export: "M12 3v12m0 0 5-5m-5 5-5-5M4 17v4h16v-4",
   };
   return `<svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || ""}"/></svg>`;
 }
@@ -1214,7 +1215,7 @@ async function finishBrowserRecording() {
   const item = pending,
     number = ++recordingSequence;
   item.id = "recording-" + Date.now().toString(36) + "-" + number;
-  item.name = "ZJ TEST " + number;
+  item.name = "Recording " + number;
   item.url = state.url;
   item.route = state.route;
   item.pages = state.browserTabs.map((page) => ({
@@ -1472,6 +1473,7 @@ async function buildMergedFlow(chosen, combined) {
   // 优先使用每段录制对应的已持久化 Flow；仅对原型演示录制回退到界面推导的数据。
   // 页面索引偏移用于避免不同录制的标签页编号冲突。
   const mergedSteps = [];
+  const mergedVariables = new Map();
   let pageOffset = 0;
   for (const item of chosen) {
     let steps = [];
@@ -1479,6 +1481,10 @@ async function buildMergedFlow(chosen, combined) {
       try {
         const flow = await F.flow.load(item.flowFile);
         steps = flow?.steps || [];
+        for (const variable of flow?.variables || []) {
+          if (!mergedVariables.has(variable.name))
+            mergedVariables.set(variable.name, variable);
+        }
       } catch (err) {
         console.error("[merge] load flow failed:", err);
       }
@@ -1517,7 +1523,7 @@ async function buildMergedFlow(chosen, combined) {
       },
       recorder: { name: "FlowLink", version: "1.0.0" },
     },
-    variables: [],
+    variables: [...mergedVariables.values()],
     steps: mergedSteps,
   };
 }
@@ -1572,7 +1578,7 @@ async function confirmRecordingSummary() {
   }
   const combined = {
     id: "recording-" + Date.now().toString(36) + "-" + ++recordingSequence,
-    name: "Merged " + recordingSequence,
+    name: "Refined " + recordingSequence,
     url: chosen[chosen.length - 1].url,
     route: chosen[chosen.length - 1].route,
     checked: false,
@@ -2651,15 +2657,91 @@ function ensureReferenceFiles(item) {
     ].map((file) => ({
       ...file,
       id: "reference-" + ++referenceSequence,
+      kind: "file",
       url: URL.createObjectURL(file.file),
     }));
   }
   return item.references;
 }
 
+async function hydrateReferenceVariables(item) {
+  if (!item || item.referenceVariablesLoaded || item.referenceVariablesLoading) return false;
+  if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.load) {
+    item.referenceVariablesLoaded = true;
+    return false;
+  }
+  item.referenceVariablesLoading = true;
+  try {
+    const flow = await window.flowlink.flow.load(item.flowFile);
+    const knownNames = new Set(
+      ensureReferenceFiles(item)
+        .filter((reference) => reference.kind === "variable")
+        .map((reference) => reference.name),
+    );
+    for (const variable of flow.variables || []) {
+      if (knownNames.has(variable.name)) continue;
+      item.references.push({
+        id: "reference-" + ++referenceSequence,
+        kind: "variable",
+        name: variable.name,
+        type: "Variable",
+        variableType: variable.type || "string",
+        secret: !!variable.secret,
+        source: variable.source || "input",
+        value: variable.defaultValue || "",
+      });
+    }
+    item.referenceLoadError = "";
+    item.referenceVariablesLoaded = true;
+    return true;
+  } catch (error) {
+    item.referenceLoadError = error instanceof Error ? error.message : String(error);
+    console.error("[reference] Unable to load flow variables:", error);
+    return false;
+  } finally {
+    item.referenceVariablesLoading = false;
+  }
+}
+
+function referenceVariableDefinitions(references) {
+  return references
+    .filter((reference) => reference.kind === "variable")
+    .map((reference) => ({
+      name: reference.name,
+      type: reference.variableType || "string",
+      ...(!reference.secret ? { defaultValue: reference.value ?? "" } : {}),
+      secret: !!reference.secret,
+      source: reference.source || "input",
+    }));
+}
+
+async function referenceVariablesForReplay(item) {
+  await hydrateReferenceVariables(item);
+  if (item.referenceLoadError)
+    throw new Error(`Unable to load Reference variables: ${item.referenceLoadError}`);
+  return Object.fromEntries(
+    ensureReferenceFiles(item)
+      .filter((reference) => reference.kind === "variable")
+      .map((reference) => [reference.name, reference.value ?? ""]),
+  );
+}
+
+window.referenceVariablesForReplay = referenceVariablesForReplay;
+
+async function persistReferenceVariables(item, references) {
+  if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.updateVariables)
+    return;
+  await window.flowlink.flow.updateVariables({
+    taskCode: currentFlow?.code || activeFlowKey,
+    recordingId: item.recordingId,
+    variables: referenceVariableDefinitions(references),
+  });
+}
+
 function referenceFilesMarkup(item) {
   const files = ensureReferenceFiles(item);
-  return `<div class="reference-management"><div class="reference-table-wrap"><table class="reference-table" aria-label="Reference files"><colgroup><col class="reference-check-column"><col class="reference-name-column"><col><col class="reference-actions-column"></colgroup><thead><tr><th scope="col" class="reference-check-cell"><input type="checkbox" class="recording-check" id="referenceSelectAll" aria-label="Select all reference files" ${files.length ? "" : "disabled"}></th><th scope="col">Name</th><th scope="col">Type</th><th scope="col" aria-label="File actions"></th></tr></thead><tbody>${files.map((file) => `<tr data-reference-row="${file.id}"><td class="reference-check-cell"><input type="checkbox" class="recording-check" data-reference-check="${file.id}" aria-label="Select ${escapeHTML(file.name)}" ${file.selected ? "checked" : ""}></td><td>${item.referenceEditing === file.id ? `<input class="reference-name-input" id="referenceNameInput" aria-label="File name" value="${escapeHTML(file.name)}" required>` : `<a class="reference-name" href="${file.url}" download="${escapeHTML(file.name)}">${escapeHTML(file.name)}</a>`}</td><td>${escapeHTML(file.type)}</td><td class="reference-action-cell"><div class="reference-row-actions"><button type="button" class="icon-button" data-reference-edit="${file.id}" aria-label="Edit ${escapeHTML(file.name)}" title="Edit">${designIcon("edit")}</button><button type="button" class="icon-button" data-reference-delete="${file.id}" aria-label="Delete ${escapeHTML(file.name)}" title="Delete">${recordingDeleteIcon}</button></div></td></tr>`).join("")}</tbody></table></div><div class="reference-footer"><input type="file" id="referenceFileInput" accept=".xlsx,.xls,.csv,.md,.markdown" multiple hidden><button type="button" class="btn secondary" id="referenceDownload" ${files.length ? "" : "disabled"}>Download</button><button type="button" class="btn secondary" id="referenceUpload">Upload</button></div></div>`;
+  const selectedCount = files.filter((file) => file.selected).length;
+  return `<div class="reference-management"><div class="reference-table-wrap"><table class="reference-table" aria-label="Reference items"><colgroup><col class="reference-check-column"><col class="reference-name-column"><col><col class="reference-value-column"><col class="reference-actions-column"></colgroup><thead><tr><th scope="col" class="reference-check-cell"><input type="checkbox" class="recording-check" id="referenceSelectAll" aria-label="Select all reference items" ${files.length ? "" : "disabled"}></th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Value</th><th scope="col" aria-label="Reference actions"></th></tr></thead><tbody>${files.map((file) => `<tr data-reference-row="${file.id}"><td class="reference-check-cell"><input type="checkbox" class="recording-check" data-reference-check="${file.id}" aria-label="Select ${escapeHTML(file.name)}" ${file.selected ? "checked" : ""}></td><td>${file.kind === "variable" ? `<span class="reference-name">${escapeHTML(file.name)}</span>` : `<a class="reference-name" href="${file.url}" download="${escapeHTML(file.name)}">${escapeHTML(file.name)}</a>`}</td><td>${escapeHTML(file.type)}</td><td>${file.kind === "variable" ? escapeHTML(file.secret && file.value ? "••••••" : file.value || "") : ""}</td><td class="reference-action-cell"><div class="reference-row-actions"><button type="button" class="icon-button" data-reference-edit="${file.id}" aria-label="Update ${escapeHTML(file.name)}" title="Update">${designIcon("edit")}</button><button type="button" class="icon-button" data-reference-delete="${file.id}" aria-label="Delete ${escapeHTML(file.name)}" title="Delete">${recordingDeleteIcon}</button></div></td></tr>`).join("")}</tbody></table></div><div class="reference-footer"><span role="status" id="referenceStatus">${escapeHTML(item.referenceLoadError || "")}</span><input type="file" id="referenceFileInput" accept=".xlsx,.xls,.csv,.md,.markdown" multiple hidden><button type="button" class="btn secondary" id="referenceDownload" ${selectedCount ? "" : "disabled"}>${designIcon("export")}<span>Export</span></button><button type="button" class="btn secondary" id="referenceAdd" ${item.referenceVariablesLoading || item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add</span></button></div><dialog class="reference-dialog" id="referenceDialog" aria-labelledby="referenceDialogTitle"></dialog></div>`;
 }
 function bindReferenceFiles() {
   const input = $("referenceFileInput"),
@@ -2670,12 +2752,31 @@ function bindReferenceFiles() {
     panel.innerHTML = referenceFilesMarkup(item);
     bindReferenceFiles();
   };
+  const variablesLoaded = hydrateReferenceVariables(item);
+  if (item.referenceVariablesLoading)
+    panel.querySelector("#referenceAdd").disabled = true;
+  void variablesLoaded.then((loaded) => {
+    if (
+      loaded &&
+      panel.isConnected &&
+      currentAssistantItem() === item &&
+      item.resultTab === "Reference"
+    )
+      redraw();
+    else {
+      const status = panel.querySelector("#referenceStatus");
+      if (status && item.referenceLoadError) status.textContent = item.referenceLoadError;
+      const addVariable = panel.querySelector("[data-reference-add-variable]");
+      if (addVariable && item.referenceLoadError) addVariable.disabled = true;
+    }
+  });
   const all = panel.querySelector("#referenceSelectAll");
   const syncChecks = () => {
     const files = ensureReferenceFiles(item),
       count = files.filter((file) => file.selected).length;
     all.checked = files.length > 0 && count === files.length;
     all.indeterminate = count > 0 && count < files.length;
+    $("referenceDownload").disabled = count === 0;
     panel
       .querySelectorAll("[data-reference-check]")
       .forEach(
@@ -2685,38 +2786,16 @@ function bindReferenceFiles() {
           )?.selected),
       );
   };
-  all.onchange = () => {
-    item.references.forEach((file) => (file.selected = all.checked));
-    syncChecks();
-  };
-  panel.onchange = (e) => {
-    const id = e.target.dataset.referenceCheck;
-    if (!id) return;
-    const file = item.references.find((file) => file.id === id);
-    if (file) file.selected = e.target.checked;
-    syncChecks();
-  };
   syncChecks();
-  const commit = () => {
-    const field = $("referenceNameInput"),
-      file = item.references.find((file) => file.id === item.referenceEditing);
-    if (!file) return;
-    const name = field?.value.trim();
-    if (name) file.name = name;
-    delete item.referenceEditing;
-    redraw();
-  };
-  panel.onpointerdown = (e) => {
-    if (item.referenceEditing && e.target.closest("button")) e.preventDefault();
-  };
   $("referenceDownload").onclick = () => {
-    if (item.referenceEditing) commit();
     downloadReferenceArchive(item);
   };
-  $("referenceUpload").onclick = () => {
-    if (item.referenceEditing) commit();
-    $("referenceFileInput").click();
+  const dialog = panel.querySelector("#referenceDialog");
+  const showChooser = () => {
+    dialog.innerHTML = `<h2 id="referenceDialogTitle">Add to Reference</h2><p>Choose what to add.</p><div class="reference-dialog-actions"><button type="button" class="btn secondary" data-reference-add-variable ${item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add variable</span></button><button type="button" class="btn secondary" data-reference-upload>${designIcon("plus")}<span>Upload files</span></button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div>`;
+    dialog.showModal();
   };
+  $("referenceAdd").onclick = showChooser;
   input.onchange = () => {
     for (const file of input.files) {
       const ext = file.name.split(".").pop().toLowerCase(),
@@ -2727,6 +2806,7 @@ function bindReferenceFiles() {
             : ext.toUpperCase();
       item.references.push({
         id: "reference-" + ++referenceSequence,
+        kind: "file",
         name: file.name,
         type,
         file,
@@ -2734,18 +2814,33 @@ function bindReferenceFiles() {
       });
     }
     redraw();
-    $("referenceUpload").focus();
+    $("referenceAdd").focus();
   };
   panel.onclick = async (e) => {
-    const edit = e.target.closest("[data-reference-edit]"),
+    const addVariable = e.target.closest("[data-reference-add-variable]"),
+      upload = e.target.closest("[data-reference-upload]"),
+      closeDialog = e.target.closest("[data-reference-dialog-close]"),
+      edit = e.target.closest("[data-reference-edit]"),
       remove = e.target.closest("[data-reference-delete]");
+    if (addVariable) {
+      showReferenceEditor(dialog, null);
+      return;
+    }
+    if (upload) {
+      dialog.close();
+      input.click();
+      return;
+    }
+    if (closeDialog) {
+      dialog.close();
+      return;
+    }
     if (edit) {
-      if (item.referenceEditing) commit();
-      item.referenceEditing = edit.dataset.referenceEdit;
-      redraw();
-      const field = $("referenceNameInput");
-      field.focus();
-      field.select();
+      showReferenceEditor(
+        dialog,
+        item.references.find((reference) => reference.id === edit.dataset.referenceEdit),
+      );
+      return;
     }
     if (remove) {
       const index = item.references.findIndex(
@@ -2754,32 +2849,118 @@ function bindReferenceFiles() {
       if (index < 0) return;
       if (
         !(await confirmWorkspaceAction(
-          `Delete file “${item.references[index].name}”?`,
+          `Delete “${item.references[index].name}” from Reference?`,
         ))
       )
         return;
+      const nextReferences = item.references.filter((_, row) => row !== index);
+      if (item.references[index].kind === "variable") {
+        try {
+          await persistReferenceVariables(item, nextReferences);
+        } catch (error) {
+          console.error("[reference] Unable to delete variable:", error);
+          const status = panel.querySelector("#referenceStatus");
+          if (status) status.textContent = `Unable to save variable changes: ${error.message || error}`;
+          return;
+        }
+      }
       item.references.splice(index, 1);
-      delete item.referenceEditing;
       redraw();
       const next = panel.querySelector("[data-reference-delete]");
-      (next || $("referenceUpload")).focus();
+      (next || $("referenceAdd")).focus();
     }
   };
-  const field = $("referenceNameInput");
-  if (field) {
-    field.onkeydown = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commit();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        delete item.referenceEditing;
-        redraw();
+  panel.onchange = (e) => {
+    if (e.target.matches("#referenceSelectAll")) {
+      item.references.forEach((file) => (file.selected = e.target.checked));
+      syncChecks();
+    } else if (e.target.matches("[data-reference-check]")) {
+      const file = item.references.find(
+        (reference) => reference.id === e.target.dataset.referenceCheck,
+      );
+      if (file) file.selected = e.target.checked;
+      syncChecks();
+    } else if (e.target.matches("[name=referenceType]")) {
+      const value = dialog.querySelector("[name=referenceValue]");
+      if (value) value.type = e.target.value === "secret" ? "password" : "text";
+    }
+  };
+  dialog.onsubmit = async (event) => {
+    event.preventDefault();
+    const form = event.target,
+      editingId = form.dataset.referenceId,
+      existing = item.references.find((reference) => reference.id === editingId),
+      isVariable = !existing || existing.kind === "variable",
+      rawName = form.elements.referenceName.value.trim(),
+      name = isVariable ? rawName : rawName.replace(/[\\/:*?"<>|]/g, "_"),
+      value = isVariable ? form.elements.referenceValue.value : undefined,
+      variableType = existing?.variableType || form.elements.referenceType?.value || "string",
+      secret = existing?.secret ?? variableType === "secret";
+    if (!name) return;
+    if (isVariable && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      form.elements.referenceName.setCustomValidity("Use a valid variable identifier.");
+      form.elements.referenceName.reportValidity();
+      return;
+    }
+    if (
+      isVariable &&
+      item.references.some(
+        (reference) =>
+          reference.kind === "variable" &&
+          reference.id !== editingId &&
+          reference.name === name,
+      )
+    ) {
+      form.elements.referenceName.setCustomValidity("A variable with this name already exists.");
+      form.elements.referenceName.reportValidity();
+      return;
+    }
+    form.elements.referenceName.setCustomValidity("");
+    const updated = existing
+      ? { ...existing, name, ...(isVariable ? { value, variableType, secret } : {}) }
+      : {
+          id: "reference-" + ++referenceSequence,
+          kind: "variable",
+          name,
+          type: "Variable",
+          variableType,
+          secret,
+          source: "input",
+          value,
+        };
+    const nextReferences = existing
+      ? item.references.map((reference) => reference.id === editingId ? updated : reference)
+      : [...item.references, updated];
+    if (isVariable) {
+      try {
+        await persistReferenceVariables(item, nextReferences);
+      } catch (error) {
+        console.error("[reference] Unable to save variable:", error);
+        const status = panel.querySelector("#referenceStatus");
+        if (status) status.textContent = `Unable to save variable changes: ${error.message || error}`;
+        return;
       }
-    };
-    field.onblur = commit;
-  }
+    }
+    if (existing) {
+      const position = item.references.findIndex((reference) => reference.id === editingId);
+      item.references[position] = updated;
+    } else {
+      item.references.push(updated);
+    }
+    dialog.close();
+    redraw();
+    $("referenceAdd").focus();
+  };
+}
+
+function showReferenceEditor(dialog, reference) {
+  const isVariable = !reference || reference.kind === "variable",
+    title = reference ? "Update Reference item" : "Add variable",
+    variableType = reference?.variableType || "string",
+    types = ["string", "text", "email", "date", "number", "secret", "file"];
+  dialog.innerHTML = `<form class="reference-editor" data-reference-id="${escapeHTML(reference?.id || "")}"><h2 id="referenceDialogTitle">${title}</h2><label>Name<input name="referenceName" value="${escapeHTML(reference?.name || "")}" maxlength="255" required ${isVariable ? 'pattern="[A-Za-z_][A-Za-z0-9_]*"' : ""}></label>${isVariable ? `${reference ? "" : `<label>Type<select name="referenceType">${types.map((type) => `<option value="${type}" ${type === variableType ? "selected" : ""}>${type}</option>`).join("")}</select></label>`}<label>Value<input name="referenceValue" type="${reference?.secret || variableType === "secret" ? "password" : "text"}" value="${escapeHTML(reference?.value || "")}"></label>` : ""}<div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
+  dialog.showModal();
+  dialog.querySelector("[name=referenceName]").focus();
 }
 
 function bindScreenshotZoom() {
@@ -3303,7 +3484,15 @@ async function deleteProcessGroup(item, groupId) {
 
 // 以不压缩方式下载 ZIP，保留每个原始文件的字节内容和文件名。
 async function downloadReferenceArchive(item) {
-  const files = ensureReferenceFiles(item);
+  const files = ensureReferenceFiles(item)
+    .filter((reference) => reference.selected)
+    .map((reference) => ({
+      name: reference.kind === "variable" ? `${reference.name}.txt` : reference.name,
+      file:
+        reference.kind === "variable"
+          ? new Blob([`Name: ${reference.name}\r\nType: ${reference.variableType || "string"}\r\nValue: ${reference.value || ""}\r\n`], { type: "text/plain;charset=utf-8" })
+          : reference.file,
+    }));
   if (!files.length) return;
   const parts = [],
     central = [];

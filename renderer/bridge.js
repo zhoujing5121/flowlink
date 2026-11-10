@@ -1223,7 +1223,8 @@
 			if (item.testFlowSteps.length) item.testResults[0] = { status: 'running' }
 			item.resultTab = 'Test'
 			renderSummaryWorkspace()
-			await F.playback.run({ taskCode: code, recordingId: item.recordingId })
+			const variables = await window.referenceVariablesForReplay(item)
+			await F.playback.run({ taskCode: code, recordingId: item.recordingId, variables })
 		} catch (err) {
 			item.testRunning = false
 			const message = err instanceof Error ? err.message : String(err)
@@ -1253,7 +1254,9 @@
 		showDrawerTab('Design')
 		const recording = task.recordings[task.recordings.length - 1]
 		try {
-			const result = await F.playback.run({ taskCode: code, recordingId: recording.id })
+			const item = recordingSession(code).items.find((entry) => entry.recordingId === recording.id)
+			const variables = item ? await window.referenceVariablesForReplay(item) : {}
+			const result = await F.playback.run({ taskCode: code, recordingId: recording.id, variables })
 			console.log('[bridge] 回放完成：', result)
 		} catch (err) {
 			console.error('[bridge] 回放失败：', err)

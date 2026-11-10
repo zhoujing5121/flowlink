@@ -43,7 +43,7 @@ const api = {
 	},
 
 	playback: {
-		run: (opts: { taskCode: string; recordingId: string }) =>
+		run: (opts: { taskCode: string; recordingId: string; variables?: Record<string, string> }) =>
 			ipcRenderer.invoke('playback:run', opts),
 		/** 仅回放已有录制的前 N 步，为节点重录准备浏览器状态 */
 		runPrefix: (opts: { taskCode: string; recordingId: string; stepCount: number }) =>
@@ -54,6 +54,8 @@ const api = {
 
 	flow: {
 		load: (flowFile: string) => ipcRenderer.invoke('flow:load', flowFile),
+		updateVariables: (opts: { taskCode: string; recordingId: string; variables: unknown[] }) =>
+			ipcRenderer.invoke('flow:updateVariables', opts),
 	},
 
 	browser: {

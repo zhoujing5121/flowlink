@@ -86,6 +86,8 @@ The executor loads or receives a validated `Flow`, resolves elements, executes o
 
 Element resolution uses ordered candidates, role/text/locator validation, frame paths, fingerprints, and resolver logic. Replay stops after the first failure when `stopOnFailure` is enabled.
 
+Non-secret Reference variables are saved as validated `flow.variables` defaults. Secret values are kept in renderer memory and passed only to that replay run, not stored in the Flow. Replay uses the executor's normal template-variable resolution; uploaded files remain Reference items and are not injected as runtime variables.
+
 Self-healing records are kept separate from observed facts. Healing is written back only when `writeBack=true` and a flow path is supplied; successful writes create a `.bak` copy and increment the flow version.
 
 ## Group re-recording

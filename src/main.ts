@@ -946,9 +946,20 @@ function registerIpc(): void {
 	)
 
 	/* ---------- 回放 ---------- */
-	ipcMain.handle('playback:run', async (_e, opts: { taskCode: string; recordingId: string }) => {
+	ipcMain.handle('playback:run', async (_e, opts: { taskCode: string; recordingId: string; variables?: Record<string, string> }) => {
 		if (playPromise) throw new Error('已有回放正在进行')
 		if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
+		if (
+			opts.variables !== undefined &&
+			(!opts.variables ||
+				typeof opts.variables !== 'object' ||
+				Array.isArray(opts.variables) ||
+				Object.entries(opts.variables).some(
+					([name, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string',
+				))
+		) {
+			throw new Error('回放变量无效')
+		}
 
 		const task = taskStore.get(opts.taskCode)
 		const recording = task?.recordings.find((r) => r.id === opts.recordingId)
@@ -970,6 +981,7 @@ function registerIpc(): void {
 			stepDelayMs: 350,
 			highlightSteps: true,
 			stopOnFailure: true,
+			variables: opts.variables,
 			abortSignal: playAbortController.signal,
 			openPage: createNativePlaybackPage(true, (msg) => console.log(`[playback:${flow.id}] ${msg}`)),
 			onStep: (r) => {
@@ -1026,4 +1038,27 @@ function registerIpc(): void {
 		const flow: Flow = await loadFlow(flowFile)
 		return flow
 	})
+	ipcMain.handle(
+		'flow:updateVariables',
+		async (_event, opts: { taskCode: string; recordingId: string; variables: unknown[] }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				!Array.isArray(opts.variables)
+			) {
+				throw new Error('变量更新请求无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const flow = await loadFlow(recording.flowFile)
+			const updated = parseFlow({
+				...flow,
+				version: flow.version + 1,
+				variables: opts.variables,
+			}, recording.flowFile)
+			await saveFlow(updated, recording.flowFile)
+			return updated.variables
+		},
+	)
 }

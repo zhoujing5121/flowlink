@@ -2899,7 +2899,11 @@ body {
 }
 
 .reference-table .reference-name-column {
-  width: 50%;
+  width: 34%;
+}
+
+.reference-table .reference-value-column {
+  width: 30%;
 }
 
 .reference-table .reference-actions-column {
@@ -3010,11 +3014,91 @@ body {
   line-height: 24px;
   font-weight: 400;
   letter-spacing: normal;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.reference-footer .btn svg,
+.reference-dialog-actions .btn svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.reference-footer #referenceStatus {
+  flex: 1;
+  align-self: center;
+  min-width: 0;
+  color: #b54708;
+  font-size: 13px;
+}
+
+.reference-dialog {
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  padding: 24px;
+  border: 0;
+  background: #fff;
+  color: #101416;
+  box-shadow: 0 8px 24px #0004;
+}
+
+.reference-dialog::backdrop {
+  background: #0005;
+}
+
+.reference-dialog h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.reference-dialog p {
+  margin: 0 0 24px;
+}
+
+.reference-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.reference-editor label {
+  display: grid;
+  gap: 8px;
+}
+
+.reference-editor input,
+.reference-editor select {
+  width: 100%;
+  height: 44px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid #aeb7bf;
+  background: #fff;
+  color: #101416;
+  font: inherit;
+}
+
+.reference-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 671px) {
   .reference-table .reference-actions-column {
     width: 112px;
+  }
+
+  .reference-table .reference-value-column {
+    width: 24%;
   }
 
   .reference-table th,
