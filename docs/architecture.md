@@ -20,6 +20,8 @@ Embedded WebContentsView
 
 `src/main.ts` creates the Electron window, embedded browser view, task store, IPC handlers, and recorder/playback sessions. It enables Electron CDP on a random port and waits for `DevToolsActivePort` before constructing `EngineBridge`.
 
+The renderer window is shown after its local HTML loads; the initial browser URL loads asynchronously so restricted or slow external networks do not delay application startup. Pi's SDK is also loaded on demand, only when its status or prompt IPC is called.
+
 The embedded browser is a `WebContentsView`, not an iframe. `renderer/bridge.js` reports the DOM rectangle occupied by the browser surface; the main process moves and shows the native view at that rectangle. Native visibility has one explicit owner independent of `webContents.isLoading()`, so navigation and load completion do not blank the view or reveal it over dialogs. Workspace confirmations temporarily hide the native view, then restore the reported bounds.
 
 ## Preload boundary

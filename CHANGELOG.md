@@ -23,6 +23,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Fixed
 
+- **Pi:** Load provider/model settings, apply the SDK system prompt with all tools disabled, and preserve provider errors instead of reporting only an empty response.
+- **Startup:** Show the FlowLink window without waiting for the initial browser page's network response.
+- **Pi:** Defer SDK loading until Pi is used and honor environment-configured HTTP proxies for provider requests.
 - **Replay:** Create new tabs through native Electron views instead of unsupported CDP `Target.createTarget` calls.
 - **Test:** Reset to one fresh browser on every Test entry and await recording cleanup before restarting.
 - **Recording:** Avoid native-view loading flashes and unnecessary browser chrome/dock recreation.

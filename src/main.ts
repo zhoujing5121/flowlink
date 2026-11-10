@@ -497,12 +497,16 @@ async function createWindow(): Promise<void> {
 	})
 
 	await mainWindow.loadFile(join(app.getAppPath(), 'renderer', 'index.html'))
+	mainWindow.show()
+
+	// Don't make the first browser page's network response block the app window.
 	try {
-		await browserView.webContents.loadURL('https://bosch.com.cn')
+		void browserView.webContents.loadURL('https://bosch.com.cn').catch((err) => {
+			console.error('[flowlink] 初始页面加载失败：', (err as Error).message)
+		})
 	} catch (err) {
 		console.error('[flowlink] 初始页面加载失败：', (err as Error).message)
 	}
-	mainWindow.show()
 
 	if (process.argv.includes('--dev') || process.env.NODE_ENV === 'development') {
 		mainWindow.webContents.openDevTools({ mode: 'detach' })
@@ -1089,7 +1093,7 @@ function registerIpc(): void {
 		await mkdir(flowsRoot, { recursive: true })
 		const result = await runPiPrompt({ prompt: opts.prompt, cwd: flowsRoot, timeoutMs: opts.timeoutMs })
 		if (!result.ok) throw new Error(result.error || 'Pi agent request failed')
-		return { text: result.text, exitCode: result.exitCode }
+		return { text: result.text }
 	})
 
 	/* ---------- Flow 读取（分析页用） ---------- */

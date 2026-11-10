@@ -8,11 +8,6 @@
 import { app } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  ModelRuntime,
-  SessionManager,
-  createAgentSession,
-} from "@earendil-works/pi-coding-agent";
 
 export interface PiPromptOptions {
   prompt: string;
@@ -27,6 +22,11 @@ export interface PiPromptResult {
 }
 
 interface PiSessionLike {
+  messages: Array<{
+    role: string;
+    errorMessage?: string;
+    stopReason?: string;
+  }>;
   prompt(message: string): Promise<unknown>;
   getLastAssistantText(): string | null | undefined;
   dispose(): void;
@@ -42,6 +42,7 @@ interface PiSettings {
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const DEFAULT_PROVIDER = "opencode-go";
 const DEFAULT_MODEL = "kimi-k3";
+type PiSdk = typeof import("@earendil-works/pi-coding-agent");
 
 const SYSTEM_PROMPT = `
 You are FlowLink's workflow engineering assistant.
@@ -75,6 +76,47 @@ Do not invent selectors, URLs, or execution results.
 If a proposed change cannot be grounded in evidence, preserve the
 original step and explain the uncertainty.
 `;
+
+let piSdkPromise: Promise<PiSdk> | undefined;
+let proxySetupPromise: Promise<void> | undefined;
+
+function loadPiSdk(): Promise<PiSdk> {
+  piSdkPromise ??= import("@earendil-works/pi-coding-agent");
+  return piSdkPromise;
+}
+
+async function configurePiProxy(): Promise<void> {
+  const hasProxy =
+    !!process.env.HTTPS_PROXY ||
+    !!process.env.https_proxy ||
+    !!process.env.HTTP_PROXY ||
+    !!process.env.http_proxy;
+
+  if (!hasProxy) return;
+
+  proxySetupPromise ??= import("undici").then(({ EnvHttpProxyAgent, install, setGlobalDispatcher }) => {
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+    install();
+  });
+  await proxySetupPromise;
+}
+
+async function createPiResourceLoader(cwd: string) {
+  const { DefaultResourceLoader } = await loadPiSdk();
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getConfigDirectory(),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPromptOverride: () => SYSTEM_PROMPT,
+    appendSystemPromptOverride: () => [],
+  });
+  await resourceLoader.reload();
+  return resourceLoader;
+}
 
 function getConfigDirectory(): string {
   return path.join(app.getAppPath(), "config");
@@ -189,11 +231,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 async function createPiRuntime() {
+  await configurePiProxy();
+  const pi = await loadPiSdk();
   const settings = readSettings();
 
   validateAuthFile(settings.provider);
 
-  const modelRuntime = await ModelRuntime.create({
+  const modelRuntime = await pi.ModelRuntime.create({
     authPath: getAuthPath(),
   });
 
@@ -206,7 +250,7 @@ async function createPiRuntime() {
     );
   }
 
-  return { settings, modelRuntime, model };
+  return { pi, settings, modelRuntime, model };
 }
 
 export async function piStatus(): Promise<{
@@ -218,14 +262,15 @@ export async function piStatus(): Promise<{
   let session: PiSessionLike | undefined;
 
   try {
-    const { settings, modelRuntime, model } = await createPiRuntime();
+    const { pi, settings, modelRuntime, model } = await createPiRuntime();
+    const resourceLoader = await createPiResourceLoader(app.getAppPath());
 
-    const created = (await createAgentSession({
+    const created = (await pi.createAgentSession({
       model,
       modelRuntime,
-      sessionManager: SessionManager.inMemory(),
-      noTools: true,
-      systemPrompt: SYSTEM_PROMPT,
+      sessionManager: pi.SessionManager.inMemory(),
+      resourceLoader,
+      noTools: "all",
       thinkingLevel: settings.thinkingLevel,
     })) as { session: PiSessionLike };
 
@@ -261,24 +306,24 @@ export async function runPiPrompt(
     throw new Error("Pi prompt exceeds the 100,000 character limit");
   }
 
-  const timeoutMs = Math.max(
-    5_000,
-    Math.min(options.timeoutMs ?? 120_000, 600_000),
-  );
-
   let session: PiSessionLike | undefined;
 
   try {
-    const { settings, modelRuntime, model } = await createPiRuntime();
+    const { pi, settings, modelRuntime, model } = await createPiRuntime();
+    const resourceLoader = await createPiResourceLoader(options.cwd);
+    const timeoutMs = Math.max(
+      5_000,
+      Math.min(options.timeoutMs ?? settings.timeoutMs, 600_000),
+    );
 
     const created = (await withTimeout(
-      createAgentSession({
+      pi.createAgentSession({
         cwd: options.cwd,
         model,
         modelRuntime,
-        sessionManager: SessionManager.inMemory(),
-        noTools: true,
-        systemPrompt: SYSTEM_PROMPT,
+        sessionManager: pi.SessionManager.inMemory(),
+        resourceLoader,
+        noTools: "all",
         thinkingLevel: settings.thinkingLevel,
       }),
       timeoutMs,
@@ -291,12 +336,20 @@ export async function runPiPrompt(
     const text = session.getLastAssistantText() || "";
 
     if (!text.trim()) {
+      const lastAssistant = session.messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "assistant");
+      const providerError = lastAssistant?.errorMessage?.trim();
+      const stopReason = lastAssistant?.stopReason;
+
       return {
         ok: false,
         text: "",
-        error:
-          "Pi returned an empty response. Check the provider, " +
-          "model availability, and API credentials.",
+        error: providerError
+          ? `Pi provider request failed: ${providerError}`
+          : `Pi returned no text${stopReason ? ` (stop reason: ${stopReason})` : ""}. ` +
+            "Check the provider, model availability, and API credentials.",
       };
     }
 

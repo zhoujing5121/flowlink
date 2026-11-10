@@ -28,7 +28,7 @@ await build({
 	target: 'node20',
 	sourcemap: true,
 	logLevel: 'info',
-	external: ['electron', 'playwright-core', 'zod', '@earendil-works/pi-coding-agent'],
+	external: ['electron', 'playwright-core', 'zod', 'undici', '@earendil-works/pi-coding-agent'],
 	mainFields: ['module', 'main'],
 	conditions: ['node', 'import'],
 	banner: {
