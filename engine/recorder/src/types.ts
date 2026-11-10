@@ -82,6 +82,15 @@ export type RawEventKind =
 	| 'scroll'
 	| 'hover'
 	| 'navigation'
+	| 'dblclick'
+	| 'submit'
+	| 'dragStart'
+	| 'drop'
+	| 'copy'
+	| 'paste'
+	| 'extractValue'
+	| 'focus'
+	| 'blur'
 
 /** 各事件类型的特有字段（页面 → Node 原样回传） */
 export interface RawEventData {
@@ -100,6 +109,9 @@ export interface RawEventData {
 	masked?: boolean
 	checked?: boolean
 	inputType?: string
+	formName?: string
+	clipboardContentCaptured?: boolean
+	pickedText?: string
 	selectedValues?: string[]
 	/** scroll 增量（页面内基于上一次滚动位置算好） */
 	dx?: number
@@ -114,19 +126,35 @@ export interface RawEventData {
 }
 
 export interface RawEvent {
+	eventId?: string
 	kind: RawEventKind
-	/** 真正由地址栏/标签页导航触发的导航，合流时不得并入前一个动作 */
+	/** True when the navigation is a distinct action, not merely the result of the previous action. */
 	directNavigation?: boolean
+	/** Best-effort cause classification; unknown is preferred over inventing user intent. */
+	navigationType?: 'initial' | 'user_navigate' | 'user_link' | 'user_redirect' | 'sso_redirect' | 'login_redirect' | 'auto_redirect' | 'popup_navigation' | 'history_navigation' | 'unknown_navigation'
+	/** URL before this navigation, when known. */
+	previousUrl?: string
+	/** Evidence used to classify the navigation. */
+	navigationEvidence?: string[]
 	/** 发生时间（Date.now()） */
 	ts: number
 	/** 事件所在 frame 的序号（Node 侧按 Frame 对象分配） */
 	frameIndex?: number
 	/** 事件来自哪个标签页（Node 侧按 Page 创建顺序分配，0 = 录制起点） */
 	pageIndex?: number
+	/** Electron native tab identity supplied by the host application. */
+	tabId?: string
+	systemId?: string
+	systemName?: string
 	frameUrl?: string
 	/** navigation 事件的目标 url */
 	url?: string
 	facts?: RawElementFacts
+	/** Structured DOM-signature evidence around the action, added by the Node recorder. */
+	beforeSnapshot?: PageSignature
+	afterSnapshot?: PageSignature
+	flowStepId?: string
+	locatorEvidence?: Candidate[]
 	data?: RawEventData
 	/**
 	 * 事件是否由真实输入（或 CDP 注入的可信输入）产生。
@@ -177,6 +205,9 @@ export interface CoalescedAction {
 
 	/** navigate */
 	url?: string
+	navigationType?: RawEvent['navigationType']
+	previousUrl?: string
+	navigationEvidence?: string[]
 
 	/** 紧随本动作的导航（并入本步 expect） */
 	expectUrl?: string
@@ -251,6 +282,8 @@ export interface RecordOptions {
 	page?: Page
 	/** 显式附加其他 Electron 原生标签页，以支持多标签录制。 */
 	pages?: Page[]
+	/** Stable Electron tab IDs in the same order as page + pages. */
+	tabIds?: string[]
 	/**
 	 * 只往指定 page 注入采集脚本，不在 context 上 addInitScript。
 	 * Electron 的 CDP context 会同时包含产品 UI 和内嵌页，必须开这个，否则会录到壳层点击。

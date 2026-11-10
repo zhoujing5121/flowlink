@@ -52,6 +52,11 @@ const api = {
 		stop: () => ipcRenderer.invoke('playback:stop'),
 	},
 
+	pi: {
+		status: () => ipcRenderer.invoke('pi:status'),
+		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
+	},
+
 	flow: {
 		load: (flowFile: string) => ipcRenderer.invoke('flow:load', flowFile),
 		updateVariables: (opts: { taskCode: string; recordingId: string; variables: unknown[] }) =>

@@ -4,3 +4,4 @@ release/
 *.log
 *.tmp
 .DS_Store
+config/pi-auth.json

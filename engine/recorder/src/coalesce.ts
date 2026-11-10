@@ -39,6 +39,18 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 	for (let i = 0; i < sorted.length; i++) {
 		const event = sorted[i]!
 		switch (event.kind) {
+			case 'dblclick':
+			case 'submit':
+			case 'dragStart':
+			case 'drop':
+			case 'copy':
+			case 'paste':
+			case 'extractValue':
+			case 'focus':
+			case 'blur':
+				// Supplemental FlowForge evidence events are retained in the raw archive.
+				// Existing FlowLink steps remain the executable replay contract.
+				break
 			case 'pointerdown':
 				// 只作为事实来源（拖拽/右键判断），本身不成步
 				break
@@ -236,6 +248,9 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 					frameUrl: event.frameUrl,
 					pageIndex: event.pageIndex,
 					url,
+					navigationType: event.navigationType,
+					previousUrl: event.previousUrl,
+					navigationEvidence: event.navigationEvidence,
 					merged: 1,
 					raw: [event],
 				})

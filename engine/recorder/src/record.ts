@@ -102,6 +102,9 @@ const HOVER_LOOKBACK_MS = 600
 /** 采样上限，防止长录制把内存吃掉 */
 const MAX_SIGNATURE_SAMPLES = 600
 
+function newURLSafeHost(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
+const URLSafeHost = newURLSafeHost
+
 /** 正常结束但没有任何可回放步骤：调用方应静默取消，而不是写一份非法的空 flow。 */
 export class EmptyRecordingError extends Error {
 	constructor() {
@@ -166,6 +169,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const allEvents: RawEvent[] = []
 	const warnings: string[] = []
 	let lastEventTs = Date.now()
+	let rawEventSequence = 0
 
 	/** 标签页序号：按 Page 创建顺序，0 = 录制起点（任务要求 index=0 可省略） */
 	const pageIndexes = new WeakMap<Page, number>()
@@ -221,8 +225,15 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		index > 0 ? ({ ...step, page: { index } } as Step) : step
 
 	/** 推入一条 step（带 page 标记 + onStep 回调；回调抛错不影响录制） */
-	const pushStep = (step: Step, pageIndex: number): void => {
-		const marked = markPage(step, pageIndex)
+	const pushStep = (step: Step, pageIndex: number, sourceEvents: RawEvent[] = []): void => {
+		const sourcePage = pagesByIndex.get(pageIndex)
+		let pageUrl = opts.startUrl
+		try { pageUrl = sourcePage?.url() || opts.startUrl } catch {}
+		let systemId = 'browser', systemName = 'Browser'
+		try { const host = new URL(pageUrl).hostname.toLowerCase(); if (host) { systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'; systemName = host } } catch {}
+		const locatorEvidence = 'target' in step && step.target ? step.target.candidates : undefined
+		const enriched = { ...step, tabId: opts.tabIds?.[pageIndex] ?? `page-${pageIndex}`, systemId, systemName, pageUrl, ...(sourceEvents.length ? { sourceEventIds: sourceEvents.map(event => event.eventId).filter((id): id is string => Boolean(id)) } : {}), ...(locatorEvidence ? { locatorEvidence } : {}) } as Step
+		const marked = markPage(enriched, pageIndex)
 		steps.push(marked)
 		if (!opts.onStep) return
 		try {
@@ -305,11 +316,21 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		// 先在同步回调内确定 frame/page 归属并入队；之后的异步 DOM 处理不再推测事件来源。
 		event.frameIndex = ensureFrameIndex(frame)
 		// 多标签页归属：binding 回调的 source.page 才是可靠来源（frame 会跨页，页面内也看不到 tab 身份）
-		event.pageIndex = ensurePageIndex(sourcePage)
+		const pageIndex = ensurePageIndex(sourcePage)
+		event.eventId = event.eventId ?? `event-${++rawEventSequence}`
+		event.pageIndex = pageIndex
+		event.tabId = opts.tabIds?.[pageIndex] ?? `page-${pageIndex}`
+		const sourceUrl = sourcePage.url()
+		try {
+			const host = new URL(sourceUrl).hostname.toLowerCase()
+			event.systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'
+			event.systemName = host || 'Unknown system'
+		} catch { event.systemId = 'browser'; event.systemName = 'Browser' }
 		lastEventTs = event.ts
 		pending.push(event)
-		// 诊断副本有固定上限，不能反过来限制实际录制队列。
-		if (allEvents.length < 5000) allEvents.push(event)
+		// 完整证据副本有较高上限；不反过来限制执行 IR 的生成队列。
+		if (allEvents.length < 100_000) allEvents.push(event)
+		else if (allEvents.length === 100_000) warnings.push('Raw evidence archive reached 100,000 events; later raw events are omitted from the sidecar.')
 	}
 
 	const onEmit = (sourcePage: Page, frame: Frame, payload: unknown): void => {
@@ -406,16 +427,39 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				else void ensureCaptureInPage(target).catch(() => {})
 				if (frame !== target.mainFrame()) return
 				const url = frame.url()
-				if (!navigationReadyByPage.has(target)) return
+				if (!navigationReadyByPage.has(target)) {
+					if (url) lastNavigationUrlByPage.set(target, url)
+					return
+				}
 				const previousUrl = lastNavigationUrlByPage.get(target)
 				if (!url || url === previousUrl) return
 				lastNavigationUrlByPage.set(target, url)
+				const now = Date.now()
+				const recent = allEvents.filter((item) => item.pageIndex === ensurePageIndex(target) && item.kind === 'click' && now - item.ts >= 0 && now - item.ts < 2500).at(-1)
+				const clickedHref = recent?.facts?.attributes?.href
+				const authUrl = (value: string): boolean => {
+					try {
+						const parsed = new URL(value)
+						return /(^|\.)(login|logon|auth|sso|signin|identity|idp)(\.|$)/i.test(parsed.hostname) || /\/(login|logon|oauth|authorize|saml|signin|sso)([/?#]|$)/i.test(parsed.pathname)
+					} catch { return false }
+				}
+				let navigationType: RawEvent['navigationType'] = 'unknown_navigation'
+				const evidence: string[] = []
+				if (!previousUrl) { navigationType = 'initial'; evidence.push('no-previous-url') }
+				else if (clickedHref) {
+					try {
+						const expected = new URL(clickedHref, previousUrl).href
+						if (expected === url || new URL(expected).origin === new URL(url).origin) { navigationType = 'user_link'; evidence.push('recent-click-href-match') }
+						else if (authUrl(url)) { navigationType = 'sso_redirect'; evidence.push('recent-click-followed-by-auth-url') }
+					} catch {}
+				}
+				if (navigationType === 'unknown_navigation' && authUrl(url)) { navigationType = authUrl(previousUrl || '') ? 'login_redirect' : 'sso_redirect'; evidence.push('authentication-url-heuristic') }
+				if (navigationType === 'unknown_navigation' && previousUrl && new URLSafeHost(previousUrl) !== new URLSafeHost(url)) evidence.push('cross-host-navigation-without-matched-user-click')
+				if (navigationType === 'unknown_navigation') evidence.push('cause-not-observable-from-page-event')
 				enqueueRawEvent(target, frame, {
-					kind: 'navigation',
-					ts: Date.now(),
-					frameUrl: url,
-					url,
-					directNavigation: true,
+					kind: 'navigation', ts: now, frameUrl: url, url, previousUrl,
+					directNavigation: navigationType === 'user_navigate' || navigationType === 'user_link' || navigationType === 'history_navigation' || navigationType === 'unknown_navigation',
+					navigationType, navigationEvidence: evidence,
 				})
 			})
 
@@ -443,14 +487,20 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			})
 		}
 
-		// 附着模式不监听 context 新页：Electron 壳层开页会污染 pageIndex
-		if (!attachOnly) {
-			context.on('page', (opened) => {
-				const idx = ensurePageIndex(opened)
-				attachPageListeners(opened)
-				if (idx > 0) recordOpenedTab(opened, idx)
-			})
-		}
+		// 新标签页需要纳入全局事件流。附着 Electron 模式下只接受网页 / about:blank
+		// target，明确排除 file:// 产品壳层，避免 FlowLink UI 污染业务 pageIndex。
+		context.on('page', (opened) => {
+			const accept = !attachOnly || /^(https?:|about:blank)/i.test(opened.url())
+			if (!accept) return
+			const idx = ensurePageIndex(opened)
+			attachPageListeners(opened)
+			if (idx > 0) recordOpenedTab(opened, idx)
+			if (attachOnly) {
+				void installCaptureOnPage(opened, onEmit).catch((err) => {
+					warnings.push(`新标签页采集脚本安装失败（page ${idx}）：${(err as Error).message}`)
+				})
+			}
+		})
 
 		ensurePageIndex(page)
 		attachPageListeners(page)
@@ -736,7 +786,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				})
 			} catch {}
 			if (action.kind === 'navigate') {
-				return { kind: 'navigate', id, url: action.url ?? pageOfAction(action).url() }
+				return { kind: 'navigate', id, url: action.url ?? pageOfAction(action).url(), navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence }
 			}
 			const target = await buildRefFor(action, stepIndex)
 			switch (action.kind) {
@@ -1051,6 +1101,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				const before =
 					signatureBefore(pageIndex, action.ts - lookbackMs) ?? lastSigByPage.get(pageIndex)
 				const after = signatureAfter(pageIndex, nextTsOf(items, index))
+				// Preserve FlowForge-style before/after evidence on the original source events.
+				// These are structured DOM signatures (not lossy HTML dumps), and remain linked
+				// to the executable Flow step through the event's timestamp/page/target facts.
+				for (const rawEvent of action.raw) {
+					if (before) rawEvent.beforeSnapshot = before
+					if (after) rawEvent.afterSnapshot = after
+				}
 				if (before && after) {
 					const inferred = await takeExpect(before, after)
 					if (inferred) step.expect = inferred
@@ -1071,7 +1128,11 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				}
 
 				if (after) lastSigByPage.set(pageIndex, after)
-				pushStep(step, pageIndex)
+				for (const rawEvent of action.raw) {
+					rawEvent.flowStepId = step.id
+					if ('target' in step && step.target) rawEvent.locatorEvidence = step.target.candidates
+				}
+				pushStep(step, pageIndex, action.raw)
 			}
 		}
 
@@ -1235,7 +1296,12 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 						pages: [...pagesByIndex].map(([index, target]) => ({ index, url: target.url() })),
 						dialogs,
 						downloads,
-						events: allEvents,
+						events: allEvents.map((event) => {
+							if (event.kind !== 'input' && event.kind !== 'change') return event
+							const data = { ...(event.data ?? {}) }
+							if (data.value !== undefined) { delete data.value; data.masked = true }
+							return { ...event, data }
+						}),
 					},
 					null,
 					2,

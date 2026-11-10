@@ -17,7 +17,8 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { EmptyRecordingError, recordOnPage, type RecordResult } from '../engine/recorder/src/index.js'
+import { piStatus, runPiPrompt } from './pi-agent.js'
+import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { flattenSteps, playOnPage, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
 import type { Flow } from '../engine/schema/src/index.js'
@@ -59,6 +60,9 @@ let recordingCaptureRoot = ''
 let recordingCaptureDir = ''
 let recordingCaptureFrames: string[] = []
 let recordingAdditionalPages: Page[] = []
+let recordingTabIds: string[] = []
+const recordingTabSnapshots = new Map<string, { url: string; title: string }>()
+let recordingHostEvents: HostCaptureEvent[] = []
 
 /* ---------------- 回放会话状态 ---------------- */
 let playPromise: Promise<RunResult> | null = null
@@ -124,6 +128,9 @@ function resetRecordingState(): void {
 	recordingCaptureDir = ''
 	recordingCaptureFrames = []
 	recordingAdditionalPages = []
+	recordingTabIds = []
+	recordingTabSnapshots.clear()
+	recordingHostEvents = []
 	recStopRequested = false
 }
 
@@ -154,12 +161,20 @@ function registerBrowserTab(tabId: string, view: WebContentsView): void {
 	// 每个原生标签页都单独转发状态事件，而非只监听启动时的活动页；
 	// 这样切换到后台标签页时，地址栏和加载状态也能保持同步。
 	browserViews.set(tabId, view)
+	if ((recStartPromise || recPromise) && !recordingTabIds.includes(tabId)) {
+		recordingTabIds.push(tabId)
+		recordingHostEvents.push({ action: 'tabCreated', ts: Date.now(), tabId, url: view.webContents.getURL(), title: view.webContents.getTitle() })
+	}
 	const forward = (url: string): void => {
+		if (recordingTabIds.includes(tabId)) recordingTabSnapshots.set(tabId, { url, title: view.webContents.getTitle() })
 		if (!mainWindow.isDestroyed())
 			mainWindow.webContents.send('browser:urlChanged', { url, tabId })
 	}
 	view.webContents.on('did-navigate', (_event, url) => forward(url))
 	view.webContents.on('did-navigate-in-page', (_event, url) => forward(url))
+	view.webContents.on('will-redirect', (_event, url, _isInPlace, isMainFrame) => {
+		if (isMainFrame && (recPromise || recStartPromise)) recordingHostEvents.push({ action: 'autoRedirect', ts: Date.now(), tabId, url, title: view.webContents.getTitle(), previousUrl: view.webContents.getURL() })
+	})
 	view.webContents.on('did-start-loading', () => {
 		if (!mainWindow.isDestroyed()) mainWindow.webContents.send('browser:loading', { loading: true, tabId })
 	})
@@ -446,6 +461,9 @@ async function createWindow(): Promise<void> {
 	}
 	browserView.webContents.on('did-navigate', (_e, url: string) => fwd(url))
 	browserView.webContents.on('did-navigate-in-page', (_e, url: string) => fwd(url))
+	browserView.webContents.on('will-redirect', (_event, url, _isInPlace, isMainFrame) => {
+		if (isMainFrame && (recPromise || recStartPromise)) recordingHostEvents.push({ action: 'autoRedirect', ts: Date.now(), tabId: activeBrowserTabId, url, title: browserView.webContents.getTitle(), previousUrl: browserView.webContents.getURL() })
+	})
 	browserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
 		if (!isMainFrame || errorCode === -3) return
 		if (!mainWindow.isDestroyed()) {
@@ -533,6 +551,17 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				await rm(result.artifactsDir, { recursive: true, force: true }).catch(() => undefined)
 				return { recording: null, reason: 'empty' }
 			}
+			const captureTabs: CaptureTab[] = recordingTabIds.map((tabId, pageIndex) => {
+				const view = browserViews.get(tabId)
+				const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : (recordingTabSnapshots.get(tabId)?.url || '')
+				const title = view && !view.webContents.isDestroyed() ? view.webContents.getTitle() : (recordingTabSnapshots.get(tabId)?.title || '')
+				let systemId = 'browser', systemName = 'Browser'
+				try { const host = new URL(url).hostname.toLowerCase(); if (host) { systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'; systemName = host } } catch {}
+				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId, systemName }
+			})
+			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents).catch((error) => {
+				console.warn('[flowlink] FlowForge evidence archive could not be written:', (error as Error).message)
+			})
 			const capture = await stopRecordingCapture()
 			let stepScreenshots: string[] = []
 			try {
@@ -679,6 +708,7 @@ function registerIpc(): void {
 			browserView.setVisible(false)
 			browserView = next
 			activeBrowserTabId = tabId
+			if (recPromise) recordingHostEvents.push({ action: 'tabActivated', ts: Date.now(), tabId, url: next.webContents.getURL(), title: next.webContents.getTitle() })
 		}
 		browserView.setBounds(browserBounds)
 		browserSurfaceVisible = true
@@ -688,6 +718,7 @@ function registerIpc(): void {
 	ipcMain.handle('browser:closeTab', (_event, tabId: string) => {
 		if (tabId === 'browser' || !browserViews.has(tabId)) return false
 		const view = browserViews.get(tabId)!
+		if (recPromise) recordingHostEvents.push({ action: 'tabClosed', ts: Date.now(), tabId, url: view.webContents.getURL(), title: view.webContents.getTitle() })
 		mainWindow.contentView.removeChildView(view)
 		view.webContents.close()
 		browserViews.delete(tabId)
@@ -747,22 +778,30 @@ function registerIpc(): void {
 	/* ---------- 内嵌浏览器：导航 ---------- */
 	ipcMain.handle('recording:navigate', async (_e, url: string, tabId?: string) => {
 		const normalized = normalizeHttpUrl(url)
-		const view = tabId ? browserViews.get(tabId) ?? browserView : browserView
+		const resolvedTabId = tabId || activeBrowserTabId
+		const view = browserViews.get(resolvedTabId) ?? browserView
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'userNavigateRequested', ts: Date.now(), tabId: resolvedTabId, url: normalized, title: view.webContents.getTitle() })
 		await view.webContents.loadURL(normalized)
 		return view.webContents.getURL()
 	})
 	ipcMain.handle('recording:goBack', (_e, tabId?: string) => {
-		const view = tabId ? browserViews.get(tabId) ?? browserView : browserView
+		const resolvedTabId = tabId || activeBrowserTabId
+		const view = browserViews.get(resolvedTabId) ?? browserView
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'historyBackRequested', ts: Date.now(), tabId: resolvedTabId, url: view.webContents.getURL(), title: view.webContents.getTitle() })
 		view.webContents.goBack()
 		return true
 	})
 	ipcMain.handle('recording:goForward', (_e, tabId?: string) => {
-		const view = tabId ? browserViews.get(tabId) ?? browserView : browserView
+		const resolvedTabId = tabId || activeBrowserTabId
+		const view = browserViews.get(resolvedTabId) ?? browserView
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'historyForwardRequested', ts: Date.now(), tabId: resolvedTabId, url: view.webContents.getURL(), title: view.webContents.getTitle() })
 		view.webContents.goForward()
 		return true
 	})
 	ipcMain.handle('recording:reload', (_e, tabId?: string) => {
-		const view = tabId ? browserViews.get(tabId) ?? browserView : browserView
+		const resolvedTabId = tabId || activeBrowserTabId
+		const view = browserViews.get(resolvedTabId) ?? browserView
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'reloadRequested', ts: Date.now(), tabId: resolvedTabId, url: view.webContents.getURL(), title: view.webContents.getTitle() })
 		view.webContents.reload()
 		return true
 	})
@@ -798,12 +837,17 @@ function registerIpc(): void {
 			// browserViews 保持一致，供跨页录制和回放映射复用。
 			const additionalPages: Page[] = []
 			recordingAdditionalPages = additionalPages
+			recordingTabIds = [activeBrowserTabId]
+			recordingTabSnapshots.clear()
+			recordingHostEvents = []
+			for (const [id, view] of browserViews) recordingTabSnapshots.set(id, { url: view.webContents.getURL(), title: view.webContents.getTitle() })
 			for (const [tabId, view] of browserViews) {
 				if (tabId === activeBrowserTabId) continue
 				try {
 					additionalPages.push(
 						await withAbort(engine.pageFor(tabId, view.webContents), controller.signal),
 					)
+					recordingTabIds.push(tabId)
 				} catch (err) {
 					if (controller.signal.aborted) throw err
 					console.warn(`[flowlink] 标签页 ${tabId} 未能附着：`, (err as Error).message)
@@ -818,6 +862,8 @@ function registerIpc(): void {
 			recPromise = recordOnPage({
 				page,
 				pages: additionalPages,
+				tabIds: recordingTabIds,
+				keepRaw: true,
 				startUrl: opts.startUrl,
 				skipNavigate: true,
 				outPath: recOutPath,
@@ -1031,6 +1077,19 @@ function registerIpc(): void {
 			await playPromise.catch(() => undefined)
 		}
 		return true
+	})
+
+
+	/* ---------- Pi Coding Agent: AI bedrock ---------- */
+	ipcMain.handle('pi:status', async () => piStatus())
+	ipcMain.handle('pi:prompt', async (_event, opts: { prompt: string; timeoutMs?: number }) => {
+		if (!opts || typeof opts.prompt !== 'string') throw new Error('Pi request is invalid')
+		// Keep the agent's workspace inside FlowLink's own workflow/artifact directory.
+		// This workflow assistant has no Pi tools enabled; FlowLink validates and persists any generated material itself.
+		await mkdir(flowsRoot, { recursive: true })
+		const result = await runPiPrompt({ prompt: opts.prompt, cwd: flowsRoot, timeoutMs: opts.timeoutMs })
+		if (!result.ok) throw new Error(result.error || 'Pi agent request failed')
+		return { text: result.text, exitCode: result.exitCode }
 	})
 
 	/* ---------- Flow 读取（分析页用） ---------- */

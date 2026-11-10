@@ -1,0 +1,7 @@
+
+{
+  "{provider-in-pi-settings}": {
+    "type": "api_key",
+    "key": "PASTE_YOUR_OPENCODE_GO_API_KEY_HERE"
+  }
+}

@@ -145,6 +145,15 @@ const BaseStepSchema = z.object({
 	 * 不填 = 沿用上一步的标签页。多标签页流程（如"从 A 系统复制到 B 系统"）靠它表达。
 	 */
 	page: z.object({ index: z.number().int().min(0) }).optional(),
+	// FlowForge-compatible provenance metadata: retained on the executable Flow step.
+	tabId: z.string().optional(),
+	systemId: z.string().optional(),
+	systemName: z.string().optional(),
+	pageUrl: z.string().optional(),
+	sourceEventIds: z.array(z.string()).optional(),
+	locatorEvidence: z.array(CandidateSchema).optional(),
+	reviewRequired: z.boolean().optional(),
+	reviewReason: z.string().optional(),
 })
 
 /**
@@ -154,6 +163,9 @@ const BaseStepSchema = z.object({
 const navigateStep = BaseStepSchema.extend({
 	kind: z.literal('navigate'),
 	url: z.string(),
+	navigationType: z.enum(['initial', 'user_navigate', 'user_link', 'user_redirect', 'sso_redirect', 'login_redirect', 'auto_redirect', 'popup_navigation', 'history_navigation', 'unknown_navigation']).optional(),
+	previousUrl: z.string().optional(),
+	navigationEvidence: z.array(z.string()).optional(),
 })
 
 const clickStep = BaseStepSchema.extend({
