@@ -562,6 +562,7 @@
 				state.allExplicit = false
 				F.browser.hide()
 				renderRecordingWorkspace()
+				if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped and only fallback steps were available. Review the captured material and advise what evidence is missing for reliable replay. Do not generate a replacement material yet.' })
 				return
 			}
 
@@ -647,6 +648,7 @@
 			F.browser.hide()
 			state.browserElement.hidden = true
 			renderRecordingWorkspace()
+			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped. Review the initial recording, captured steps, target evidence, navigation and cross-tab/system transitions. Give actionable advice for improving replay reliability. Do not generate a refined material until the user explicitly asks.' })
 		} catch (err) {
 			console.error('[bridge] 停止录制失败：', err)
 			state.pending = null
@@ -1434,7 +1436,7 @@
 		// 再清除运行标记。
 		console.log('[bridge] 回放完成：', result.ok ? '成功' : '失败', result.metrics)
 		const item = findTestItem()
-		if (!item?.testRunning) return
+		if (!item) return
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
 		item.testRunning = false
 		for (let index = 0; index < (result.steps || []).length; index++) {
@@ -1447,6 +1449,10 @@
 					: { status: 'pending' }
 		}
 		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		if (!result.ok && typeof window.startFlowLinkAIAdvice === 'function') {
+			const failed = (result.steps || []).filter((step) => step.status === 'fail')
+			void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay failed. Diagnose the failed step(s) and the whole procedure using the execution result and captured evidence. Suggest a fix, but do not modify the source material unless the user explicitly requests a refined material.', failureContext: { ok: result.ok, error: result.error, metrics: result.metrics, failedSteps: failed, allResults: result.steps } })
+		}
 	})
 
 	/** 回放错误 */
@@ -1458,6 +1464,7 @@
 			const index = item.testResults.findIndex((result) => result.status === 'running')
 			if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
 			if (item.resultTab === 'Test') renderSummaryWorkspace()
+			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
 		}
 	})
 

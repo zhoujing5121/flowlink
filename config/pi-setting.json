@@ -1,0 +1,7 @@
+
+{
+  "provider": "opencode-go",
+  "model": "kimi-k3",
+  "thinkingLevel": "medium",
+  "timeoutMs": 120000
+}

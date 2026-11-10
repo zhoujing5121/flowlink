@@ -449,6 +449,12 @@
 			// 中键走 auxclick，右键走 contextmenu，这里只管左键
 			if (event.button !== 0) return
 			var target = retarget(eventTargetOf(event))
+			if (event.altKey) {
+				var picked = ''
+				try { picked = normalize(target && (target.innerText || target.textContent || target.value) || '') } catch {}
+				send('extractValue', target, { pickedText: clip(picked, 500) }, true)
+				return
+			}
 			send('click', target, { button: 0, modifiers: modifiersOf(event), offset: offsetWithinPaddingBox(target, event) }, true)
 		},
 		true,
@@ -527,6 +533,43 @@
 		},
 		true,
 	)
+
+	// FlowForge-compatible supplementary evidence events. Clipboard payloads are never read.
+	document.addEventListener('dblclick', function (event) {
+		if (!event.isTrusted) return
+		send('dblclick', retarget(eventTargetOf(event)), { button: event.button, modifiers: modifiersOf(event) }, true)
+	}, true)
+	document.addEventListener('submit', function (event) {
+		if (!event.isTrusted) return
+		var form = event.target
+		if (!form || form.nodeType !== 1) return
+		var submitter = event.submitter && event.submitter.nodeType === 1 ? event.submitter : form
+		send('submit', retarget(submitter), { formName: clip(form.getAttribute('name') || form.id || form.getAttribute('aria-label') || '', 160) }, true)
+	}, true)
+	document.addEventListener('dragstart', function (event) {
+		if (!event.isTrusted) return
+		send('dragStart', retarget(eventTargetOf(event)), {}, true)
+	}, true)
+	document.addEventListener('drop', function (event) {
+		if (!event.isTrusted) return
+		send('drop', retarget(eventTargetOf(event)), {}, true)
+	}, true)
+	document.addEventListener('copy', function (event) {
+		var target = document.activeElement && document.activeElement.nodeType === 1 ? document.activeElement : document.body
+		send('copy', retarget(target), { clipboardContentCaptured: false }, true)
+	}, true)
+	document.addEventListener('paste', function (event) {
+		var target = retarget(eventTargetOf(event))
+		send('paste', target, { clipboardContentCaptured: false }, true)
+	}, true)
+	document.addEventListener('focusin', function (event) {
+		var target = event.target
+		if (target && target.nodeType === 1 && target.matches && target.matches('a,button,input,select,textarea,[role=button],[role=checkbox],[role=combobox],[contenteditable=true]')) send('focus', retarget(target), {}, true)
+	}, true)
+	document.addEventListener('focusout', function (event) {
+		var target = event.target
+		if (target && target.nodeType === 1 && target.matches && target.matches('a,button,input,select,textarea,[role=button],[role=checkbox],[role=combobox],[contenteditable=true]')) send('blur', retarget(target), {}, true)
+	}, true)
 
 	/*
 	 * hover：鼠标在某元素上停留 ≥350ms 且没移出 → 上报一次（带 facts）。

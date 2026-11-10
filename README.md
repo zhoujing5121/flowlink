@@ -126,3 +126,16 @@ artifacts\<flowId>\runs\<runId>\
 ## Status and scope
 
 The repository currently has no project-owned automated test suite or lint script. Validation is provided by the strict build, TypeScript compiler, and Zod flow validation. Before completing a change, run `npm run build` and `npx tsc --noEmit`, and add targeted tests when introducing a test runner.
+
+## FlowForge recorder compatibility
+
+FlowLink now writes a FlowForge-compatible evidence sidecar (`flowforge-recording.json`) beside the executable Flow IR. See [`docs/FLOWFORGE_MERGE.md`](docs/FLOWFORGE_MERGE.md) for the capture model, schema mapping, privacy behavior, known gaps and Windows validation checklist.
+
+
+### Pi Coding Agent (optional)
+
+FlowLink can invoke an installed Pi CLI through its main-process bridge. Set `PI_CLI_PATH` if `pi` is not on PATH, configure Pi's model credentials, and call `window.flowlink.pi.status()` / `window.flowlink.pi.prompt({ prompt: "..." })` from the renderer. Requests are read-only by default. Pass `allowEdits: true` only when the user explicitly approves write-capable agent tools.
+
+### Pi Coding Agent SDK
+
+FlowLink integrates Pi in-process using `@earendil-works/pi-coding-agent`. Run `npm install` after extracting/updating the project, configure a Pi model/provider, then start FlowLink with `npm start`. The AI pane offers post-recording advice, selected-material refinement advice, and replay-failure diagnosis. It creates a separate refined material only when the user explicitly requests one; the original recording is preserved. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.

@@ -2,7 +2,7 @@
   "name": "flowlink",
   "version": "0.1.0",
   "private": true,
-  "description": "FlowLink — Electron 录制回放自动化工具（UI 复刻 FlowLink 设计稿，引擎复用 @rr/*）",
+  "description": "FlowLink — Electron 录制回放自动化工具",
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
@@ -12,17 +12,20 @@
     "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --out=release --overwrite && node package.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.1",
     "playwright-core": "1.64.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",
-    "electron": "^33.4.11",
+    "electron": "^45.2.3",
     "esbuild": "^0.24.2",
     "typescript": "^7.0.2"
   },
   "allowScripts": {
-    "electron@33.4.11": true,
-    "esbuild": true
+    "electron@45.2.3": true,
+    "esbuild@0.24.2": true,
+    "@google/genai@2.21.0": true,
+    "protobufjs@7.6.6": true
   }
 }

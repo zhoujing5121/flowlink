@@ -1531,14 +1531,9 @@ async function buildMergedFlow(chosen, combined) {
 function summarizeRecordings() {
   const state = recordingSession();
   const chosen = state.items.filter((item) => item.checked && item.analyzed);
-  if (
-    chosen.length < 2 ||
-    state.items.some((item) => item.checked && !item.analyzed) ||
-    state.stage === "recording" ||
-    state.stage === "preparing"
-  )
-    return;
-  $("summaryDialog").showModal();
+  if (!chosen.length || state.items.some((item) => item.checked && !item.analyzed) || state.stage === "recording" || state.stage === "preparing") return;
+  // Refine is an AI review action; merging remains available as a separate explicit operation.
+  startAIAdvice({ mode: "selected-materials", items: chosen, reason: "Review the selected material(s) and recommend concrete reliability improvements. Do not change or save anything yet." });
 }
 
 async function confirmRecordingSummary() {
@@ -2017,7 +2012,134 @@ function renderAIPanel() {
   };
 }
 
-function invokeAIMerge(option, prompt) {
+async function aiMaterialContext(items) {
+  const result = [];
+  for (const [index, item] of (items || []).entries()) {
+    let executableFlow = null;
+    if (item.flowFile && window.flowlink?.flow?.load) {
+      try { executableFlow = await window.flowlink.flow.load(item.flowFile); } catch (error) { console.warn("Could not load Flow context for AI", error); }
+    }
+    result.push({
+      sourceIndex: index + 1,
+      id: item.id,
+      name: item.name,
+      url: item.url,
+      steps: executableFlow?.steps || item.steps,
+      flowMeta: executableFlow ? { id: executableFlow.id, title: executableFlow.title, meta: executableFlow.meta, variables: executableFlow.variables } : undefined,
+      stepDetails: item.stepDetails,
+      processGroups: item.processGroups,
+      testResults: item.testResults,
+      testFlowSteps: item.testFlowSteps,
+      recordingId: item.recordingId,
+      sourceIds: item.sourceIds,
+    });
+  }
+  return result;
+}
+
+function aiRequestNeedsMaterial(text) {
+  return /generate\s+(?:a\s+)?(?:refined|improved|new)\s+(?:workflow|material|recording|flow)|create\s+(?:a\s+)?refined\s+(?:material|workflow|flow)|\b(?:apply|implement|fix|modify|update|refine)\b.{0,35}\b(?:step|material|workflow|flow|recording)\b|生成.{0,8}(?:优化|改进|新).{0,6}(?:材料|流程|录制)|生成优化后的材料|生成 refined material/i.test(text || "");
+}
+
+function appendAIMessage(item, role, text) {
+  ensureAssistantData(item);
+  item.chat.push({ role, text: String(text || "") });
+  item.chatDraft = "";
+  renderAIPanel();
+}
+
+async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext = {}) {
+  const bridge = window.flowlink?.pi;
+  if (!bridge?.prompt) throw new Error("FlowLink Pi SDK bridge is unavailable.");
+  const context = await aiMaterialContext(sourceItems?.length ? sourceItems : [item]);
+  const prompt = [
+    `FlowLink task: ${mode}.`,
+    "Give the user practical advice only. Do not generate or save a replacement material unless explicitly asked in a later request.",
+    "Focus on replay reliability: navigation causes, authentication redirects, target evidence, waits, state assertions, tab/system context, and data dependencies.",
+    `Recent AI-pane conversation:\n${JSON.stringify((item.chat || []).slice(-8).map((message) => ({ role: message.role, text: message.text })).slice(0, 8)).slice(0, 12000)}`,
+    `User request: ${userRequest || "Review this material and suggest improvements."}`,
+    `Material context JSON:\n${JSON.stringify(context).slice(0, 65000)}`,
+    Object.keys(extraContext).length ? `Execution context JSON:\n${JSON.stringify(extraContext).slice(0, 25000)}` : "",
+  ].filter(Boolean).join("\n\n");
+  const result = await bridge.prompt({ prompt, timeoutMs: 120000 });
+  return result.text;
+}
+
+async function generateRefinedMaterial(sourceItems, request, parentItem) {
+  const sources = sourceItems?.length ? sourceItems : [parentItem].filter(Boolean);
+  if (!sources.length) throw new Error("Select at least one material to refine.");
+  const loaded = [];
+  for (const source of sources) {
+    if (source.flowFile && window.flowlink?.flow?.load) {
+      try { loaded.push(await window.flowlink.flow.load(source.flowFile)); } catch (error) { console.warn("Could not load source Flow", error); }
+    }
+  }
+  if (!loaded.length) throw new Error("The selected material has no saved executable Flow. Advice is available, but a replayable refined material cannot be saved yet.");
+  const sourceSteps = loaded.flatMap((flow) => flow.steps || []);
+  const bridge = window.flowlink?.pi;
+  const prompt = [
+    "Generate a refined FlowLink material from the supplied executable Flow JSON.",
+    "Return JSON only with {title, summary, steps, rationale, risks}. `steps` must be valid FlowLink step objects compatible with the source schema.",
+    "Preserve the original business intent and source evidence. Do not invent selectors, URLs, field values, credentials, or unobserved outcomes. Prefer small, evidence-backed changes. If uncertain, preserve the original step.",
+    `User refinement request: ${request}`,
+    `Prior AI-pane discussion and recommendations: ${JSON.stringify((parentItem?.chat || []).slice(-10).map((message) => ({ role: message.role, text: message.text }))).slice(0, 16000)}`,
+    `Source Flow metadata: ${JSON.stringify(loaded.map(({ id, title, meta, variables }) => ({ id, title, meta, variables })))}`,
+    `Source executable steps: ${JSON.stringify(sourceSteps).slice(0, 65000)}`,
+  ].join("\n\n");
+  const result = await bridge.prompt({ prompt, timeoutMs: 180000 });
+  let parsed;
+  try {
+    const raw = result.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    parsed = JSON.parse(raw);
+  } catch { throw new Error("Pi did not return valid JSON for the refined material. The source was left unchanged. Ask Pi to retry with valid JSON."); }
+  if (!parsed || !Array.isArray(parsed.steps) || !parsed.steps.length) throw new Error("Pi's refined material has no executable steps; the source was left unchanged.");
+  const base = loaded[0];
+  const flow = {
+    ...base,
+    id: `refined-${Date.now().toString(36)}`,
+    title: String(parsed.title || `Refined ${parentItem?.name || sources[0].name || "Material"}`),
+    version: 1,
+    createdAt: new Date().toISOString(),
+    steps: parsed.steps,
+  };
+  const taskCode = currentFlow?.code || activeFlowKey;
+  const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: flow.title });
+  const refined = {
+    ...sources[0],
+    id: recording.id,
+    name: flow.title,
+    recordingId: recording.id,
+    flowFile: recording.flowFile,
+    artifactsDir: recording.artifactsDir,
+    url: flow.meta?.env?.startUrl || sources[0].url,
+    checked: false,
+    summary: true,
+    recorded: false,
+    analyzed: true,
+    sourceIds: sources.flatMap((source) => source.sourceIds || [source.id]),
+    steps: flow.steps.map((step, index) => `${step.kind || "action"}${step.url ? ` · ${step.url}` : step.value ? ` · ${step.value}` : step.target?.candidates?.[0]?.value ? ` · ${step.target.candidates[0].value}` : ` · Step ${index + 1}`}`),
+    stepDetails: sources[0].stepDetails || [],
+    processGroups: undefined,
+    references: [],
+    resultTab: "Process",
+    aiRationale: Array.isArray(parsed.rationale) ? parsed.rationale : [],
+    aiRisks: Array.isArray(parsed.risks) ? parsed.risks : [],
+  };
+  const state = recordingSession();
+  state.items.push(refined);
+  state.focused = refined.id;
+  state.aiSourceIds = [refined.id];
+  state.view = "analysis";
+  state.stage = "done";
+  rebuildItemTestFlow(refined);
+  renderRecordingWorkspace();
+  state.aiOpen = true;
+  renderAIPanel();
+  appendAIMessage(refined, "assistant", `Created a new refined material: ${refined.name}. The original material was preserved.\n\nRationale:\n${refined.aiRationale.join("\n- ") || "See the generated steps."}\n\nRisks / items to verify:\n${refined.aiRisks.join("\n- ") || "Run a replay test before relying on this material."}`);
+  return refined;
+}
+
+async function invokeAIMerge(option, prompt) {
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext();
@@ -2025,50 +2147,82 @@ function invokeAIMerge(option, prompt) {
   const optionLabels = {
     merge: "Merge selected recordings",
     generate: "Generate flow from description",
-    optimize: "Optimize current flow",
+    optimize: "Review and refine current material",
     input: prompt || "User request",
   };
   const userText = prompt || optionLabels[option] || option;
   item.chat.push({ role: "user", text: userText });
   item.chatDraft = "";
-
-  const chosen = state.items.filter((entry) => entry.checked && entry.analyzed);
-
-  if (option === "merge" && chosen.length >= 2) {
-    item.chat.push({
-      role: "assistant",
-      text: "Merging selected recordings...",
-    });
-    renderAIPanel();
-    confirmRecordingSummary();
-    return;
-  }
-
-  if ((option === "merge" || option === "optimize") && recording?.analyzed) {
-    item.chat.push({
-      role: "assistant",
-      text: "AI mock: processing current flow (merge path placeholder).",
-    });
-    renderAIPanel();
-    return;
-  }
-
-  if (option === "generate" && prompt) {
-    item.chat.push({
-      role: "assistant",
-      text: "AI mock: generating flow from description (placeholder).",
-    });
-    renderAIPanel();
-    return;
-  }
-
-  item.chat.push({
-    role: "assistant",
-    text: "当前为本地交互示例，尚未连接 AI 服务。",
-  });
   renderAIPanel();
-  $("assistantInput")?.focus();
+
+  const selected = (state.aiSourceIds?.length
+    ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
+    : state.items.filter((entry) => entry.checked && entry.analyzed));
+  const sources = selected.length ? selected : (recording?.analyzed ? [recording] : []);
+
+  if (aiRequestNeedsMaterial(userText)) {
+    try {
+      item.chat.push({ role: "assistant", text: "Pi is preparing a separate refined material. The original recording will not be overwritten…" });
+      renderAIPanel();
+      await generateRefinedMaterial(sources, userText, recording || item);
+    } catch (error) {
+      appendAIMessage(item, "assistant", `Could not create refined material: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return;
+  }
+
+  try {
+    item.chat.push({ role: "assistant", text: "Pi is reviewing the recording evidence…" });
+    renderAIPanel();
+    const answer = await askPiForAdvice(item, sources, userText, state.aiTaskMode || (recording?.resultTab === "Test" ? "replay-failure" : "material-refinement"), state.aiFailureContext || {});
+    const last = item.chat[item.chat.length - 1];
+    if (last?.role === "assistant" && last.text.startsWith("Pi is reviewing")) last.text = answer;
+    else item.chat.push({ role: "assistant", text: answer });
+    renderAIPanel();
+  } catch (error) {
+    appendAIMessage(item, "assistant", `Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
+  }
 }
+
+async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
+  const state = recordingSession();
+  const sources = (items || []).filter(Boolean);
+  if (!sources.length) return;
+  state.aiSourceIds = sources.map((item) => item.id);
+  state.aiTaskMode = mode || "material-refinement";
+  state.aiFailureContext = failureContext || {};
+  state.focused = sources[0].id;
+  state.view = "analysis";
+  state.stage = state.stage === "recording" ? "done" : state.stage;
+  state.aiOpen = true;
+  const item = sources[0];
+  ensureAssistantData(item);
+  renderRecordingWorkspace();
+  renderAIPanel();
+  const prompt = reason || (mode === "recording-complete"
+    ? "Review this newly generated recording and advise how to improve replay reliability. Do not create a new material yet."
+    : mode === "replay-failure"
+      ? "Analyze the failed replay step and the procedure as a whole. Recommend evidence-backed fixes; do not modify the source yet."
+      : "Review the selected material(s) and recommend concrete improvements. Do not create a new material yet.");
+  item.chat.push({ role: "assistant", text: "Pi is analyzing the recording evidence…" });
+  renderAIPanel();
+  try {
+    const answer = await askPiForAdvice(item, sources, prompt, state.aiTaskMode, failureContext || {});
+    const last = item.chat[item.chat.length - 1];
+    if (last?.role === "assistant" && last.text.startsWith("Pi is analyzing")) last.text = answer;
+    else item.chat.push({ role: "assistant", text: answer });
+  } catch (error) {
+    const last = item.chat[item.chat.length - 1];
+    const message = `Pi could not analyze this material: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`;
+    if (last?.role === "assistant" && last.text.startsWith("Pi is analyzing")) last.text = message;
+    else item.chat.push({ role: "assistant", text: message });
+  }
+  renderAIPanel();
+}
+
+
+// Bridge integration points used after recorder stop and replay failures.
+window.startFlowLinkAIAdvice = startAIAdvice;
 
 function requestedStep(text) {
   const m =

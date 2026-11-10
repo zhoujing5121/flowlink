@@ -81,3 +81,8 @@ export type {
 	RecordedDownload,
 	PlannedItem,
 } from './types.js'
+
+export { writeFlowForgeArchive } from './flowforge-archive.js'
+export type { CaptureTab, HostCaptureEvent } from './flowforge-archive.js'
+
+export { FlowForgeCaptureEventSchema, FlowForgeRecordingSchema, FlowForgeTargetSchema } from './flowforge-capture-schema.js'
