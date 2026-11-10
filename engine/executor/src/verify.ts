@@ -38,6 +38,8 @@ export async function pollUntil<T>(
 	timeoutMs: number,
 	pollMs: number = POLL_MS,
 ): Promise<T | undefined> {
+	// 只有 `undefined` 表示需要重试；false 和空字符串都是有效结果，
+	// 必须立即返回，不能当成探测失败。
 	const deadline = Date.now() + Math.max(0, timeoutMs)
 	for (;;) {
 		const result = await attempt()
@@ -86,6 +88,8 @@ export async function verifyExpect(
 	expect: Expect,
 	waitMs: number = EXPECT_WAIT_MS,
 ): Promise<string> {
+	// 成功时返回简洁、适合写入步骤日志的观察结果；语义不匹配则抛出 StepFailure，
+	// 让执行器保留 EXPECT_MISMATCH 错误码。
 	switch (expect.kind) {
 		case 'urlChange': {
 			const re = wildcardToRegExp(expect.pattern)

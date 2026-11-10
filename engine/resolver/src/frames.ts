@@ -1,10 +1,10 @@
 /**
- * FramePath → 进入 iframe 的解析。
+ * 按 FramePath 逐层解析并进入 iframe。
  *
  * schema 里三种 segment：
- * - `frameElement`：用 anchor 的候选把 iframe 元素解析出来，再 `contentFrame()` 进入（最可靠）；
- * - `urlPattern`：按子 frame 的 URL 通配匹配（`*` 通配）；
- * - `index`：按子 frame 顺序（最后手段）。
+ * - `frameElement`：先按 anchor 候选定位 iframe 元素，再通过 `contentFrame()` 进入（最可靠）；
+ * - `urlPattern`：按子 frame 的 URL 通配匹配（`*` 表示任意字符）；
+ * - `index`：按子 frame 顺序定位，是精度较低、由 IR 显式指定的定位方式。
  *
  * 注意：跨域 iframe 一样能进去（Playwright 的 Frame API 不受同源限制），
  * 但如果 anchor 解析失败就只能靠 urlPattern/index 兜底。
@@ -34,7 +34,9 @@ export function wildcardToRegExp(pattern: string): RegExp {
 }
 
 export interface FrameEnterResult {
+	/** 进入路径终点的 Page/Frame；空路径时即输入 Page。 */
 	scope: Scope
+	/** 实际进入的 frame 数量；同层 URL 校验段不会增加深度。 */
 	depth: number
 	detail: string[]
 }
@@ -54,6 +56,7 @@ async function findBySegment(
 	log: (msg: string) => void,
 ): Promise<Frame | undefined> {
 	if (segment.kind === 'frameElement') {
+		// 结构锚点优先；无法解析或取不到 contentFrame 时返回失败，不擅自改用其他层级。
 		const anchorRef: ElementRef = {
 			observed: segment.anchor.observed,
 			candidates: segment.anchor.candidates,
@@ -69,6 +72,7 @@ async function findBySegment(
 
 	const retries = opts.frameWaitRetries ?? 3
 	const waitMs = opts.frameWaitMs ?? 300
+	// URL 或索引查找都重试同一段配置；重试不会改变解析方式，也不会跨层级猜测。
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		const frames = childFramesOf(scope)
 		if (segment.kind === 'urlPattern') {
@@ -85,7 +89,11 @@ async function findBySegment(
 	return undefined
 }
 
-/** 按 FramePath 逐层进入，返回最内层作用域 */
+/**
+ * 从主页面按 IR 中的 FramePath 顺序解析到最内层 frame。
+ * frameElement 优先作为结构锚点，urlPattern/index 是子 frame 查找方式；
+ * 找不到任一必需层级就抛错，不会静默改在父页面解析目标。
+ */
 export async function enterFrameScope(
 	page: Page,
 	framePath: FramePath | undefined,
@@ -98,9 +106,9 @@ export async function enterFrameScope(
 	let depth = 0
 
 	for (const segment of segments) {
-		// recorder 产出的 frame.path 可能是 [frameElement(host iframe), urlPattern(该 iframe 的 URL)]：
+		// 录制产出的 frame.path 可能是 [frameElement(host iframe), urlPattern(该 iframe 的 URL)]：
 		// 此时 urlPattern 描述的是**同一层**（用作校验/兜底），不是下一层嵌套。
-		// 判定规则：当前作用域已经是 Frame 且 URL 命中 pattern → 视为校验，不再下钻。
+		// 判定规则：当前作用域已是 Frame 且 URL 命中 pattern 时，只作校验，不再下钻。
 		if (segment.kind === 'urlPattern' && !isPage(scope)) {
 			if (matchesUrlPattern(scope.url(), segment.pattern, opts.baseUrl, wildcardToRegExp)) {
 				detail.push(`frame[${depth - 1}] urlPattern 校验 ✓ ${scope.url()}`)
@@ -111,6 +119,7 @@ export async function enterFrameScope(
 
 		const frame = await findBySegment(scope, segment, opts, log)
 		if (!frame) {
+			// 必需层级缺失时直接失败；不得静默留在父 frame 上继续解析目标元素。
 			const desc =
 				segment.kind === 'frameElement'
 					? 'frameElement'

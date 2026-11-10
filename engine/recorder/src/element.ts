@@ -8,6 +8,10 @@
  *   把通过的写回 `candidates`。校验失败的候选一律不进 IR —— 这是「录放语义不漂移」的关键。
  *
  * 候选 score 越小越可信（schema 要求数组按 score 升序，`validateFlowContract` 会检查）。
+ *
+ * `observed` 固定记录采集时的快照；候选推导和 fingerprint 仅是解析提示，不得改写这些事实。
+ * 需要可安全回放的候选时，调用方必须提供已由 `capture-client.ts` 接受的子集；
+ * 本模块的兜底生成适用于脱离页面的元素和纯函数测试，但无法证明 locator 唯一。
  */
 import { createHash } from 'node:crypto'
 
@@ -70,6 +74,7 @@ const TESTID_ATTRS = ['data-testid', 'data-test-id', 'data-test'] as const
  * - 否则按启发式推导（可能是「未校验」的候选，仅供单测/降级场景）。
  */
 export function buildElementRef(input: RawElementFacts): ElementRef {
+	// 保持不可变观察事实与解析元数据分离：这里只规范化、排序或合成后者。
 	const observed = buildObservedFacts(input)
 	const attrs = pickFingerprintAttrs(input.attributes)
 	const fingerprint: Fingerprint = {
@@ -108,6 +113,7 @@ export function buildElementRef(input: RawElementFacts): ElementRef {
 
 /** ObservedFacts：录制时的原始事实，回放/自愈不得修改 */
 export function buildObservedFacts(input: RawElementFacts): ObservedFacts {
+	// 复制嵌套对象，避免后续录制侧补充信息时篡改最终序列化的事件时刻事实。
 	return {
 		tag: input.tag,
 		attributes: { ...input.attributes },

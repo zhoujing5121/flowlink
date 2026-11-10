@@ -1,12 +1,16 @@
 /**
  * URL 重定基（回放环境切换）。
  *
- * 录制产物里带的是**绝对 URL**（录在哪个端口就写哪个端口），但回放要跑在别的端口/环境
- * （fixture 站 5173、未来的 staging/prod）。`baseUrl` 只替换 **origin**，
+ * 录制产物里带的是**绝对 URL**（录在哪个端口就写哪个端口），但回放可能运行在其他端口或环境
+ * （例如 5173 测试站，或将来的预发布/生产环境）。`baseUrl` 只替换 **origin**，
  * path / query / hash 原样保留。
  *
  * 放在 resolver 里是因为 **iframe 的 urlPattern 也需要同一套重定基**
  * （录制时 frame.url 带 5199，回放在 5173），executor 从 `@rr/resolver` 复用。
+ */
+/**
+ * 将绝对 URL 的 origin 替换为回放基址，保留其余 URL 分量。
+ * 无基址、无效基址或无法解析的输入都原样返回（相对 URL 可在有效基址下解析）。
  */
 export function rebaseUrl(url: string, baseUrl?: string): string {
 	if (!baseUrl) return url

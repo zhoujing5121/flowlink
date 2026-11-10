@@ -1,7 +1,7 @@
 /**
- * RR IR（action trace）schema —— 唯一真源。
+ * RR 中间表示（动作轨迹）的 schema，是结构定义的唯一来源。
  *
- * 设计约定（与 docs/ 计划一致）：
+ * 设计约定：
  * 1. `observed` 是录制时的原始事实，回放/自愈 **不得修改**；
  * 2. `candidates` / `fingerprint` 是"解析结果"，AI 自愈可以写回（version+1）；
  * 3. 大文件（截图/DOM 快照）不进 IR，只存相对路径（crop.ref / artifact ref）；
@@ -20,7 +20,7 @@ export const RectSchema = z.object({
 })
 export type Rect = z.infer<typeof RectSchema>
 
-/** 语义候选：按 score 升序，越小越可信 */
+/** 语义候选按 score 升序排列；数值越小优先级越高，但不代表概率置信度。 */
 export const CandidateSchema = z.object({
 	kind: z.enum(['testid', 'role', 'label', 'text', 'css', 'xpath']),
 	value: z.union([
@@ -42,11 +42,11 @@ export const FingerprintSchema = z.object({
 	accessibleName: z.string().optional(),
 	/** 属性白名单（id、name、type、placeholder、aria- 与 data- 前缀属性等），已剔除动态 class */
 	attrs: z.record(z.string()).default({}),
-	/** sha1(tag + role + name + 稳定属性) */
+		/** 由 sha1(tag + role + name + 稳定属性) 得到的摘要。 */
 	stableHash: z.string(),
-	/** 从 frame document 到元素的 childIndex 链（最后手段） */
+	/** 从 frame 文档到元素的子节点索引链，仅作最后手段。 */
 	nodePath: z.array(z.number().int().min(0)).optional(),
-	/** 录制时的 CDP 节点 id，仅同 session 内有效 */
+	/** 录制时的 CDP 节点 id，仅在同一 session 内有效。 */
 	backendNodeId: z.number().int().optional(),
 })
 export type Fingerprint = z.infer<typeof FingerprintSchema>
@@ -61,9 +61,9 @@ export const ObservedFactsSchema = z.object({
 	viewport: z.object({ width: z.number(), height: z.number() }),
 	dpr: z.number().default(1),
 	recordedAt: z.number().int(),
-	/** 目标位于 open/closed shadow 内。closed 时 Playwright/aria 都进不去，回放只能 host + innerOffset */
+	/** 目标位于 open/closed shadow 内；closed 模式下 Playwright/aria 无法进入，只能通过 host + innerOffset 回放。 */
 	shadowRootType: z.enum(['open', 'closed']).optional(),
-	/** closed shadow 内层元素相对 host padding box 的 CSS px 偏移（取自事件 offsetX/offsetY） */
+	/** closed shadow 内层元素相对 host 内边距框的 CSS 像素偏移，取自事件的 offsetX/offsetY。 */
 	innerOffset: z.object({ x: z.number(), y: z.number() }).optional(),
 })
 export type ObservedFacts = z.infer<typeof ObservedFactsSchema>
@@ -99,9 +99,9 @@ export const ElementRefSchema = z.object({
 	candidates: z.array(CandidateSchema).min(1),
 	fingerprint: FingerprintSchema,
 	frame: FramePathSchema.default({ path: [] }),
-	/** 给 AI 兜底 / 产品 UI 展示用 */
+	/** 用于 AI 兜底和产品界面展示。 */
 	description: z.string().optional(),
-	/** 邻近文本锚点（左/上/父容器内的文本片段） */
+	/** 邻近文本锚点，例如左侧、上方或父容器内的文本片段。 */
 	nearbyText: z.array(z.string()).optional(),
 	crop: CropSchema.optional(),
 })
@@ -123,7 +123,7 @@ export const VariableSchema = z.object({
 	name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, '变量名必须是合法标识符'),
 	type: z.enum(['string', 'text', 'email', 'date', 'number', 'secret', 'file']).default('string'),
 	defaultValue: z.string().optional(),
-	/** secret 变量不会出现在 trace 明文里；UI 只显示 ****** */
+	/** secret 变量不会以明文出现在动作轨迹中；界面只显示 ****** */
 	secret: z.boolean().default(false),
 	source: z.enum(['input', 'csv']).default('input'),
 })
@@ -147,6 +147,10 @@ const BaseStepSchema = z.object({
 	page: z.object({ index: z.number().int().min(0) }).optional(),
 })
 
+/**
+ * 各动作 schema 共享 BaseStep 的标识、时限、预期结果和可选标签页上下文。
+ * 专用字段只描述 IR 数据形状；执行语义由 executor 实现，跨字段约束集中在下方校验器。
+ */
 const navigateStep = BaseStepSchema.extend({
 	kind: z.literal('navigate'),
 	url: z.string(),
@@ -158,7 +162,7 @@ const clickStep = BaseStepSchema.extend({
 	button: z.enum(['left', 'right', 'middle']).default('left'),
 	clickCount: z.number().int().min(1).max(3).default(1),
 	modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).default([]),
-	/** 点击位置：相对 target padding box 的 CSS px（closed shadow / canvas / 坐标兜底） */
+	/** 点击位置：相对 target 内边距框的 CSS 像素；用于 closed shadow、canvas 或坐标兜底。 */
 	position: z.object({ x: z.number(), y: z.number() }).optional(),
 })
 
@@ -289,6 +293,10 @@ export type Step =
 	| z.infer<typeof closeTabStep>
 	| { kind: 'group'; id: string; label: string; steps: Step[]; expect?: Expect; timeout?: number }
 
+/**
+ * 步骤递归通过 lazy schema 表达嵌套 group；判别字段 `kind` 决定具体动作结构。
+ * group 的递归成员同样经过 StepSchema 解析，从而让嵌套内容使用一致的数据约定。
+ */
 export const StepSchema: z.ZodType<Step, z.ZodTypeDef, unknown> = z.lazy(() =>
 	z.union([
 		navigateStep,
@@ -366,9 +374,13 @@ export type Flow = z.infer<typeof FlowSchema>
 
 const TEMPLATE_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
 
-/** 提取模板变量名；格式错误（未闭合/非法名）抛错由调用方转成 zod issue */
+/**
+ * 从字符串中提取合法 `{{name}}` 引用。
+ * 保留重复出现的引用顺序；未闭合括号或非法模板片段会抛错，供上层转为字段诊断。
+ */
 export function parseTemplate(value: string): string[] {
 	const names: string[] = []
+	// 按文本出现顺序收集每次引用（包括重复项）；只移除合法模板后再检查残留括号。
 	const stripped = value.replace(TEMPLATE_RE, (_m, name: string) => {
 		names.push(name)
 		return ''
@@ -378,7 +390,7 @@ export function parseTemplate(value: string): string[] {
 	return names
 }
 
-/** 用变量值渲染模板；缺失变量抛错（回放时应显式失败而不是填空串） */
+/** 渲染模板而不静默填空；缺少变量时显式失败，避免把错误输入继续送入页面。 */
 export function resolveTemplate(value: string, vars: Record<string, string>): string {
 	return value.replace(TEMPLATE_RE, (_m, name: string) => {
 		if (!(name in vars)) throw new Error(`缺少变量 "${name}"`)
@@ -388,10 +400,16 @@ export function resolveTemplate(value: string, vars: Record<string, string>): st
 
 const SAFE_REL_PATH = /^(?!\/)(?!.*\.\.)[\w./-]+$/
 
-/** 深遍历 flow，做跨字段契约校验（ElementRef 排序 / 路径安全 / 密码明文） */
+/**
+ * 检查 Zod 单字段类型无法表达的整体约束，返回所有发现的问题而不在首错处中断。
+ * 遍历嵌套 group、目标引用及 expect 引用，验证候选排序、裁剪路径安全、
+ * closed-shadow 点击坐标以及密码值必须使用变量模板。此检查不改写输入数据。
+ */
 export function validateFlowContract(flow: Flow): string[] {
 	const errors: string[] = []
+	// 递归检查所有引用并累积诊断；发现一项错误后继续遍历，避免只报告首个问题。
 	const visitRef = (ref: ElementRef, where: string): void => {
+		// 候选顺序本身决定解析优先级，同分允许保留原顺序，因此只拒绝逆序项。
 		for (let i = 1; i < ref.candidates.length; i++) {
 			const prev = ref.candidates[i - 1]!
 			const cur = ref.candidates[i]!

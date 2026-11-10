@@ -33,6 +33,7 @@ export interface ResolveOptions {
 }
 
 export interface ResolveContext {
+	/** 当前 Playwright 页面；frame path（若有）会从此页面开始逐层解析。 */
 	page: Page
 	/** AI 兜底（L4），由 executor 注入；null/undefined 表示禁用 */
 	repair?: (target: ElementRef, reason: string) => Promise<Locator | null>
@@ -41,6 +42,7 @@ export interface ResolveContext {
 }
 
 export interface ResolveResult {
+	/** 可直接交给执行器 action 的定位器；其定位策略由 level/strategy 说明。 */
 	locator: Locator
 	level: ResolveLevel
 	/** 0..100；L1 唯一语义命中 = 100，L2 按几何相似度，L4 固定 0 */
@@ -57,7 +59,7 @@ export interface ResolveResult {
 	release?: () => Promise<void>
 }
 
-/** candidates 按 score 升序（小的更可信）；同分保留原顺序（稳定排序） */
+/** candidates 按 score 升序确定尝试优先级（分值不代表概率置信度）；同分保留原顺序。 */
 export function sortCandidates(candidates: Candidate[]): Candidate[] {
 	return [...candidates].sort((a, b) => a.score - b.score)
 }

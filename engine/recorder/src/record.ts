@@ -15,6 +15,9 @@
  *              → 生成 ElementRef（含 fingerprint/stableHash/crop 截图）
  *              → expect = inferExpect(前一步签名, 当前签名)
  *   → stop（drive resolve / stopSignal / Ctrl+C）→ 冲掉最后一批 → 落 flow.json（写前 zod 校验）
+ *
+ * 本模块持有录制会话，也是唯一把动作转换为 schema Step 的层。采集回调同步追加事件队列；
+ * 慢速截图、locator 校验或页面稳定等待则在独立串行队列中处理，避免批次重排或事件丢失。
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -157,6 +160,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 	/* ---------------- 采集通道状态 ---------------- */
 
+	// pending 是尚未合流的工作队列，flush 会按批取走；allEvents 仅是有界诊断副本，
+	// 不能作为生成 Step 的来源，否则会重复处理已消费事件，也可能截断超过上限的录制。
 	const pending: RawEvent[] = []
 	const allEvents: RawEvent[] = []
 	const warnings: string[] = []
@@ -297,11 +302,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	}
 
 	const enqueueRawEvent = (sourcePage: Page, frame: Frame, event: RawEvent): void => {
+		// 先在同步回调内确定 frame/page 归属并入队；之后的异步 DOM 处理不再推测事件来源。
 		event.frameIndex = ensureFrameIndex(frame)
 		// 多标签页归属：binding 回调的 source.page 才是可靠来源（frame 会跨页，页面内也看不到 tab 身份）
 		event.pageIndex = ensurePageIndex(sourcePage)
 		lastEventTs = event.ts
 		pending.push(event)
+		// 诊断副本有固定上限，不能反过来限制实际录制队列。
 		if (allEvents.length < 5000) allEvents.push(event)
 	}
 
@@ -550,6 +557,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			const frame = framesByIndex.get(action.frameIndex ?? 0) ?? actionPage.mainFrame()
 			const uid = baseFacts.uid
 
+			// baseFacts 是事件发生时的兜底快照；仍能通过 UID 找到节点时，优先刷新位置与属性。
+			// 找不到则保留原始事实，确保短暂弹出的目标不会因后续消失而丢失。
 			let facts = baseFacts
 			let locator: Locator | undefined
 			if (uid) {
@@ -581,6 +590,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			}
 
 			const derived = deriveCandidates(merged)
+			// 候选先按评分生成；只有能定位到仍存活的 UID 时才做实时校验并标记为可信。
 			let accepted: Candidate[] = derived.slice(0, 4)
 			let validation: 'ok' | 'detached' | 'ambiguous' | 'unvalidated' = 'detached'
 			if (uid && locator) {
@@ -618,6 +628,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				crop,
 			})
 			if (validation !== 'ok') {
+				// 未通过实时校验的候选仍可供人工诊断，但必须明确标注，不能伪装成已验证定位。
 				const note =
 					validation === 'detached'
 						? '元素在录制后被销毁，候选未经校验'
@@ -809,6 +820,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			// 优先用 uid 把元素找回来做完整校验（候选可靠）；
 			// 找不到（菜单已收起 / toast 已消失）就用快照里的事实兜底重建，
 			// 否则「悬停展开的菜单」这种瞬时元素永远推不出 expect，回放时下一步必 HIDDEN。
+			// 先走 UID 实时链路以取得已校验候选；节点消失后再用有界快照事实重建，保留瞬态 UI 预期。
 			let ref = picked.uid && frame ? await buildRefFromUid(frame, picked.uid) : undefined
 			if (!ref) ref = await buildRefFromSnapshotNode(picked, frame)
 			if (!ref) return undefined
@@ -938,9 +950,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 		let flushChain: Promise<void> = Promise.resolve()
 		const flush = (force: boolean): Promise<void> => {
+			// 定时器与 Stop 可能同时触发冲洗。所有批次都接入同一条 Promise 链，
+			// 确保同一时刻只有一个消费者从 pending 拆批；最终强制冲洗会排在旧批次之后，
+			// 并等待它们处理完毕后再清理标记和写盘。
 			flushChain = flushChain.then(async () => {
 				if (!pending.length) return
 				if (!force && Date.now() - lastEventTs < bufferMs) return
+				// splice 在处理前同步取走本批，使随后到达的事件留待下一轮，不与当前批混淆。
 				const batch = pending.splice(0, pending.length)
 				try {
 					await processBatch(batch)
@@ -971,6 +987,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				else nonHover.push(action)
 			}
 			const hoverCandidates = [...pendingHovers, ...batchHovers].sort((a, b) => a.ts - b.ts)
+			// 先清空旧暂存，再按本轮结果重建；未成熟的 hover 只跨批次保留一次。
 			pendingHovers.length = 0
 			const keptHovers: CoalescedAction[] = []
 			for (const hover of hoverCandidates) {
@@ -1068,6 +1085,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		const stop = () => {
 			if (stopped) return
 			stopped = true
+			// 幂等关闭入口：Stop IPC、AbortSignal 与 drive 收尾可能几乎同时到达。
 			resolveStop?.()
 		}
 		const onAbort = () => stop()
@@ -1089,6 +1107,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		}
 
 		const ticker = setInterval(() => {
+			// 定时冲洗只消费已静默满 bufferMs 的批次；Promise 链会与 Stop 的强制冲洗串行。
 			void flush(false)
 		}, TICK_MS)
 
@@ -1114,12 +1133,12 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			opts.stopSignal?.removeEventListener('abort', onAbort)
 		}
 
-		// 收尾：给最后的驱动动作一点时间把事件送到，然后强制冲掉
+		// 给最后的驱动动作一点时间把事件送到，再强制冲洗；固定顺序避免丢失末尾异步回调。
 		await sleep(Math.min(silenceMs, 400))
 		await flush(true)
 		await flushChain
 		recordingActive = false
-		// 采样器要活到最后一个动作处理完：最后一个动作的「之后」就是它提供的最新一帧
+		// 采样器必须等最后批次处理完才关闭：末动作的「之后」签名依赖它提供的最新一帧。
 		clearInterval(sampleTimer)
 
 		// 收尾 flush 之后仍没被消费的旁路事件：
@@ -1150,7 +1169,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		}
 		// pendingHovers 到最后仍没等到 click → 就是鼠标划过的噪声，直接丢弃（不告警）
 
-		// uid 标记只服务于录制期的候选校验：所有步骤都建好之后再统一清掉（多标签页逐页清）
+		// UID 标记只服务于录制期候选校验；先完成全部步骤构建，再逐页统一清理，避免候选校验失去目标。
 		for (const target of pagesByIndex.values()) {
 			if (target.isClosed()) continue
 			await clearUids(target).catch(() => {})

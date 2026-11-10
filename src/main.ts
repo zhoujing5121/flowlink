@@ -28,6 +28,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 /* Electron CDP：Playwright connectOverCDP 的前提 */
 app.commandLine.appendSwitch('remote-debugging-port', '0')
 
+/**
+ * 主进程协调状态：Electron 持有原生浏览器视图及其显隐状态；渲染进程只
+ * 能通过受限的 IPC 桥请求操作，页面执行与数据持久化仍由主进程和引擎负责。
+ * 录制与回放同一时刻各自只允许一个会话；下方 Promise 与控制器用于串联
+ * Stop、重启和应用退出，确保这些入口最终汇合到一致的清理流程。
+ */
 let mainWindow: BrowserWindow
 let browserView: WebContentsView
 const browserViews = new Map<string, WebContentsView>()
@@ -62,7 +68,7 @@ let playAbortController: AbortController | null = null
 /* 启动                                                              */
 /* ================================================================ */
 
-/** 轮询 DevToolsActivePort 直到 CDP 端口就绪（Electron 启动后异步写文件） */
+/** 生成便于用户识别的每日名称；Flow 持久化 ID 仍负责保证唯一性。 */
 function generatedRecordingName(): string {
 	const now = new Date()
 	const yyyy = String(now.getFullYear())
@@ -78,6 +84,7 @@ function isEmptyRecordingError(error: unknown): boolean {
 	)
 }
 
+/** 将主动取消与启动失败区分开，避免把正常取消作为错误上报。 */
 class RecordingStartCancelledError extends Error {
 	constructor() {
 		super('录制启动已取消')
@@ -120,6 +127,7 @@ function resetRecordingState(): void {
 	recStopRequested = false
 }
 
+/** 启动被取消或没有记录到步骤时，清理本次会话产生的临时捕获文件。 */
 async function discardEmptyRecordingCapture(): Promise<void> {
 	await stopRecordingCapture().catch(() => undefined)
 	// 只删除本次会话生成的独立目录，不触碰其它录制。
@@ -129,6 +137,8 @@ async function discardEmptyRecordingCapture(): Promise<void> {
 }
 
 function syncBrowserVisibility(): void {
+	// 只有当前活动标签页、界面已启用且布局尺寸有效时才显示原生视图。
+	// 是否正在加载不参与判断，避免页面导航时视图闪烁或错误显露。
 	for (const view of browserViews.values()) {
 		if (view.webContents.isDestroyed()) continue
 		const visible =
@@ -141,6 +151,8 @@ function syncBrowserVisibility(): void {
 }
 
 function registerBrowserTab(tabId: string, view: WebContentsView): void {
+	// 每个原生标签页都单独转发状态事件，而非只监听启动时的活动页；
+	// 这样切换到后台标签页时，地址栏和加载状态也能保持同步。
 	browserViews.set(tabId, view)
 	const forward = (url: string): void => {
 		if (!mainWindow.isDestroyed())
@@ -222,6 +234,10 @@ function normalizeHttpUrl(value: string): string {
 
 /** 模式切换前把内嵌浏览器还原到单一 start-URL 标签页；cookie/storage/cache 保留。 */
 async function resetBrowserTabs(initialUrl: string): Promise<void> {
+	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
+	// 新标签页集合，或意外修改刚重建的浏览器状态。
+	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
+	// 新标签页集合，或意外修改刚重建的浏览器状态。
 	if (recStopPromise) await recStopPromise.catch(() => undefined)
 	if (playPromise) await playPromise.catch(() => undefined)
 
@@ -258,6 +274,8 @@ function createNativePlaybackPage(
 	log: (msg: string) => void = () => {},
 ): (url?: string) => Promise<Page> {
 	return async (url?: string): Promise<Page> => {
+		// Electron 原生标签页是唯一事实来源；只有 CDP 能发现对应的
+		// WebContentsView 后，才把 Playwright Page 交给执行器继续回放。
 		const targetUrl = url && url !== 'about:blank' ? normalizeHttpUrl(url) : undefined
 		const tabId = `tab-${Date.now()}-${browserViews.size}`
 		const previousView = browserView
@@ -306,6 +324,8 @@ async function startRecordingCapture(flowId: string): Promise<void> {
 	await mkdir(recordingCaptureDir, { recursive: true })
 	let capturing = false
 	recordingCaptureTimer = setInterval(() => {
+		// 截图和磁盘写入较慢时也不排队启动下一次捕获，避免积压任务并
+		// 保证帧的写入顺序与实际采集顺序一致。
 		if (capturing || browserViews.size === 0) return
 		capturing = true
 		const view = browserView
@@ -346,6 +366,7 @@ async function stopRecordingCapture(): Promise<{ frames: string[]; poster: strin
 	}
 }
 
+/** 有界轮询 Electron 异步生成的端口文件，超时后明确报告启动失败。 */
 async function waitForCdpPort(userDataDir: string): Promise<number> {
 	for (let attempt = 0; attempt < 80; attempt++) {
 		try {
@@ -361,6 +382,8 @@ async function waitForCdpPort(userDataDir: string): Promise<number> {
 }
 
 app.whenReady().then(async () => {
+	// 先创建持久化目录，再注册可能写入这些目录的操作；随后等待 Electron
+	// 分配并写入随机 CDP 端口，以便引擎桥接建立连接。
 	const userData = app.getPath('userData')
 	artifactsRoot = join(userData, 'flowlink', 'artifacts')
 	flowsRoot = join(userData, 'flowlink', 'flows')
@@ -408,7 +431,7 @@ async function createWindow(): Promise<void> {
 		},
 	})
 
-	/* Embed the browser directly in the main window. No child OS window is created. */
+	/* 浏览器直接嵌入主窗口内容区，不另建操作系统级子窗口。 */
 	browserView = new WebContentsView({
 		webPreferences: { sandbox: true },
 	})
@@ -480,8 +503,12 @@ interface RecordingStopResult {
 
 /** 所有 Stop/Test reset 共用同一份收尾，避免并发删除、重复保存或旧会话复活。 */
 async function stopRecordingSession(options: { discard?: boolean } = {}): Promise<RecordingStopResult> {
+	// 并发 Stop 请求共享同一个收尾 Promise，避免重复保存或删除同一份 Flow；
+	// 创建该 Promise 的调用负责最终重置会话状态。
 	if (recStopPromise) return recStopPromise
 	const stopping = (async (): Promise<RecordingStopResult> => {
+		// 先标记 Stop 并打断启动流程：导航或 CDP 附着未必能主动取消，
+		// 但包装层会让本次等待立即返回，避免用户被启动阶段卡住。
 		recStopRequested = true
 		const starting = recStartPromise
 		if (starting && !recPromise && !browserView.webContents.isDestroyed()) {
@@ -490,14 +517,17 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 		recController?.abort()
 		if (starting) await starting.catch(() => undefined)
 		if (!recPromise) {
+			// 尚未进入 recorder 主循环时没有 Flow 可保存，只需清理临时采集目录。
 			await discardEmptyRecordingCapture()
 			resetRecordingState()
 			return { recording: null, reason: 'empty' }
 		}
 
 		try {
+			// 等待 recorder 冲刷最后一批事件并完成 Flow 写入后，再决定保留或丢弃。
 			const result = await recPromise
 			if (options.discard) {
+				// 浏览器重置等场景要求彻底放弃本次录制，Flow 与对应产物一起清理。
 				await discardEmptyRecordingCapture()
 				await rm(recOutPath, { force: true }).catch(() => undefined)
 				await rm(result.artifactsDir, { recursive: true, force: true }).catch(() => undefined)
@@ -506,6 +536,8 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 			const capture = await stopRecordingCapture()
 			let stepScreenshots: string[] = []
 			try {
+				// 录制步骤截图由 recorder 写入；读取失败不影响 Flow 保存，
+				// 因为截图仅作为可选的 UI 预览资料。
 				const screenshotDir = join(result.artifactsDir, 'record', 'screenshots')
 				stepScreenshots = (await readdir(screenshotDir))
 					.filter((name) => /^step-\d+\.png$/i.test(name))
@@ -524,11 +556,13 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				stepScreenshots,
 			}
 			await taskStore.addRecording(recTaskCode, recording)
+			// 先持久化元数据再发送完成事件，确保 UI 收到通知后能立即重新加载。
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('recording:done', { recording })
 			return { recording }
 		} catch (err) {
 			if (isEmptyRecordingError(err)) {
+				// 空录制是正常取消结果，不生成元数据，也不作为错误通知 UI。
 				await discardEmptyRecordingCapture()
 				return { recording: null, reason: 'empty' }
 			}
@@ -538,6 +572,7 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				mainWindow.webContents.send('recording:error', { message })
 			return { recording: null, error: message }
 		} finally {
+			// 所有成功、取消和失败路径都释放会话状态，避免旧 Promise 阻止下次录制。
 			resetRecordingState()
 		}
 	})()
@@ -550,6 +585,8 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 }
 
 async function attachPlaybackPages(): Promise<Page[]> {
+	// 按原生标签页 Map 的顺序提供初始页面；回放期间新建的标签页则由
+	// EngineBridge 与 openPage 回调另外建立映射。
 	const seedPages: Page[] = []
 	for (const [tabId, view] of browserViews) {
 		try {
@@ -563,6 +600,8 @@ async function attachPlaybackPages(): Promise<Page[]> {
 }
 
 function registerIpc(): void {
+	// IPC 是渲染进程访问主进程的唯一入口。文件系统、Electron 和引擎操作
+	// 均由处理器执行，preload 只公开经过筛选的窄接口。
 	/* ---------- 任务 CRUD ---------- */
 	ipcMain.handle('tasks:list', () => taskStore.list())
 	ipcMain.handle('tasks:saveProfile', (_e, patch: TaskProfilePatch) =>
@@ -578,6 +617,8 @@ function registerIpc(): void {
 
 	/* ---------- 内嵌浏览器：定位 / 显隐 ---------- */
 	ipcMain.handle('browser:setBounds', (_e, rect: { x: number; y: number; width: number; height: number }) => {
+		// ResizeObserver 会频繁上报尺寸；合并更新，约每帧只调整一次原生视图，
+		// 同时保留由主进程显式控制的可见状态。
 		browserSurfaceVisible = true
 		browserBounds.x = Math.round(rect.x)
 		browserBounds.y = Math.round(rect.y)
@@ -598,12 +639,15 @@ function registerIpc(): void {
 		syncBrowserVisibility()
 	})
 	ipcMain.handle('browser:restart', async (_event, initialUrl: string) => {
+		// 重启浏览器前串行结束正在进行的录制；不保留半截数据，确保测试
+		// 总是从一个干净的原生标签页集合开始。
 		if (recStartPromise || recPromise || recStopPromise) {
 			await stopRecordingSession({ discard: true })
 		}
 		const normalized = String(initialUrl || 'https://bosch.com.cn').trim() || 'https://bosch.com.cn'
 		let startUrl = normalized
 		try {
+			// 重启入口也位于进程边界，因此重新验证协议，不信任渲染层输入。
 			const parsed = new URL(normalized)
 			if (!['http:', 'https:'].includes(parsed.protocol)) startUrl = 'https://bosch.com.cn'
 			else startUrl = parsed.href
@@ -728,6 +772,7 @@ function registerIpc(): void {
 	ipcMain.handle(
 		'recording:start',
 		async (_e, opts: { taskCode: string; startUrl: string; preservePage?: boolean }) => {
+		// 拒绝重入，避免共享的录制状态和输出路径被两个会话覆盖。
 		if (recStartPromise || recStopPromise || recPromise) throw new Error('已有录制正在进行')
 		if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
 
@@ -738,8 +783,8 @@ function registerIpc(): void {
 		recOutPath = join(flowsRoot, `${Date.now()}-${opts.taskCode.replace(/[^\w-]/g, '')}.json`)
 
 		const start = (async () => {
-			/* Normal recording reloads for an authoritative start. Group recording has
-			   already replayed to its target state and must preserve that document. */
+			/* 普通录制会重新导航以确保起点明确；分组重录已回放到目标状态，
+			   必须保留当前文档及其状态，不能再次刷新。 */
 			if (!opts.preservePage) {
 				await resetBrowserTabs(opts.startUrl)
 			}
@@ -749,6 +794,8 @@ function registerIpc(): void {
 				engine.pageFor(activeBrowserTabId, browserView.webContents),
 				controller.signal,
 			)
+			// 先附着当前页，再附着其他已打开页；标签页顺序必须与主进程
+			// browserViews 保持一致，供跨页录制和回放映射复用。
 			const additionalPages: Page[] = []
 			recordingAdditionalPages = additionalPages
 			for (const [tabId, view] of browserViews) {
@@ -765,6 +812,7 @@ function registerIpc(): void {
 
 			// mkdir 很快完成；不要在 capture timer 尚未建立时让取消流程越过它。
 			await startRecordingCapture(`recording-${Date.now()}`)
+			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
 			recPromise = recordOnPage({
@@ -795,6 +843,7 @@ function registerIpc(): void {
 		try {
 			return await start
 		} catch (err) {
+			// Stop 引发的错误转换为取消结果；真正的启动错误仍原样抛给 IPC 调用方。
 			if (recStopRequested || controller.signal.aborted) {
 				return { ok: false, reason: 'cancelled' }
 			}
@@ -826,6 +875,7 @@ function registerIpc(): void {
 			if (!recording) throw new Error('找不到该录制')
 			const flow = await loadFlow(recording.flowFile)
 			const flattened = flattenSteps(flow.steps)
+			// 限制前缀长度到实际步骤数，避免调用方传入过大索引改变切片语义。
 			const stepCount = Math.min(opts.stepCount, flattened.length)
 			if (stepCount === 0) {
 				return {
@@ -836,10 +886,14 @@ function registerIpc(): void {
 					metrics: { totalMs: 0, passCount: 0, failCount: 0 },
 				} satisfies RunResult
 			}
+			// 只构造并验证临时前缀 Flow；节点重录不得改写原 Flow 或其最近
+			// 一次运行记录。
 			const prefixFlow = parseFlow(
 				{ ...flow, steps: flattened.slice(0, stepCount).map((item) => item.step) },
 				`${recording.flowFile}#prefix-${stepCount}`,
 			)
+			// 前缀回放需要从 Flow 的起始 URL 重建环境；之后保持页面不刷新，
+			// 录制才能直接接续回放抵达的状态。
 			await resetBrowserTabs(flow.meta.env.startUrl)
 			const seedPages = await attachPlaybackPages()
 			const tabIds = [...browserViews.keys()]
@@ -857,6 +911,8 @@ function registerIpc(): void {
 				skipNavigate: false,
 				openPage: createNativePlaybackPage(false, (msg) => console.log(`[playback:prefix] ${msg}`)),
 				onPage: (page, index) => {
+					// Playwright 回调可能先于原生标签页映射登记；用有限轮询等待
+					// EngineBridge 完成映射，超时则让整次前缀操作明确失败。
 					if (tabIds[index]) return
 					const pending = (async () => {
 						for (let attempt = 0; attempt < 40; attempt++) {
@@ -876,9 +932,11 @@ function registerIpc(): void {
 			})
 			try {
 				const result = await playPromise
+				// 等待所有新建页面都拿到原生 ID，再返回给渲染层继续节点重录。
 				await Promise.all(registrations)
 				return { ...result, tabIds }
 			} catch (err) {
+				// 即使回放失败，也收齐映射 Promise，避免后台任务跨会话残留。
 				await Promise.allSettled(registrations)
 				return { ok: false, error: (err as Error).message } as unknown as RunResult
 			} finally {
@@ -898,6 +956,7 @@ function registerIpc(): void {
 
 		const flow: Flow = await loadFlow(recording.flowFile)
 
+		// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态。
 		await resetBrowserTabs(flow.meta.env.startUrl)
 		const seedPages = await attachPlaybackPages()
 
@@ -924,6 +983,7 @@ function registerIpc(): void {
 
 		try {
 			const result = await playPromise
+			// 先推送最终结果，再更新持久化摘要；步骤详情仍由运行产物保存。
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('playback:done', result)
 
@@ -939,6 +999,7 @@ function registerIpc(): void {
 
 			return result
 		} catch (err) {
+			// 执行器异常通过事件和 IPC 返回值双向通知，以兼容订阅式与请求式调用方。
 			const message = (err as Error).message
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('playback:error', { message })

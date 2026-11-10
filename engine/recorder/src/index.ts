@@ -1,6 +1,10 @@
 /**
  * @rr/recorder —— 录制包的唯一出口。
  *
+ * 使用方应从此统一出口导入，不应依赖 recorder 内部文件：这里将有状态的浏览器会话
+ * (`record`) 与可独立复用、测试的纯转换辅助函数分开导出。原始采集协议和中间事件类型
+ * 为集成与测试而公开，但它们不会作为 Flow IR 持久化。
+ *
  * 对外契约（docs/architecture.md §3）：
  *   record(opts)                录制 → Flow + artifact
  *   coalesceEvents(events)      纯函数：500ms 缓冲合流（双击/输入/滚动/hover/组合键/导航）

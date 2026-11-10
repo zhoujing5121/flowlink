@@ -1,11 +1,10 @@
 /**
  * L1：语义候选逐个尝试。
  *
- * 契约（docs/architecture.md §4）：
- * - 按 candidates 顺序（score 升序）逐个尝试，要求 `count()===1 && isVisible()`；
- * - 多命中时按「候选顺序 + 几何距离」排序；
- * - top1/top2 相对分差 < 15% → ambiguous，**不猜**，继续降级；
- * - 唯一命中但不可见 → 记为 HIDDEN（executor 会归类成 NOT_ACTIONABLE）。
+ * 解析约定：
+ * - 按 candidates 的既定优先顺序逐个尝试；候选 score 越小越先尝试；
+ * - 单个候选多命中时才比较几何位置，分差不足则拒绝猜测并继续尝试后续候选；
+ * - 唯一命中但不可见时记为 HIDDEN，供上层决定是否等待或降级。
  */
 import type { Candidate, ElementRef, Rect } from '../../schema/src/index.js'
 import type { Locator } from 'playwright-core'
@@ -47,6 +46,12 @@ async function rectsOf(locator: Locator): Promise<Rect[]> {
 	)
 }
 
+/**
+ * 解析一个 ElementRef 的语义候选。成功返回唯一 Locator；所有候选均不可用时
+ * 抛 ElementNotFoundError，并优先保留 AMBIGUOUS/HIDDEN 等可供上层降级决策的原因。
+ * 候选按 schema 约定的升序优先级稳定排序；几何分只在同一候选多命中时用于消歧，
+ * 不会让低优先级候选越过已成功解析的高优先级候选。
+ */
 export async function resolveL1(
 	target: ElementRef,
 	scope: Scope,
@@ -100,7 +105,7 @@ export async function resolveL1(
 			continue
 		}
 
-		// 多命中：几何打分 + 歧义判定
+		// 多命中只在当前候选内评分；若无法安全选出唯一项，继续按原顺序尝试下一候选。
 		let rects: Rect[]
 		try {
 			rects = await rectsOf(locator)

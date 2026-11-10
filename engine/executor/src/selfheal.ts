@@ -55,6 +55,8 @@ export function pickCandidateFromFacts(
 	facts: ElementFacts,
 	usedValues: ReadonlyArray<string> = [],
 ): Candidate | null {
+	// 只选择一个最稳定的可用定位方式，不把同一元素的所有表示都追加进去；
+	// 下方顺序同时代表各定位方式的可信优先级。
 	const used = new Set(usedValues.map((v) => v.trim()))
 	const push = (candidate: Candidate): Candidate | null => {
 		const key =
@@ -149,6 +151,7 @@ export function applySelfHeals(
 	flow: Flow,
 	heals: HealInput[],
 ): Flow {
+	// 采用写时复制，刻意不改动 `observed`；只允许更新可变的解析候选和自愈审计记录。
 	const usable = heals.filter((h) => h.candidate !== undefined)
 	const nextSteps: Step[] = mapSteps(flow.steps, (step, stepId) => {
 		const heal = usable.find((h) => h.stepId === stepId)
@@ -173,7 +176,8 @@ export function applySelfHeals(
 		...heals.map(({ candidate: _candidate, ...rest }) => rest),
 	]
 
-	// 只有真的往 candidates 里追加了东西才升版本；纯记录不制造版本噪音
+	// 只有带有候选项的自愈才递增版本；单纯的信息记录没有改变解析数据，
+	// 不应因此产生新的 flow 版本。
 	return {
 		...flow,
 		version: usable.length > 0 ? flow.version + 1 : flow.version,

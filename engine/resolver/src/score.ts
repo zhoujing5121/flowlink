@@ -1,9 +1,9 @@
 /**
  * 多命中打分 + 歧义判定（纯函数，可单测）。
  *
- * 计划里定死的规则：
- * - 候选顺序优先（同一个候选内部候选权重相同，所以比较只在几何维度上有意义）；
- * - top1 与 top2 的**相对分差** < 15% → ambiguous，不猜，降级。
+ * 解析规则：
+ * - 先遵循候选数组的优先顺序；同一候选命中多个元素时才用几何分数区分；
+ * - 第一、第二名的相对分差小于阈值即视为有歧义，不猜测，交由后续层级处理。
  */
 import type { Rect } from '../../schema/src/index.js'
 
@@ -20,6 +20,7 @@ export interface Scored<T> {
 	score: number
 }
 
+/** 把非有限值和越界比例收敛到闭区间，避免异常几何输入污染排序分数。 */
 function clamp01(n: number): number {
 	if (!Number.isFinite(n)) return 0
 	if (n < 0) return 0
@@ -27,6 +28,7 @@ function clamp01(n: number): number {
 	return n
 }
 
+/** 矩形面积；宽高负值视为零，以便处理退化或异常的边界框。 */
 export function rectArea(r: Rect): number {
 	return Math.max(0, r.width) * Math.max(0, r.height)
 }
@@ -56,6 +58,10 @@ export function centerDistance(a: Rect, b: Rect): number {
  * 几何相似度 0..100。
  * IoU 权重 0.6（尺寸形状吻合），中心距离权重 0.4（位置吻合，按视口对角线归一化）。
  */
+/**
+ * 将录制矩形与当前候选矩形映射为可比较的 0..100 分。
+ * 这是同一候选内的消歧及唯一性判断信号，不是概率或语义置信度。
+ */
 export function geometryScore(observed: Rect, rect: Rect, viewport: ViewportSize): number {
 	const iou = rectIou(observed, rect)
 	const diagonal = Math.hypot(Math.max(1, viewport.width), Math.max(1, viewport.height))
@@ -77,7 +83,7 @@ export function rankMatches<T>(
 		const rect = rectOf(item)
 		return { item, score: rect ? geometryScore(observed, rect, viewport) : 0 }
 	})
-	// Array.prototype.sort 在 V8 上是稳定排序，同分保留 DOM 顺序
+	// 保持同分项的输入顺序，使其继续遵循 DOM 顺序或上游候选顺序。
 	return scored.sort((a, b) => b.score - a.score)
 }
 
@@ -92,6 +98,7 @@ export function isAmbiguous(scores: number[], threshold: number = AMBIGUITY_THRE
 	if (s2 === undefined) return false
 	const base = Math.abs(s1)
 	if (base < 1e-9) return true // 两个都是 0 分：完全无法区分
+	// 相对差以第一名为基准；绝对差会随分数尺度变化，不能表达统一的置信门槛。
 	return (s1 - s2) / base < threshold
 }
 

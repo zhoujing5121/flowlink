@@ -151,6 +151,8 @@ export async function runBatchRows(input: BatchRowLoopInput): Promise<BatchResul
 	let stopped = false
 
 	for (const row of input.rows) {
+		// 只在行与行之间检查取消信号；正在执行的行遵循原有单步超时，
+		// 并有机会完整生成结果报告和 artifacts。
 		if (input.signal?.aborted) {
 			stopped = true
 			break
@@ -219,7 +221,8 @@ export async function playBatch(opts: BatchOptions): Promise<BatchResult> {
 	const batchDir = ArtifactWriter.batchRoot(artifactsRoot, flow.id, batchId)
 	const log = (msg: string): void => opts.onLog?.(`[batch ${batchId}] ${msg}`)
 
-	// 空行数组：不启动浏览器（Studio 侧也可能是 0 行 CSV 的边界场景）
+	// 空输入是合法的无操作：不启动 Chromium，同时仍返回稳定的批次标识和 artifacts 目录，
+	// 这样调用方不必为零行输入额外处理另一种结果结构。
 	if (opts.rows.length === 0) {
 		return {
 			...summarizeBatch({ rows: [], total: 0, stopped: false, totalMs: 0 }),

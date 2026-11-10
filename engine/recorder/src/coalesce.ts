@@ -8,6 +8,10 @@
  * - 导航：并入**前一个动作**的 expect（`expectUrl`），没有前一个动作时才单独成 `navigate`
  *
  * 纯函数：不碰 DOM / 不碰浏览器，输入输出都是普通对象，方便单测。
+ *
+ * 排序只作用于副本，调用方仍可独立保留原始到达队列。合流只检查最近一条兼容动作；
+ * 无关动作会形成边界，不会被重排或悄悄折叠。每个结果都在 `raw` 中保留来源事件，
+ * 让最终 Flow 保持精简，同时诊断信息仍能追溯原始事件。
  */
 import type { CoalescedAction, RawEvent } from './types.js'
 
@@ -28,6 +32,7 @@ const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift', 'CapsLock', 'A
 
 export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): CoalescedAction[] {
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
+	// 不原地排序调用方队列：record() 可能还要用原始顺序保存诊断事件。
 	const sorted = [...events].sort((a, b) => a.ts - b.ts)
 	const actions: CoalescedAction[] = []
 
@@ -43,6 +48,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				// 同一元素的连续 hover 只留一条（页面内已有 1.5s 节流，这里再兜一次跨批次的重复）
 				const prev = lastAction(actions)
 				if (prev && prev.kind === 'hover' && sameTarget(prev, { facts: event.facts }) && event.ts - prev.ts <= INPUT_MERGE_MS) {
+					// 更新时间戳以反映最后一次停留，并保留每条来源事件供诊断使用。
 					prev.ts = event.ts
 					prev.merged = (prev.merged ?? 1) + 1
 					prev.raw.push(event)
@@ -74,6 +80,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 					action.ts - prev.ts <= bufferMs &&
 					(prev.clickCount ?? 1) < 3
 				) {
+					// 双击只并入紧邻的同目标点击；中间若有其他动作，lastAction 已形成边界。
 					prev.clickCount = (prev.clickCount ?? 1) + 1
 					prev.ts = action.ts
 					prev.merged = (prev.merged ?? 1) + 1
@@ -94,6 +101,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				if (!editable) break
 				const prev = lastAction(actions)
 				if (prev && prev.kind === 'input' && sameTarget(prev, { facts: event.facts }) && event.ts - prev.ts <= INPUT_MERGE_MS) {
+					// input 回放使用最终值 fill；保留最晚时间和值，不能把中途输入拆成多步。
 					prev.value = event.data?.value
 					prev.masked = event.data?.masked
 					prev.ts = event.ts
@@ -113,6 +121,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				if (isSelectEvent(event)) {
 					const prev = lastAction(actions)
 					if (prev && prev.kind === 'select' && sameTarget(prev, { facts: event.facts })) {
+						// change 是 select 的权威事件；连续变更合并为最终选中状态。
 						prev.value = data.value
 						prev.selectedValues = data.selectedValues
 						prev.ts = event.ts
@@ -141,6 +150,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				// 若也成步，用户录一句 "Alice" 会被切成 A/input/l/input… 完全不可用。
 				const isCommandCombo = modifiers.some((modifier) => modifier !== 'Shift')
 				if (isCommandCombo) {
+					// 命令组合键独立成步，避免被后续输入事件覆盖或误当成文本。
 					actions.push({
 						kind: 'key',
 						ts: event.ts,
@@ -186,6 +196,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 					sameTarget(prev, { facts: event.facts }) &&
 					event.ts - prev.ts <= bufferMs
 				) {
+					// 只累加相邻且同目标的滚动；其他动作会自然阻断本次合流。
 					const merged = prev.delta ?? { x: 0, y: 0 }
 					prev.delta = { x: merged.x + dx, y: merged.y + dy }
 					prev.ts = event.ts
@@ -213,6 +224,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				const prev = lastAction(actions)
 				// 导航并入前一步 expect：录制里「点提交 → 页面跳转」是一个动作 + 一个期望
 				if (!event.directNavigation && prev && !prev.expectUrl && event.ts - prev.ts <= bufferMs) {
+					// 仅把动作后的短时导航记为结果预期；显式导航或无前置动作仍保留独立步骤。
 					prev.expectUrl = url
 					prev.raw.push(event)
 					break

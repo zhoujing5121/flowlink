@@ -135,6 +135,13 @@ async function waitForAnyCandidate(
 	log(`等待元素出现超时（${timeoutMs}ms）：所有候选 count=0`)
 }
 
+/**
+ * 按 frame 路径和配置的层级解析目标，返回可执行的 Locator 及命中来源。
+ *
+ * L1 语义候选、L2 稳定指纹和可选 L4 repair 遵循调用方给定的顺序；L3 当前跳过。
+ * 多命中不满足几何分差门槛时不会猜测。失败统一以 ElementNotFoundError 暴露原因码，
+ * 成功的 L2 结果带 release 清理回调，必须在 locator 使用完后调用。
+ */
 export async function resolve(target: ElementRef, ctx: ResolveContext): Promise<ResolveResult> {
 	const opts = withDefaults(ctx.options)
 	const log = ctx.log ?? (() => {})

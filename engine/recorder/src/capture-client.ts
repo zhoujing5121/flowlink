@@ -5,6 +5,10 @@
  * - 页面内（capture.js）只回事实；
  * - **候选的最终裁决在这里**——用 Playwright 自己的 locator 判 `count()===1 && visible`，
  *   这样「录制时选中的元素」和「回放时解析到的元素」是同一套语义，不会漂移。
+ *
+ * 本模块是页面采集协议与 Node 侧录制器之间的边界：页面回调提供事实和临时 UID，
+ * 本侧负责 frame/page 身份、基于 locator 的校验与快照。frame 操作尽力而为，
+ * 失败时返回缺失结果而不终止录制，因为导航和弹窗生命周期会让 frame 短暂失效。
  */
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -47,7 +51,11 @@ const MAX_SNAPSHOT_NODES = 120
  */
 export type EmitHandler = (sourcePage: Page, frame: Frame, payload: unknown) => void
 
-/** 同一 context 上只注册一次 binding；handler 可替换（多次录制复用同一页）。 */
+/**
+ * 同一 context 会被多次录制复用：Playwright 不允许重复 expose 同名 binding，
+ * 但后续录制必须把事件交给新的回调。因此先更新 WeakMap，再检查 WeakSet；
+ * 已存在的 binding 会转发到最新 handler，而弱引用不会阻止 context 回收。
+ */
 const emitHandlers = new WeakMap<BrowserContext, EmitHandler>()
 const boundContexts = new WeakSet<BrowserContext>()
 
@@ -102,8 +110,8 @@ export async function ensureCaptureInPage(page: Page): Promise<boolean> {
 				await frame.evaluate(source)
 				if (frame === page.mainFrame()) installedMainFrame = true
 			} catch {
-				// Frames that are navigating, cross-origin, or being destroyed can fail briefly.
-				// frameattached/framenavigated retry handles them on the next document state.
+					// 导航中、跨域或正在销毁的 frame 可能暂时无法求值；frameattached/
+					// framenavigated 监听会在文档进入下一状态时重试，不因此中断其他 frame。
 			}
 		}
 		return installedMainFrame
@@ -144,7 +152,9 @@ export async function snapshotPage(
 	page: Page,
 	indexOfFrame?: (frame: Frame) => number,
 ): Promise<PageSignature> {
+	// 快照有意设置上限且按可用结果采集：单个导航中或跨域 frame 不能阻止其余页面签名生成。
 	const nodes: PageSignature['nodes'] = []
+	// 限制遍历的 frame 数，避免 iframe 数量异常时拖住录制；单帧失败不影响已取得的签名。
 	const frames = page.frames().slice(0, MAX_FRAMES)
 	for (let index = 0; index < frames.length; index++) {
 		const frame = frames[index]!
@@ -160,6 +170,7 @@ export async function snapshotPage(
 		}
 		const frameIndex = indexOfFrame ? indexOfFrame(frame) : index
 		for (const node of payload?.nodes ?? []) {
+			// frame 序号同时进入节点元数据与 key，避免不同 frame 的相同路径被误认为同一节点。
 			nodes.push({
 				...node,
 				frameIndex,
@@ -219,11 +230,14 @@ export async function readFactsByUid(
 	frame: Frame,
 	uid: string,
 ): Promise<RawElementFacts | undefined> {
+	// 即使事实提取失败也要释放临时 handle。locator 可跨更长时间使用，handle
+	// 则会在异步等待期间固定指向某个具体文档节点，尤其容易遇到导航导致的失效。
 	const locator = await locateByUid(frame, uid)
 	if (!locator) return undefined
 	const handle = await locator.elementHandle({ timeout: 1000 }).catch(() => null)
 	if (!handle) return undefined
 	const facts = await readFactsFromHandle(handle as ElementHandle)
+	// 先复制出普通事实对象再释放句柄，避免把页面节点句柄泄漏到后续异步处理。
 	await handle.dispose().catch(() => {})
 	return facts
 }
@@ -323,6 +337,7 @@ export async function validateCandidate(
 	const locator = buildLocator(frame, candidate)
 	let count = 0
 	try {
+		// 先判断匹配数量，只有唯一候选才继续做可见性与目标身份校验。
 		count = await locator.count()
 	} catch {
 		return 'missing'
@@ -337,6 +352,7 @@ export async function validateCandidate(
 	const handle = await locator.elementHandle({ timeout: 1000 }).catch(() => null)
 	if (!handle) return 'missing'
 	try {
+		// 唯一且可见仍不足以证明命中的是录制目标；最后比对临时 UID，拒绝同名错配。
 		const owned = await handle.evaluate((el, want) => el.getAttribute('data-rr-uid') === want, uid)
 		return owned ? 'ok' : 'ambiguous'
 	} catch {
@@ -352,6 +368,7 @@ export async function validateCandidates(
 	candidates: Candidate[],
 	uid: string,
 ): Promise<{ accepted: Candidate[]; rejected: Candidate[] }> {
+	// 保留生成器给出的 score 顺序；IR 会沿用此顺序，回放时先试主候选，再依次尝试回退项。
 	const accepted: Candidate[] = []
 	const rejected: Candidate[] = []
 	for (const candidate of candidates) {
@@ -368,6 +385,8 @@ export async function validateCandidates(
 
 /** 收 RawEvent 时把 binding payload 收敛成内部结构（NaN/字符串 ts 一律兜底） */
 export function normalizeEmitPayload(payload: unknown): RawEvent | undefined {
+	// 将 exposeBinding 视为不可信协议边界。这里只做浅层形状检查，不重复完整 schema 校验；
+	// 畸形消息直接丢弃，字段级默认值则避免单个异常时间戳破坏整条事件队列。
 	if (!payload || typeof payload !== 'object') return undefined
 	const raw = payload as Record<string, any>
 	const kind = raw.kind

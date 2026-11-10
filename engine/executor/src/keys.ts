@@ -24,6 +24,7 @@ export function buildKeyChord(
 	key: string,
 	modifiers?: ReadonlyArray<KeyModifier> | null,
 ): string {
+	// 只去掉首尾空白，保留按键名称原样，让 Playwright 校验它是否受支持。
 	const trimmedKey = key.trim()
 	if (trimmedKey === '') return ''
 	if (!modifiers || modifiers.length === 0) return trimmedKey

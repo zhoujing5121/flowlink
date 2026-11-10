@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 
+// 将 electron-packager 输出的应用目录打包为可分发的 Windows ZIP。
+// 创建压缩包前先验证可执行文件和媒体 DLL，避免不完整的包被误报成功。
 const here = fileURLToPath(new URL('.', import.meta.url))
 const appDir = join(here, 'release', 'FlowLink-win32-x64')
 const exePath = join(appDir, 'FlowLink.exe')

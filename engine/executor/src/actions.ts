@@ -18,6 +18,10 @@ import { StepFailure } from './errors.js'
 import { buildKeyChord, describeKeyChord } from './keys.js'
 
 export interface ActionDeps {
+	/**
+	 * 依赖由 run 协调器按次提供，而不是在创建时固定捕获：
+	 * 切换标签页后 `page` 会变化，解析器、变量和日志则仍属于当前 run。
+	 */
 	page: Page
 	timeoutMs: number
 	log: (msg: string) => void
@@ -33,6 +37,7 @@ export interface ActionDeps {
 }
 
 export interface ActionResult {
+	/** 解析证据会复制到步骤详情中；不需要目标元素的动作不包含此信息。 */
 	level?: ResolveLevel
 	score?: number
 	ambiguous?: boolean
@@ -61,8 +66,11 @@ async function withTarget<T>(
 	target: ElementRef,
 	fn: (hit: ResolveResult) => Promise<T>,
 ): Promise<{ value: T; hit: ResolveResult }> {
+	// 只有解析成功才会拿到可释放的 hit；动作无论成功或失败，都必须进入 finally 清理。
 	const hit = await deps.resolveTarget(target)
 	try {
+		// 解析结果可能持有临时状态（例如 L2 标记）；即使浏览器动作抛错也要释放，
+		// 避免后续步骤在被污染的页面状态上继续执行。
 		return { value: await fn(hit), hit }
 	} finally {
 		if (hit.release) await hit.release()
@@ -96,6 +104,8 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 
 	switch (step.kind) {
 		case 'navigate': {
+			// 导航不经过元素解析，直接作用于当前 page。
+			// 后续的 networkidle 等待仅尽力执行，避免长轮询站点导致导航失败。
 			const target = step.url
 			deps.log(`navigate → ${target}`)
 			// 直接抛给 classify：net::ERR_* / 超时会被归成 NAVIGATION_FAILED

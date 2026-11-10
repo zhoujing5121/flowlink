@@ -7,6 +7,9 @@
  * 3. hover 是否有意义：要看「后面 2s 内有没有点别的元素」。
  *
  * 全纯函数 → 可以脱离浏览器单测（见 `plan.test.ts`）。
+ *
+ * 规划器消费已合流动作，以及旁路采集的 dialog 和 download 记录。它不创建 Step，也不访问 Page；
+ * 输出保留时间戳，让编排层能够推断动作预期，并把浏览器原生副作用关联到触发它的动作。
  */
 import type { CoalescedAction, PlannedItem, RecordedDialog, RecordedDownload } from './types.js'
 
@@ -71,6 +74,7 @@ export function insertDialogs(
 	items: PlannedItem[],
 	dialogs: RecordedDialog[],
 ): { items: PlannedItem[]; consumed: RecordedDialog[] } {
+	// 显式返回已消费记录：调用方的 dialog 队列会跨批次保留，必须确保每条记录只插入一次。
 	if (!dialogs.length) return { items, consumed: [] }
 	const sorted = [...dialogs].sort((a, b) => a.ts - b.ts)
 	const out: PlannedItem[] = []

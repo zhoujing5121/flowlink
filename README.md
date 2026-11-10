@@ -90,7 +90,8 @@ release/                Existing package output
 dist/                   Generated build output
 ```
 
-See [Architecture](docs/architecture.md), [Contributing](CONTRIBUTING.md), and [Agent Instructions](AGENTS.md).
+See [Architecture](docs/architecture.md), the [Technical Architecture Guide](docs/technical-architecture.md),
+[Contributing](CONTRIBUTING.md), and [Agent Instructions](AGENTS.md).
 
 ## Generated data
 

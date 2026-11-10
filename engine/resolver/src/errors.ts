@@ -12,7 +12,7 @@ export type ResolverErrorCode =
 	| 'NO_MATCH'
 	/** 命中多个且 top1/top2 分差 < 15%（不猜，降级后仍无法唯一确定） */
 	| 'AMBIGUOUS'
-	/** 唯一命中但不可见（存在但不 actionable） */
+	/** 唯一命中但不可见（元素存在但当前不可操作） */
 	| 'HIDDEN'
 	/** ElementRef 本身不合法（candidates 为空、role 候选缺 role 字段等） */
 	| 'INVALID_REF'
@@ -39,7 +39,10 @@ export class ElementNotFoundError extends Error {
 		this.details = details
 	}
 
-	/** 单行摘要，写进 StepResult.error.message 用 */
+	/**
+	 * 将机器可读错误码和目标的少量可辨识信息压成单行摘要。
+	 * 不序列化完整 ElementRef，避免把录制时的属性/文本证据无意写入通用错误消息。
+	 */
 	describe(): string {
 		const tag = this.target.observed.tag
 		const id = this.target.observed.attributes['id']

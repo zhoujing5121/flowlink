@@ -51,6 +51,7 @@ export interface RunResult {
 	flowId: string
 	runId: string
 	ok: boolean
+	/** 按执行顺序展开后的可执行步骤；group 由其子步骤表示。 */
 	steps: StepResult[]
 	metrics: { totalMs: number; passCount: number; failCount: number }
 	/** 追加：本次 run 的自愈记录（未写回时也保留，供报告/复核） */
@@ -83,7 +84,8 @@ export type DialogPolicy = 'dismiss' | 'fail'
 export interface PlayOptions {
 	flow: Flow
 	variables?: Record<string, string>
-	/** Any failed step stops the remaining procedure immediately. Default false. */
+	/** 为 true 时遇到失败即停止余下流程；默认 false。 */
+	/** 在首个失败的可执行步骤后停止，不把后续步骤报告为 skip。 */
 	stopOnFailure?: boolean
 	/** 默认 true */
 	headless?: boolean

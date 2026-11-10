@@ -40,6 +40,8 @@ export async function loadStorageState(
 	path: string | undefined,
 	log: (msg: string) => void = () => {},
 ): Promise<BrowserStorageState | undefined> {
+	// 登录态是可选运行时输入；读取、解析或结构校验失败都只告警，
+	// 避免过期的用户配置阻止 flow 执行。
 	if (!path || path.trim() === '') return undefined
 	let text: string
 	try {
@@ -77,6 +79,8 @@ export async function saveStorageStateAtomic(
 	state: BrowserStorageState,
 	log: (msg: string) => void = () => {},
 ): Promise<boolean> {
+	// 临时文件与目标文件放在同一目录，确保 rename 不跨卷，
+	// 并在支持的平台上保持原子替换语义。
 	const tempPath = `${path}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}`
 	try {
 		await mkdir(dirname(path), { recursive: true })

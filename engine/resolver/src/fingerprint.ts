@@ -10,9 +10,9 @@
  * 即使调用方忘了，下一次 L2 采集开头也会把历史标记全部清掉（自愈）。
  *
  * 两级匹配策略：
- *   hash  —— 用 Node 侧 computeStableHash 重算候选指纹，要求与 flow 里的 stableHash 完全相等（主路径）；
- *   attrs —— hash 对不上（例如 flow 由别的算法录制）时，退化为「tag+role+name+录制属性全等」，
- *            依然是**精确相等**判断，不做相似度打分，也不做 nodePath 容错（按计划 M1 不做）。
+ *   hash  —— 在 Node 侧重算候选指纹，必须与 flow 中的 stableHash 完全相等（首选路径）；
+ *   attrs —— hash 无命中时，回退为 tag、role、name 和录制属性逐项全等比较；
+ *            回退仍是精确匹配，不做相似度匹配，也不以 nodePath 单独容错。
  */
 import type { ElementRef } from '../../schema/src/index.js'
 import type { Locator } from 'playwright-core'
@@ -31,6 +31,7 @@ import type { Scope } from './types.js'
 
 export const L2_MARKER = 'data-rr-target'
 
+/** L2 只接收解析策略，不暴露页面采集实现细节；可见性与歧义门槛由调用方统一配置。 */
 export interface L2Options {
 	requireVisible: boolean
 	ambiguityThreshold: number
@@ -38,13 +39,20 @@ export interface L2Options {
 }
 
 export interface L2Hit {
+	/** 通过本次临时标记构造的唯一 Locator；须在 release 前完成对应 action。 */
 	locator: Locator
 	score: number
 	strategy: 'hash' | 'attrs'
 	matched: number
+	/** 清理页面临时属性；调用方应在 action 的 finally 中调用，允许重复清理。 */
 	release: () => Promise<void>
 }
 
+/**
+ * 在指定 Page/Frame 作用域中执行 L2 精确指纹匹配。
+ * 页面候选先按 tag/role/name/录制属性过滤，再以 stableHash 优先、字段全等为回退；
+ * 几何信息只用于区分多个精确候选，分差不足时拒绝猜测并抛出带原因码的错误。
+ */
 export async function resolveL2(
 	target: ElementRef,
 	scope: Scope,
@@ -63,8 +71,9 @@ export async function resolveL2(
 	}
 
 	try {
-		// 兜底：调用方（executor/recorder/自研脚本）可能没装垫片；字符串形式不会经过 keepNames 转换
+		// 调用方可能未安装垫片；使用原始字符串注入，避免经过 keepNames 转换。
 		await scope.evaluate(NAME_KEEPALIVE_SOURCE).catch(() => undefined)
+		// 采集阶段仅用指纹字段筛选并打临时标记，后续定位必须仍指向本次采集的命中项。
 		candidates = await scope.evaluate(collectFingerprintCandidates, {
 			policy: STABLE_ATTR_POLICY,
 			tag: fingerprint.tag,
@@ -94,9 +103,7 @@ export async function resolveL2(
 		})
 	}
 
-	// 主路径：stableHash 精确相等。
-	// recorder 的 hash 把 nodePath 也算进去了（用于区分「两个一模一样的按钮」），
-	// 所以指纹里有 nodePath 时，用页面内现场算出的 nodePath 参与哈希；否则不带 path。
+	// 首选 stableHash 精确匹配。录制端可能把 nodePath 纳入摘要，因此只有原指纹含该字段时才参与重算。
 	const useNodePath = fingerprint.nodePath !== undefined
 	const exact = candidates.filter((c) => {
 		const hash = computeStableHash({
@@ -109,6 +116,7 @@ export async function resolveL2(
 		return hash === fingerprint.stableHash
 	})
 	const strategy: 'hash' | 'attrs' = exact.length > 0 ? 'hash' : 'attrs'
+	// 只在 hash 没有任何命中时扩大到属性全等候选；有 hash 命中时不把回退候选混入评分池。
 	const pool = exact.length > 0 ? exact : candidates
 	if (strategy === 'attrs') {
 		log(
@@ -119,6 +127,7 @@ export async function resolveL2(
 
 	const observed = target.observed.rect
 	const viewport = target.observed.viewport
+	// 几何分数只负责多个精确候选间的消歧；分差不足就拒绝选择，不降低字段匹配标准。
 	const ranked = rankMatches(pool, (c) => c.rect, observed, viewport)
 	const picked = pickWinner(ranked, opts.ambiguityThreshold)
 

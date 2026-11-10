@@ -26,6 +26,7 @@ export interface DialogLike {
 }
 
 export interface PendingDialog {
+	/** 保留 Playwright 对话框句柄，直到 dialog 步骤明确处理它。 */
 	dialog: DialogLike
 	page: Page | null
 	info: string
@@ -51,6 +52,8 @@ export class DialogManager {
 		this.history.push(info)
 		this.#log(`检测到 JS 对话框（mode=${this.mode}）：${info}`)
 
+		// 事件处理器必须尽快返回：auto/fail 模式异步关闭对话框，
+		// manual 模式则有意保留阻塞状态，交由后续步骤处理。
 		if (this.mode === 'auto') {
 			void dialog.dismiss().catch((err: unknown) => {
 				this.#log(`自动关闭对话框失败：${(err as Error).message}`)
@@ -95,6 +98,8 @@ export class DialogManager {
 		promptText: string | undefined,
 		timeoutMs: number,
 	): Promise<PendingDialog> {
+		// 先从队列移除，再执行 accept/dismiss；即使 Playwright 调用失败，
+		// 后续步骤也不会误把同一个过期对话框当作待处理项。
 		const pending = await this.waitFor(timeoutMs)
 		if (!pending) {
 			throw new StepFailure(

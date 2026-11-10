@@ -1,6 +1,9 @@
 /**
  * Recorder 内部数据类型 —— 只在「采集 → 合流 → 推断 → 生成 IR」之间传递，**不进 IR**。
  * IR 类型（Flow/Step/ElementRef/...）的唯一真源是 `@rr/schema`。
+ *
+ * 这些接口描述录制器的瞬时通信协议，不是另一套序列化契约。Node 侧可以补充浏览器原始事实，
+ * 但复制进 Flow 的只能是 schema 管理的对象；尤其不能把标为 Node 侧补充的数据当成 observed 证据。
  */
 import type { Candidate, Crop, ElementRef, Flow, FramePath, Rect, Step } from '../../schema/src/index.js'
 import type { Page } from 'playwright-core'
@@ -180,7 +183,10 @@ export interface CoalescedAction {
 
 	/** 合并了多少条原始事件（调试用） */
 	merged?: number
-	/** 参与合并的原始事件（keepRaw 时落盘） */
+	/**
+	 * 参与合并的原始事件（keepRaw 时落盘）。
+	 * 多个 DOM 事件合成一个 Step 时，用此字段保留来源；它不属于 Flow IR，正常录制可省略。
+	 */
 	raw: RawEvent[]
 }
 
@@ -243,7 +249,7 @@ export interface RecordOptions {
 	 * 给了它就不 `chromium.launch()`，结束时也不关浏览器。
 	 */
 	page?: Page
-	/** Attach additional Electron native tabs explicitly for multi-tab recording. */
+	/** 显式附加其他 Electron 原生标签页，以支持多标签录制。 */
 	pages?: Page[]
 	/**
 	 * 只往指定 page 注入采集脚本，不在 context 上 addInitScript。

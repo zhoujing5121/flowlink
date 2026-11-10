@@ -15,6 +15,10 @@
  *
  * 元素寻址：采集时给目标元素打 `data-rr-uid` 临时标记，Node 侧用 `[data-rr-uid=...]`
  * 把它找回来看候选是否 `count()===1 && visible`；处理完调用 `__rrClearUids()` 清掉。
+ *
+ * 生命周期约束：脚本按 Document 安装，而不是按 Window 安装。导航期间 Playwright binding
+ * 可能暂不可用，此时只暂存事件的传递，不改写事件时间戳；事实与快照通过 pull API 暴露，
+ * 供 Node 侧后续刷新或重建已经移动、消失的目标。
  */
 /* global window, document, location, setTimeout, clearTimeout */
 ;(function () {
@@ -70,6 +74,8 @@
 	var flushTimer = null
 
 	function scheduleFlush() {
+		// 每个 Document 只保留一个重试定时器。启动或导航期间 binding 暂时缺失是正常情况，
+		// 因此先把队列限制在有界范围内并重试，不能让页面初始化依赖 Node binding 先就绪。
 		if (flushTimer) return
 		flushTimer = setTimeout(function () {
 			flushTimer = null
@@ -77,6 +83,7 @@
 				scheduleFlush()
 				return
 			}
+			// binding 可用后一次性取出当前队列；新到事件进入新的队列，不会和本轮重复发送。
 			var items = outbox.splice(0, outbox.length)
 			for (var i = 0; i < items.length; i++) push(items[i])
 		}, 50)
@@ -96,6 +103,7 @@
 			push(payload)
 			return
 		}
+		// binding 尚未挂好时保留最近事件；丢弃最旧项以限制导航异常时的内存增长。
 		if (outbox.length > 2000) outbox.shift()
 		outbox.push(payload)
 		scheduleFlush()
@@ -382,6 +390,8 @@
 	 * @param {boolean} trusted
 	 */
 	function send(kind, el, data, trusted, ts) {
+		// 先在事件发生的时刻采集事实，再打临时 UID，避免异步处理时节点属性已改变。
+		// UID 仅用于传输期间找回同一节点，不进入 observed 属性事实；清理会在录制收尾时进行。
 		var facts = el ? collectFacts(el) : null
 		if (facts && el) facts.uid = markUid(el)
 		emit({
@@ -499,7 +509,8 @@
 			if (!el || el.nodeType !== 1) return
 			var data = readValue(el)
 			data.inputType = el.type || (el.isContentEditable ? 'contenteditable' : undefined)
-			// input 允许 untrusted：Playwright 的 fill() 就是 JS 赋值 + dispatchEvent
+			// input 允许 untrusted：Playwright 的 fill() 就是 JS 赋值加 dispatchEvent。
+			// click/key 仍只接受可信事件；脚本合成的点击或按键不代表用户意图。
 			send('input', el, data, event.isTrusted)
 		},
 		true,
@@ -612,6 +623,8 @@
 			var dy = y - prev.y
 			if (scrollState) scrollState.set(key, { x: x, y: y })
 			if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return
+			// 只合并同一滚动容器上相邻到达的通知；目标一变就先冲洗旧增量，
+			// 避免把一个嵌套容器的移动错误记到另一个容器名下。
 			if (pendingScroll && pendingScroll.el === el) {
 				pendingScroll.dx += dx
 				pendingScroll.dy += dy
@@ -637,6 +650,8 @@
 	 * 每个节点带 uid，Node 侧据此把「新出现的元素」变回 ElementRef。
 	 */
 	window.__rrSnapshot = function (opts) {
+		// 快照是有界签名，不是整页 DOM 转储。稳定结构键用于前后对比；
+		// UID 和复制出的事实仅作恢复线索，帮助处理短暂出现后即消失的可见元素。
 		opts = opts || {}
 		var max = typeof opts.max === 'number' ? opts.max : 120
 		var nodes = []
@@ -696,6 +711,7 @@
 
 	/** 清掉临时 uid 标记（含 open shadow root 里的） */
 	window.__rrClearUids = function () {
+		// 只递归清理开放的 shadow root；封闭 root 按设计不可访问，只能管理其宿主上的标记。
 		var removed = 0
 		function clearIn(root) {
 			var list

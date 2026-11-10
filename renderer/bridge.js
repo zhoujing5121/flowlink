@@ -7,6 +7,11 @@
  *  3. 录制：postMessage mock → IPC recordOnPage（步骤流式推送）
  *  4. 分析：referenceOperation mock → 真实 Flow 步骤
  *  5. 列表 Run/Delete：启用并接线 IPC
+ *
+ * 此 IIFE 在 app.js 初始化模拟界面及闭包后运行。它有意替换部分顶层函数绑定，
+ * 而不另建一套渲染器状态模型：flowData、recordingSessions 和抽屉现有的渲染流程
+ * 仍是共同的数据来源。原生浏览器由主进程中的 WebContentsView 承载，因此其位置和
+ * 生命周期通过 preload IPC 协调，而不是依赖 iframe DOM。
  */
 ;(function () {
 	const F = window.flowlink
@@ -37,6 +42,9 @@
 
 	/** 从 IPC 加载任务列表并刷新渲染 */
 	async function loadTasksFromStore() {
+		// 原位填充现有数组，因为列表渲染和 Profile 事件处理器持有该数组引用。
+		// 随后将已保存的录制项恢复到各自任务会话；若缺少步骤展示数据，则先从 Flow 文件补齐，
+		// 再进行首次完整列表渲染。
 		try {
 			const tasks = await F.tasks.list()
 			flowData.length = 0
@@ -121,8 +129,11 @@
 	 * ================================================================ */
 	let profileSaveInFlight = false
 	saveProfile = async function () {
+		// 串行处理保存，并在提交草稿前征求确认。
+		// 只有 TaskStore 接受保存后，草稿才会成为 flowData 中的正式条目。
 		if (profileSaveInFlight || !validateProfileServices()) return
 		if (!(await confirmWorkspaceAction('Save this taskflow profile?'))) return
+		// 先复制表单值和数组内容构成独立 patch；等待 IPC 时，输入草稿不会被服务端调用改写。
 		const draft = profileDraft()
 		const code = currentFlow?.code || nextTaskflowCode()
 		const patch = {
@@ -141,6 +152,7 @@
 		button.disabled = true
 		try {
 			const task = await F.tasks.saveProfile(patch)
+			// IPC 成功后才更新内存列表；新任务此时才取得正式编号并结束 "new" 草稿。
 			if (currentFlow) {
 				Object.assign(currentFlow, patch, { recordings: task.recordings || [] })
 			} else {
@@ -157,6 +169,7 @@
 			$('profileSaveStatus').textContent = 'Saved.'
 			await _origCloseDrawer()
 		} catch (err) {
+			// 保存失败时保留原草稿和抽屉，用户可修正后再次提交。
 			console.error('[bridge] 保存 Profile 失败：', err)
 			$('profileSaveStatus').textContent = 'Save failed: ' + err.message
 		} finally {
@@ -164,7 +177,7 @@
 			button.disabled = false
 		}
 	}
-	// index.html bound the original function before this bridge override was installed.
+	// index.html 在安装此 bridge 覆盖实现前，已经绑定了原始函数。
 	$('profileSave').onclick = () => saveProfile()
 
 	/* ================================================================
@@ -187,6 +200,8 @@
 
 	/** 导航：更新页面状态 + 调 IPC 真实导航（不再加载 iframe） */
 	navigateRecordingBrowser = async function (url, addHistory = true, page = activeBrowserPage()) {
+		// 先乐观更新渲染器状态，让地址栏立即响应；若原生导航拒绝请求，
+		// 则恢复之前的 URL，避免界面与浏览器实际页面不一致。
 		const next = validatedRecordingURL(url)
 		if (!next) return
 		const state = recordingSession()
@@ -248,6 +263,9 @@
 	let boundsObserver = null
 	let lastBrowserBoundsKey = ''
 	mountBrowserSurface = function () {
+		// 渲染器中的 browser frame 仅作为几何占位元素。
+		// 实际的 WebContentsView 由主进程持续管理，并通过 reportBrowserBounds()
+		// 定位到此元素上方。
 		const state = recordingSession()
 		if (state.browserTabs[0] && !state.browserTabs[0].nativeId)
 			state.browserTabs[0].nativeId = 'browser'
@@ -302,6 +320,8 @@
 
 	/** 把 #browserFrames 的屏幕矩形上报给主进程 */
 	function reportBrowserBounds() {
+		// Bounds 使用屏幕坐标，而非工作区局部坐标。忽略隐藏或尺寸为零的界面，
+		// 并跳过未变化的矩形，避免布局观察器连续触发时发送冗余 IPC。
 		const frames = $('browserFrames')
 		if (!frames) {
 			F.browser.hide()
@@ -319,6 +339,7 @@
 		const boundsWidth = Math.max(1, Math.round(rect.width - dockWidth))
 		const boundsKey = `${Math.round(rect.x)},${Math.round(rect.y)},${boundsWidth},${Math.round(rect.height)}`
 		if (boundsKey === lastBrowserBoundsKey) return
+		// 先记下已上报的矩形，后续布局回调若尺寸未变即可直接跳过。
 		lastBrowserBoundsKey = boundsKey
 		F.browser.setBounds({
 			x: Math.round(rect.x),
@@ -328,10 +349,12 @@
 		})
 	}
 
-	// Native WebContentsView content paints above renderer dialogs. Hide it for
-	// every workspace confirmation, then force a bounds update to restore it.
+	// 原生 WebContentsView 会覆盖在渲染器对话框之上。每次显示工作区确认框前先隐藏它，
+	// 随后强制更新 bounds，将原生视图恢复到正确位置。
 	const showWorkspaceConfirmation = confirmWorkspaceAction
 	confirmWorkspaceAction = async function (message) {
+		// 原生内容会覆盖渲染器对话框；显示确认框前先隐藏原生视图，
+		// 确认结束后重新测量位置并恢复覆盖层。
 		await F.browser.hide().catch(() => undefined)
 		try {
 			return await showWorkspaceConfirmation(message)
@@ -347,6 +370,8 @@
 
 	/** startBrowserRecording：调 IPC recording:start */
 	startBrowserRecording = async function (options = {}) {
+		// 必须等浏览器导航完成后才能开始录制。分组录制在前缀回放抵达目标页面后，
+		// 可通过 preservePage 保留当前页面，不再重复导航。
 		const state = recordingSession()
 		if (state.stage === 'recording') return
 		const page = activeBrowserPage()
@@ -390,11 +415,13 @@
 				startUrl,
 				preservePage: options.preservePage === true,
 			})
+			// IPC 返回前 Stop 或取消可能已改变阶段；过期的启动结果不得覆盖新状态。
 			if (result?.reason === 'cancelled' || state.stage !== 'recording') return
 			console.log('[bridge] 录制已启动')
 		} catch (err) {
 			console.error('[bridge] 录制启动失败：', err)
 			if (state.stage !== 'recording') return
+			// 启动失败时撤销尚未完成的录制状态，并重绘可再次操作的工作区。
 			state.pending = null
 			state.stage = 'ready'
 			renderRecordingWorkspace()
@@ -405,6 +432,8 @@
 		'No steps have been recorded. A recording without steps will not be saved. Stop recording?'
 
 	function exitEmptyRecording(state, pending, mediaResult) {
+		// 明确丢弃没有步骤的捕获，不将其加入录制列表。
+		// 普通录制和节点录制分别恢复到适当的浏览器/分析视图。
 		if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
 		const reRecordTarget = pending?.reRecordTarget
 		delete pending.finishing
@@ -423,6 +452,8 @@
 
 	/** finishBrowserRecording：调 IPC recording:stop，获取真实 flow */
 	finishBrowserRecording = async function (options = {}) {
+		// 同时停止引擎录制和渲染器媒体，但只有引擎返回 Flow 后才提交录制项。
+		// 空捕获走独立的非阻塞路径，避免媒体停止失败时把界面卡在录制状态。
 		const state = recordingSession()
 		if (state.stage !== 'recording' || !state.pending || state.pending.finishing) return
 		const pending = state.pending
@@ -437,14 +468,15 @@
 		engineStop.catch(() => undefined)
 		const mediaStop = stopRecordingMedia(state)
 		if (discardWithoutSteps) {
-			// Empty Stop is intentionally fire-and-forget: browser/media failures must
-			// never keep the user trapped in recording mode.
+			// 空录制的 Stop 刻意采用 fire-and-forget：浏览器或媒体出错也不能
+			// 让用户一直困在录制状态。
 			void mediaStop.then((mediaResult) => {
 				if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
 			}).catch(() => undefined)
 			exitEmptyRecording(state, pending, { videoURL: '', videoDataUrl: '', screenshots: [] })
 			return
 		}
+		// 非空录制需等待媒体收尾；媒体失败可降级为空媒体，但仍继续向引擎取回 Flow。
 		const mediaResult = await mediaStop.catch(() => ({
 			videoURL: '',
 			videoDataUrl: '',
@@ -623,7 +655,7 @@
 		}
 	}
 
-	/** Recording fallback metadata for native tab actions and UI-only actions. */
+	/** 为原生标签页操作和仅发生在界面中的操作保留录制回退元数据。 */
 	captureBrowserAction = function (action) {
 		const state = recordingSession()
 		if (!action || state.stage !== 'recording' || !state.pending) return
@@ -631,10 +663,12 @@
 		state.pending.actions.push(action)
 	}
 
-	/** Re-record / add recording before or after a process group.
-	 *  Overridden in bridge.js because the original in index.html references the
-	 *  local window.flowlink handle (F), which is out of scope there. */
+	/** 重新录制某个流程组，或在流程组之前/之后添加录制。
+	 * 由 bridge.js 覆盖：index.html 中的原实现引用了局部 window.flowlink 句柄（F），
+	 * 该句柄在此处不可见。 */
 	beginGroupRecording = async function (item, groupId, mode) {
+		// 准备过程是受保护的多步状态转换：先恢复起始页，再回放到选定流程组的边界，
+		// 最后在回放所得的原生页面上开始捕获，不再导航离开该页面。
 		const state = recordingSession()
 		if (state.stage === 'recording' || state.groupPreparing) return
 		const group = ensureProcessGroups(item).find((g) => g.id === groupId)
@@ -686,6 +720,7 @@
 			syncBrowserSession(state)
 
 			if (stepCount > 0) {
+				// 从起始页回放到分组边界；回放失败时不启动新捕获，统一进入下方回滚路径。
 				if (!item.recordingId) throw new Error('The recording needed for prefix replay is unavailable.')
 				const replay = await F.playback.runPrefix({
 					taskCode: currentFlow?.code || activeFlowKey,
@@ -698,6 +733,7 @@
 				}
 				const activeNativeId = replay.tabIds?.[replay.currentPageIndex ?? 0]
 				if (activeNativeId) {
+					// 前缀执行可能切换过标签页，开始录制前必须将 UI 活动页与引擎当前页对齐。
 					const active = state.browserTabs.find((tab) => tab.nativeId === activeNativeId)
 					if (!active) throw new Error('The replayed active tab is unavailable for recording.')
 					state.activeBrowserTab = active.id
@@ -720,6 +756,7 @@
 			await startBrowserRecording({ preservePage: true })
 		} catch (err) {
 			console.error('[bridge] 节点重录准备失败：', err)
+			// 任一准备步骤失败都清除临时捕获信息，回到原录制项的分析视图。
 			state.pending = null
 			state.stage = 'done'
 			state.view = 'analysis'
@@ -734,8 +771,10 @@
 		}
 	}
 
-	/** Reset the browser workspace without deleting completed recordings. */
+	/** 重置浏览器工作区，但不删除已完成的录制项。 */
 	resetTestBrowser = async function (item) {
+		// Test 模式共用一个原生浏览器。每个会话只保留一个重置 Promise，
+		// 避免工作区重复渲染时并发重置浏览器。
 		if (!item?.id) return
 		const state = recordingSession()
 		if (state.testResetPromise) return state.testResetPromise
@@ -793,6 +832,8 @@
 	}
 
 	resetRecordingForNewSession = async function () {
+		// 新捕获前复用第一个原生标签页并关闭其余标签页。
+		// 这里只重置浏览器导航状态，已完成的录制项仍保留。
 		const state = recordingSession()
 		state.pending = null
 		state.focused = null
@@ -835,15 +876,16 @@
 
 	/** addBrowserPage：创建独立的 Electron WebContentsView 标签页 */
 	addBrowserPage = async function () {
+		// 等待创建原生标签页前先登记渲染器占位页，以便异步标签页事件能找到对应页面。
+		// 创建失败时回滚占位页，并恢复此前活动的页面。
 		const state = recordingSession()
 		const previousActiveId = state.activeBrowserTab
 		const previousPage = activeBrowserPage(state)
 		const previousUrl = previousPage?.url
 
 		const page = createBrowserPage(recordingTestURL, false)
-		// Add the new page to session state BEFORE creating the native tab so that
-		// any asynchronous browser:urlChanged event is routed to the new page rather
-		// than accidentally updating the previously active tab.
+		// 创建原生标签页前先把新页面加入会话状态，确保异步的 browser:urlChanged
+		// 事件路由到新页面，而不是误更新此前的活动标签页。
 		state.browserTabs.push(page)
 		state.activeBrowserTab = page.id
 		syncBrowserSession(state)
@@ -861,7 +903,7 @@
 				page.historyIndex = 0
 			}
 		} catch (err) {
-			// Rollback: remove the placeholder page and restore the previous active tab.
+			// 回滚：移除占位页面，并恢复此前的活动标签页。
 			const index = state.browserTabs.indexOf(page)
 			if (index >= 0) state.browserTabs.splice(index, 1)
 			state.activeBrowserTab = previousActiveId
@@ -874,9 +916,9 @@
 		await F.browser.switchTab(nativeId)
 		syncBrowserSession(state)
 		updateBrowserChrome()
-		// The recorder emits openTab after the native page is attached; do not duplicate it here.
+		// 原生页面挂载后，录制器会发出 openTab 事件；此处不要重复记录。
 
-		// Defensive: ensure the previously active tab keeps its original URL.
+		// 防御性校验：确保此前活动标签页仍保留原来的 URL。
 		if (previousPage && previousUrl !== undefined) {
 			previousPage.url = previousUrl
 			previousPage.draftURL = previousPage.draftURL || previousUrl
@@ -910,11 +952,13 @@
 		}
 		syncBrowserSession()
 		updateBrowserChrome()
-		// The page close listener supplies closeTab to the engine recording.
+		// 页面关闭监听器会向引擎录制提供 closeTab 操作。
 	}
 
-	/** Start a real canvas video recorder fed by native WebContentsView capture frames. */
+	/** 启动真实的 canvas 视频录制器，画面由原生 WebContentsView 捕获帧提供。 */
 	startRecordingMedia = function (state) {
+		// 原生页面像素以 IPC 帧的形式送达，并合成到此 canvas 中；
+		// 若捕获 API 不可用，则保留安全的空媒体状态，确保录制操作仍能正常结束。
 		const canvas = document.createElement('canvas')
 		canvas.width = 960
 		canvas.height = 540
@@ -946,6 +990,8 @@
 	}
 
 	stopRecordingMedia = async function (state) {
+		// 为录制器关闭和 data URL 转换都设置超时：平台回调可能永远不会触发，
+		// 不能让 Stop 因任一环节而无限等待。
 		const media = state.mediaCapture
 		if (!media) return { videoURL: '', videoDataUrl: '', screenshots: [] }
 		const emptyResult = () => ({ videoURL: '', videoDataUrl: '', screenshots: media.screenshots || [] })
@@ -1078,8 +1124,10 @@
 		}
 	}
 
-	/** Group by URL within each tab. Returning to a previous tab/URL can create a new node. */
+	/** 在每个标签页内按 URL 分组；切换离开后再返回相同标签页/URL 时，可形成新的节点。 */
 	function buildGroupsFromSteps(steps) {
+		// 按页面索引分别追踪最近的 URL。若中间执行过其他步骤后才返回原标签页/URL，
+		// 则开始一个新的连续分组。
 		const groups = []
 		let current = null
 		let currentTab = 0
@@ -1162,6 +1210,8 @@
 	}
 
 	window.runFlowlinkTest = async function (item) {
+		// 调用回放前先显示运行状态；异步进度事件会推进步骤标记，
+		// 错误则关联到当前执行的步骤。
 		if (!item?.recordingId || item.testRunning) return
 		const state = recordingSession()
 		const code = currentFlow?.code || activeFlowKey
@@ -1230,11 +1280,14 @@
 
 	/** URL 变更 → 更新地址栏 */
 	F.on('browser:urlChanged', ({ url, tabId }) => {
+		// 将原生标签页 ID 还原为会话中的页面对象，再同步共享的活动页面镜像，
+		// 最后刷新可见的地址栏控件。
 		const state = recordingSession()
 		const page = tabId
 			? state.browserTabs.find((item) => item.nativeId === tabId) || activeBrowserPage()
 			: activeBrowserPage()
 		if (!page.nativeId && tabId) page.nativeId = tabId
+		// 原生事件是导航事实来源；同步该页数据后，再由 syncBrowserSession 更新兼容镜像。
 		page.url = url
 		page.draftURL = url
 		syncBrowserSession()
@@ -1244,6 +1297,8 @@
 	})
 
 	F.on('browser:tabOpened', async ({ tabId, url, active }) => {
+		// 原生弹窗/打开事件可能独立于界面上的 + 按钮到达；
+		// 按原生 ID 去重，且只有事件明确表示为活动页时才切换。
 		const state = recordingSession()
 		const existing = state.browserTabs.find((item) => item.nativeId === tabId)
 		if (existing) return
@@ -1255,6 +1310,7 @@
 		page.historyIndex = 0
 		state.browserTabs.push(page)
 		if (active === true) {
+			// 等待主进程确认切换后再指定活动页；失败也保留新建页以供后续恢复。
 			try {
 				await F.browser.switchTab(tabId)
 			} catch (err) {
@@ -1266,10 +1322,12 @@
 		}
 		syncBrowserSession()
 		updateBrowserChrome()
-		// Popup/native open is recorded by the engine after CDP attachment.
+		// 弹窗或原生打开操作会在 CDP 挂接后由引擎记录。
 	})
 
 	F.on('recording:captureFrame', ({ dataUrl, index, tabId, url }) => {
+		// 每个引擎帧只保存一次截图，并绘制到本地视频 canvas；
+		// 标签用于标明画面来自哪个原生标签页。
 		const state = recordingSession()
 		const media = state.mediaCapture
 		if (!media || state.stage !== 'recording' || typeof dataUrl !== 'string') return
@@ -1321,6 +1379,8 @@
 
 	/** 录制步骤流 → 更新 pending 计数 */
 	F.on('recording:step', (step) => {
+		// 这里只维护轻量操作计数，供界面回退和空录制判断使用；
+		// 完整的规范步骤以引擎持久化的 Flow 为准。
 		const state = recordingSession()
 		if (state.pending && state.stage === 'recording') {
 			state.pending.actions.push({ type: step.kind })
@@ -1347,6 +1407,8 @@
 
 	/** 回放步骤流 */
 	F.on('playback:step', (r) => {
+		// 将每条流式结果应用到正在运行的测试项：步骤通过后将运行标记推进到下一步，
+		// 遇到失败则停止推进。
 		console.log('[bridge] 回放步骤：', r.stepId, r.status, r.ms + 'ms')
 		const item = findTestItem()
 		if (!item?.testRunning) return
@@ -1354,6 +1416,7 @@
 		const runningIndex = results.findIndex((result) => result.status === 'running')
 		const resultIndex = runningIndex >= 0 ? runningIndex : results.findIndex((result) => result.status === 'pending')
 		if (resultIndex < 0) return
+		// 引擎按顺序推送结果；优先修正已有 running 步骤，否则填入首个 pending 步骤。
 		results[resultIndex] = r.status === 'pass'
 			? { status: 'pass' }
 			: { status: r.status === 'fail' ? 'fail' : 'pending', error: r.error }
@@ -1364,9 +1427,12 @@
 
 	/** 回放完成 */
 	F.on('playback:done', (result) => {
+		// 最终结果是所有步骤状态的权威来源；先将界面状态与最终结果对齐，
+		// 再清除运行标记。
 		console.log('[bridge] 回放完成：', result.ok ? '成功' : '失败', result.metrics)
 		const item = findTestItem()
 		if (!item?.testRunning) return
+		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
 		item.testRunning = false
 		for (let index = 0; index < (result.steps || []).length; index++) {
 			const step = result.steps[index]
@@ -1397,6 +1463,8 @@
 	 * ================================================================ */
 	const _origCloseDrawer = closeDrawer
 	closeDrawer = async function () {
+		// 拆除抽屉观察器并恢复原始关闭流程前先隐藏原生视图，
+		// 防止它继续覆盖界面。
 		const session = recordingSession()
 		if (session.stage === 'recording') {
 			const empty = !(session.pending?.actions || []).length

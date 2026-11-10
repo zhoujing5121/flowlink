@@ -41,6 +41,7 @@ import type {
 } from './types.js'
 
 export interface RunOutcome {
+	/** 提供给 UI/调用方的精简结果，以及完整持久化报告和写回所需输入。 */
 	result: RunResult
 	report: RunReport
 	/** 需要写回的自愈记录（含现场推出的候选） */
@@ -248,6 +249,7 @@ export async function runFlowInBrowserContext(
 	const attachedPage = input.existingPage
 	const shouldCloseContext = input.closeContext ?? !attachedPage
 
+	// flow 默认值作为基础；本次运行显式传入的变量（包括批次行变量）优先覆盖。
 	const vars: Record<string, string> = {
 		...defaultVariables(flow.variables),
 		...(opts.variables ?? {}),
@@ -259,6 +261,8 @@ export async function runFlowInBrowserContext(
 
 	// ---- 对话框策略：flow 里有 dialog 步骤 → 手动模式（只暂存，等 dialog 步骤处理） ----
 	// 否则按 dialogPolicy：dismiss=auto（出现即关）、fail（出现即失败）
+	// 整个 flow 只决定一次模式：对话框可能由前一步触发，
+	// 若逐步决定，就可能在对应的 dialog 步骤执行前被自动关闭。
 	const manualDialogs = hasStepKind(flow.steps, 'dialog')
 	const dialogMode: DialogMode = manualDialogs
 		? 'manual'
@@ -285,6 +289,7 @@ export async function runFlowInBrowserContext(
 	let contextForSave: BrowserContext | undefined
 
 	try {
+		// 附着模式复用宿主页面与 context；独立模式新建 context，并由本执行器负责清理。
 		const env = flow.meta.env
 		let context: BrowserContext
 		let pages: PageManager
@@ -341,6 +346,7 @@ export async function runFlowInBrowserContext(
 
 		// 每个页都要：默认超时 / 对话框 handler / 崩溃监听（新标签页同样生效）
 		const wirePage = (target: Page): void => {
+			// 新旧标签页统一安装超时、对话框和崩溃监听，避免新页逃过 run 级管理。
 			target.setDefaultTimeout(timeoutMs)
 			target.on('dialog', (dialog) => dialogManager.handle(target, dialog))
 			target.on('crash', () => {
@@ -370,6 +376,7 @@ export async function runFlowInBrowserContext(
 			? async (target: ElementRef, reason: string): Promise<Locator | null> => {
 					pendingRepairRef.current = null
 
+				// 每轮都重新取快照并定位；只有旧 ref 因导航失效时才重试一次，避免重复调用 AI。
 					for (let attempt = 0; attempt < 2; attempt++) {
 						let ariaSnapshot = ''
 						try {
@@ -436,6 +443,7 @@ export async function runFlowInBrowserContext(
 				pushLog('closed shadow 目标：跳过 AI，走 host + position 降级（spike A）')
 			}
 			const allowAi = opts2.allowAi ?? true
+			// 由 resolver 统一按候选优先级解析，并把临时状态释放函数交给动作层管理。
 			const result = await resolve(target, {
 				page,
 				...(allowAi && !closedShadow && repair ? { repair } : {}),
@@ -458,7 +466,7 @@ export async function runFlowInBrowserContext(
 			return result
 		}
 
-		// page 用 getter：切标签页后 action/verify 自动作用在当前页上
+		// 用 getter 动态读取 page：切换标签页后 action/verify 会自然指向当前页。
 		const actionDeps: ActionDeps = {
 			get page() {
 				return page
@@ -485,6 +493,7 @@ export async function runFlowInBrowserContext(
 
 		const flat = flattenSteps(flow.steps)
 
+		// 仅当首个可执行步骤不是 navigate 时才导航到 startUrl，避免覆盖显式导航目标。
 		// flow 第一步不是 navigate 时，先按 env.startUrl 打开页面（同样吃 baseUrl 重定基）
 		const startPage = pages.pageAt(0)
 		if (
@@ -535,7 +544,10 @@ export async function runFlowInBrowserContext(
 			}
 		}
 
+		// 每个展开后的动作都对应一条结果和详情；group 仅用于组织 IR，
+		// 本身不单独作为步骤写入报告。
 		for (const item of flat) {
+			// 中止只影响尚未执行的步骤；崩溃后也逐项报告 skip，维持结果与剩余步骤一一对应。
 			if (opts.abortSignal?.aborted) {
 				const stepResult: StepResult = {
 					stepId: item.stepId,
@@ -619,7 +631,8 @@ export async function runFlowInBrowserContext(
 				// 所以 dialog 步骤（以及紧随其后的步骤）只做"不碰页面"的动作。
 				const dialogBlocking = dialogManager.pendingCount > 0
 
-				// before.png 在内存里留着：失败时落盘，click/drag 的 NO_EFFECT 探测也用它
+				// 先把 before.png 留在内存，只有失败或 `all` 模式才落盘；
+				// 同一份图也是 click/drag 的 NO_EFFECT 像素基准。
 				if (!dialogBlocking && screenshotMode !== 'off' && item.step.kind !== 'navigate') {
 					beforeShot = await page.screenshot({ type: 'png' }).catch(() => undefined)
 				}
@@ -634,6 +647,7 @@ export async function runFlowInBrowserContext(
 
 				// ---- 模板渲染（navigate.url / upload.files / dialog.promptText …）----
 				phase = 'template'
+				// 在克隆数据上渲染模板，保持已校验的源 Flow 及其录制时 observed 证据不变。
 				const rendered = (() => {
 					const base = renderStep(item.step, vars)
 					// baseUrl：只换 origin，保留 path/query/hash（回放环境切换）
@@ -649,6 +663,7 @@ export async function runFlowInBrowserContext(
 				}
 
 				// ---- 按类型执行 ----
+				// 标签页、对话框和断言需要协调器级状态；其余动作交给统一 action 执行器。
 				if (rendered.kind === 'openTab') {
 					phase = 'action'
 					try {
@@ -780,6 +795,7 @@ export async function runFlowInBrowserContext(
 				detail.status = 'pass'
 				if (expectNote !== undefined) stepLogPush(`expect ✓ ${expectNote}`)
 			} catch (err) {
+				// 错误码依赖当前阶段：同一个 timeout 在解析、导航、动作和期望轮询中含义不同。
 				const classified = classifyError(err, phase)
 				// 登录过期启发式：失败时 URL 停在登录页 → 在 message 末尾补一句人话（code 不变）
 				const failureUrl = safePageUrl(page)
@@ -788,6 +804,7 @@ export async function runFlowInBrowserContext(
 				detail.error = classified
 				stepLogPush(`FAIL[${classified.code}] ${classified.message}`)
 
+				// 失败报告尽量包含前后截图、快照和日志；对话框阻塞时跳过页面读取，避免二次卡住。
 				// 失败必须落 artifact：before/after 截图 + snapshot.json + log.txt
 				let stepDir: string | undefined
 				try {
@@ -851,6 +868,8 @@ export async function runFlowInBrowserContext(
 		observedPageCount = pages.count
 		observedCurrentPageIndex = pages.currentIndex
 	} finally {
+		// 清理顺序不可互换：先趁 context 存活保存登录态，再解除对话框阻塞、
+		// 等待下载落盘，最后只关闭由执行器拥有的 context。
 		// 每个 run 结束（无论成败）都尽力写回登录态：
 		// 放在最前面 —— context 还活着、也避免后面 keepOpen 的等待被人中途 kill 掉导致没保存。
 		if (opts.saveStorageStatePath && contextForSave) {
@@ -900,6 +919,8 @@ export async function executeRunOnPage(
 	opts: PlayOnPageOptions,
 	runId: string = makeId('run'),
 ): Promise<RunOutcome> {
+	// 此适配层不启动或关闭宿主浏览器；结果与报告结构仍和 executeRun 保持一致，
+	// 让上层调用方可以共用处理逻辑。
 	const flow: Flow = opts.flow
 	const artifacts = new ArtifactWriter(opts.artifactsRoot ?? './artifacts', flow.id, runId)
 	const startedAt = new Date().toISOString()
@@ -924,6 +945,7 @@ export async function executeRunOnPage(
 	const steps = outcome.steps
 	const details = outcome.details
 	const heals = outcome.heals
+	// 统一从步骤结果计算指标，避免 UI 汇总值与持久化报告出现不同口径。
 	const passCount = steps.filter((s) => s.status === 'pass').length
 	const failCount = steps.filter((s) => s.status === 'fail').length
 	const totalMs = Date.now() - runStart
@@ -965,6 +987,8 @@ export async function executeRun(
 	opts: PlayOptions,
 	runId: string = makeId('run'),
 ): Promise<RunOutcome> {
+	// 单次执行负责 Chromium 的完整生命周期；共享执行器只管理 context 和步骤，
+	// 这样批量模式可以复用同一个浏览器。
 	const flow: Flow = opts.flow
 	const artifacts = new ArtifactWriter(opts.artifactsRoot ?? './artifacts', flow.id, runId)
 	const startedAt = new Date().toISOString()
@@ -989,6 +1013,7 @@ export async function executeRun(
 			runStart,
 		})
 	} finally {
+		// 仅 headed 单次执行保留窗口供人查看；批次由调用方统一管理，不在每行暂停。
 		// 给业务人员留时间看结果：headed 模式下成功停留 keepOpenMs，失败停留更久
 		// （这是"单次回放"的 UX，所以留在 executeRun 外层；batch 每行都停会很痛苦）
 		const hasFailure = (outcome?.steps ?? []).some((s) => s.status === 'fail')
@@ -1043,6 +1068,7 @@ export async function executeRun(
 		stepsDetail: details,
 	}
 
+	// 成功与失败都写结果，供后续查看耗时、解析级别和完整步骤详情。
 	// result.json 无论成功失败都写（成功也有价值：性能/级别分布/耗时）
 	try {
 		await artifacts.writeResult(report)
@@ -1075,6 +1101,7 @@ async function assertEffect(
 	dialogMode: DialogMode,
 	pushLog: (msg: string) => void,
 ): Promise<void> {
+	// 依次排除可明确确认的副作用，再检查 DOM、URL、焦点和像素，避免把有效动作误报为无效。
 	// manual 模式下对话框会让页面 JS 阻塞：先给 dialog 事件一点时间到达，
 	// 否则下面的 evaluate 会一直挂到超时。
 	if (dialogMode === 'manual') {

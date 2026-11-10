@@ -94,6 +94,8 @@ export class PageManager {
 	}
 
 	#append(page: Page): PageSlot {
+		// 页面事件和显式 open() 可能报告同一个 Page；保留原槽位，
+		// 不为同一页面重复分配索引。
 		const existing = this.#slots.find((slot) => slot.page === page)
 		if (existing) return existing
 		const slot: PageSlot = { page, index: this.#slots.length, closed: false }
@@ -164,6 +166,7 @@ export class PageManager {
 		const pollMs = options.pollMs ?? 50
 		const deadline = Date.now() + Math.max(0, timeoutMs)
 		for (;;) {
+			// 先检查是否已登记；ready 模式额外等待 load，appear 模式只要求页面已创建。
 			const slot = this.#slots[index]
 			if (slot) {
 				if (slot.closed) {
@@ -213,6 +216,8 @@ export class PageManager {
 	}
 
 	async close(index?: number): Promise<void> {
+		// 关闭后仍保留槽位，确保后续页面沿用历史索引；
+		// 这里只把当前指针移到仍存活的页面。
 		const targetIndex = index ?? this.#current
 		const slot = this.#slots[targetIndex]
 		if (!slot || slot.closed) return

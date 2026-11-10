@@ -8,6 +8,11 @@
  */
 import { contextBridge, ipcRenderer } from 'electron'
 
+/**
+ * 此对象构成渲染进程可用能力的完整边界。invoke 方法返回主进程处理器的
+ * Promise 结果；事件订阅会隐藏 Electron event 对象，并返回取消订阅函数，
+ * 使界面组件能在销毁或切换时清理监听器。
+ */
 const api = {
 	tasks: {
 		list: () => ipcRenderer.invoke('tasks:list'),
@@ -77,6 +82,8 @@ const api = {
 			'recording:captureFrame',
 			'browser:tabOpened',
 		]
+		// 事件通道名称本身就是能力边界：即使通道名由渲染进程传入，也只能
+		// 订阅下方明确允许的事件，不能监听任意 IPC 消息。
 		if (!valid.includes(channel)) return () => {}
 		const listener = (_event: unknown, ...args: unknown[]) => handler(...args)
 		ipcRenderer.on(channel, listener)

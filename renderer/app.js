@@ -1,7 +1,13 @@
 "use strict";
-// Scope: Flow list, Profile and the supplied four-state Design recording UI.
-// Category/Service Level catalogs, Validation and remote services are not supplied.
-// SVG assets are embedded from provided files.
+/*
+ * FlowLink 渲染器侧的界面控制器。此文件负责页面内存中的 Flow/Profile 草稿、
+ * 抽屉导航、录制会话状态，以及列表和 Design 工作区的渲染与事件绑定。
+ * 独立演示模式会模拟浏览器操作和分析；Electron preload 可用时，bridge.js
+ * 会将部分函数替换为通过 IPC 调用的实现。observed 界面状态应与已持久化的 Flow 数据分开。
+ */
+// 范围：Flow 列表、Profile，以及提供的四态 Design 录制界面。
+// 当前未提供 Category/Service Level 目录、Validation 和远程服务。
+// SVG 资源直接嵌入自提供的文件。
 const rowIcons = {
   edit: '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M16 148h40v8H16zm154.85-70.65-2.829 2.828-.021-.021-65.955 65.955-39.543 9.886 9.886-39.543 68.763-68.805c8.187-8.187 21.51-8.187 29.698 0 8.188 8.189 8.188 21.511 0 29.7M100 136.842l54.35-54.35-18.301-18.385L81.657 118.5zm-26.502 8.16 18.678-4.67-14.009-14.009zm91.694-91.696c-4.858-4.859-12.638-5.06-17.74-.603l-5.747 5.747 18.301 18.386 5.79-5.79c4.456-5.1 4.255-12.88-.604-17.74" /></svg>',
   delete:
@@ -10,6 +16,8 @@ const rowIcons = {
 };
 const flowData = [];
 
+// 优先在当前显示的 Design 工作区内查找 ID：每个 Flow 都有独立的录制布局副本，
+// 若直接全局查找，隐藏副本中的同名 ID 可能会遮蔽当前活动元素。
 const $ = (id) => {
   const root = document.querySelector(
     "#designPanel > .recording-layout:not([hidden])",
@@ -42,6 +50,8 @@ let initialName = "";
 let savedScroll = 0;
 const profileDrafts = new Map();
 
+// Profile 编辑内容在点击 Save 前都只是草稿；新 Flow 尚未持久化时先使用稳定生成的编号，
+// 不要因此过早将它插入列表。
 function nextTaskflowCode() {
   return (
     "TASKFLOW-" +
@@ -69,8 +79,10 @@ function saveProfile() {
       category: currentFlow?.category || "",
       status: currentFlow?.status || "Ready",
     };
+  // 先从表单和草稿构造快照，避免未保存输入提前污染 flowData。
   if (currentFlow) Object.assign(currentFlow, snapshot);
   else {
+    // 新任务仅在确认保存时创建正式列表项，并将草稿键迁移到生成的任务编号。
     currentFlow = snapshot;
     flowData.push(currentFlow);
     profileDrafts.set(code, draft);
@@ -85,8 +97,11 @@ function saveProfile() {
   closeDrawer();
 }
 
+// 草稿按 Flow 编号（或 "new"）分别保存，因此关闭并重新打开抽屉时仍可保留未保存的编辑，
+// 同时不直接改动列表中已持久化的对象。
 function profileDraft() {
   const key = currentFlow?.code || "new";
+  // 仅在首次访问时从当前任务复制初值；之后的表单修改都留在独立草稿中。
   if (!profileDrafts.has(key))
     profileDrafts.set(key, {
       name: currentFlow?.name || "",
@@ -151,6 +166,8 @@ function rowIcon(name, code, disabled = false) {
 }
 
 function render() {
+  // 筛选只读取已提交的筛选值，不直接采用输入框中尚未应用的内容。
+  // 每次渲染还会同步标签页的无障碍状态，并更新无匹配结果时的空列表提示。
   const rows = flowData.filter(
     (f) =>
       (!appliedSearch ||
@@ -162,6 +179,7 @@ function render() {
       (activeStatus === "All" ||
         (activeStatus === "Active" ? f.enabled : !f.enabled)),
   );
+  // 显示列表只由已应用筛选条件决定；空结果仍保留一致的表格结构。
   $("flowRows").innerHTML =
     rows
       .map(
@@ -195,6 +213,7 @@ function render() {
   : "0 - 0 of 0 items";
 
   $("currentPage").disabled = !rows.length;
+  // 标签选择状态与键盘焦点顺序一并更新，避免筛选/重绘后仍指向旧标签。
   document.querySelectorAll("[data-status]").forEach((b) => {
     const active = b.dataset.status === activeStatus;
     b.setAttribute("aria-selected", String(active));
@@ -203,6 +222,8 @@ function render() {
 }
 
 function openDrawer(code, source) {
+  // 显示模态框前先确定 Profile，并记录打开它的控件及页面滚动位置。
+  // 新建 Flow 时只清理已经失去归属的临时录制状态，已创建 Flow 的会话互不影响。
   currentFlow = code ? flowData.find((f) => f.code === code) : null;
   trigger = source;
   savedScroll = window.scrollY;
@@ -213,15 +234,16 @@ function openDrawer(code, source) {
   
   if (!code) {
     profileDrafts.delete("new");
-    // Clear any leftover transient design state for the previous new-flow session.
+    // 清除上一个新建 Flow 会话遗留的临时 Design 状态。
     const orphanedNewCode = activeFlowKey;
     if (orphanedNewCode && !flowData.find((f) => f.code === orphanedNewCode)) {
       recordingSessions.delete(orphanedNewCode);
     }
-    // initializeDrawerRecording will generate the final activeFlowKey for the new flow.
+    // initializeDrawerRecording 会为新 Flow 生成最终的 activeFlowKey。
   }
   
   const draft = profileDraft();
+  // 每次打开都从对应草稿恢复输入，列表中的持久化对象不会被表单直接引用。
   $("flowName").value = draft.name;
   $("flowDescription").value = draft.description;
   initialName = draft.name;
@@ -243,6 +265,8 @@ function openDrawer(code, source) {
 }
 
 async function closeDrawer() {
+  // 录制过程中不能直接关闭模态框：先征求确认并完成录制，再保留草稿，
+  // 最后关闭抽屉并恢复原有焦点和滚动位置。
   const session = recordingSession();
   if (session.stage === "recording") {
     if (!(await confirmWorkspaceAction("Stop recording and close?"))) return;
@@ -424,10 +448,12 @@ function validateProfileServices() {
   return true;
 }
 
+// 独立嵌入式演示内容。这里的本地路由刻意放在 sandbox iframe 中渲染；
+// preload API 可用时，bridge.js 会用 Electron 原生浏览器替换此模拟界面。
 function embeddedBrowserHTML(route) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;background:#f7f8fa;font:14px Arial,'Microsoft YaHei',sans-serif;color:#111}button,input,select{font:inherit}header{height:46px;background:#005078;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:14px;font-weight:bold}header span{font-size:11px;font-weight:normal}nav{height:40px;background:#fff;display:flex;padding:0 14px;gap:16px;border-bottom:1px solid #dde3ea}nav button{border:0;background:none;color:#6d7d89;padding:0 6px;position:relative}nav button.active{color:#0084ce;border-bottom:2px solid #0084ce}main{padding:14px}.company{display:flex;align-items:center;gap:14px;margin-bottom:14px}.avatar{width:40px;height:40px;background:#e3f5ff;color:#0093d7;display:flex;align-items:center;justify-content:center;font-size:20px}h1{font-size:14px;margin:3px 0;font-weight:700}.company p{font-size:10px;color:#73828d;margin:5px 0}section{background:#fff;border:1px solid #dce3eb;padding:14px;margin-bottom:7px}h2{font-size:14px;margin:0 0 15px}dl{display:grid;grid-template-columns:34% 66%;gap:12px 8px;margin:0}dt{color:#788893}dd{margin:0}.saved{float:right;color:#07945d;font-size:12px}input,select{width:100%;height:30px;border:1px solid #d8dfe8;padding:3px 6px;background:white}.button{border:1px solid #007bc0;color:#007bc0;background:white;padding:6px 14px;margin-top:14px}</style></head><body><header>Indirect Procurement Workbench<span>Demo</span></header><nav>${["Suppliers", "Draft", "Receipts"].map((v) => `<button data-route="${v.toLowerCase()}" class="${route === v.toLowerCase() ? "active" : ""}">${v}</button>`).join("")}</nav><main>${route === "suppliers" ? `<div class="company"><div class="avatar">A</div><div><h1>安达设施服务（虚构）</h1><p>DEMO-V001 · Indirect Procurement / Facility Services</p></div></div><section><h2>Supplier master data</h2><dl><dt>Country / Currency</dt><dd>China / CNY</dd><dt>Purchasing contact</dt><dd>Supplier A · Demo contact</dd><dt>Supplier rating</dt><dd>B · Verified</dd><dt>Annual quotation</dt><dd>264,000.00</dd><dt>Total amount</dt><dd>292560</dd><dt>Delivery / SLA</dt><dd>12 days / 24-hour response</dd></dl></section><section><span class="saved">Saved</span><h2>Requirement draft</h2><dl><dt>Title</dt><dd>苏州示范工厂 2027 年度设施维护服务</dd><dt>Service date</dt><dd>2027-01-01</dd></dl></section>` : route === "draft" ? `<section><h2>Requirement draft</h2><dl><dt>Title</dt><dd><input value="苏州示范工厂 2027 年度设施维护服务" aria-label="Title"></dd><dt>Service date</dt><dd><input value="2027-01-01" aria-label="Service date" type="date"></dd><dt>Total amount</dt><dd><input value="292560" aria-label="Total amount"></dd></dl></section>` : `<section><h2>Receipts</h2></section>`}</main><script>document.addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)parent.postMessage({type:'flowlink-route',route:b.dataset.route},'*');});document.addEventListener('input',e=>{if(e.target.matches('input,select'))parent.postMessage({type:'flowlink-input',target:e.target.getAttribute('aria-label'),value:e.target.value},'*');});<\/script><\/body><\/html>`;
 }
-// Node changes and destructive actions share this review step; Record starts immediately.
+// 节点变更和破坏性操作共用此确认步骤；Record 则会立即开始。
 function confirmWorkspaceAction(message) {
   const dialog = $("actionConfirmDialog"),
     trigger = document.activeElement;
@@ -486,7 +512,7 @@ function confirmWorkspaceAction(message) {
 }
 
 const recordingTestURL = "https://bosch.com.cn";
-// Browser tabs persist independently; one recording spans every active tab.
+// 浏览器标签页彼此独立保留；一次录制可以覆盖期间使用的所有标签页。
 const recordingSessions = new Map();
 function designIcon(name) {
   const paths = {
@@ -654,6 +680,8 @@ function createBrowserPage(url = "", showGuide = false) {
 }
 
 function recordingSession(key = activeFlowKey) {
+  // 按需为每个 Flow 创建完整的工作区状态。下面会话级的页面导航字段只是兼容镜像，
+  // 实际 URL 和历史记录以当前活动浏览器标签页为准。
   if (!recordingSessions.has(key)) {
     const first = createBrowserPage(recordingTestURL, true);
     recordingSessions.set(key, {
@@ -690,6 +718,7 @@ function activeBrowserPage(state = recordingSession()) {
 }
 
 function syncBrowserSession(state = recordingSession()) {
+  // 标签页切换后同步旧版会话级调用方；每个页面自己的 URL 和历史记录仍以页面对象为准。
   const page = activeBrowserPage(state);
   state.url = page.url;
   state.route = page.route;
@@ -706,6 +735,7 @@ function initializeDrawerRecording(code) {
 }
 
 function showDrawerTab(view) {
+  // 录制过程中不允许离开 Design；同时切换控件和工作区，确保两者的无障碍状态一致。
   const state = recordingSession();
   if (state.stage === "recording" && view !== "Design") return;
   drawerView = view;
@@ -767,6 +797,8 @@ function browserGuideHTML(showGuide = true) {
 }
 
 function ensureRecordingLayout() {
+  // 布局副本沿用模板中的 ID。先重命名非活动副本的 ID，再恢复当前副本的原始 ID，
+  // 以维持 $() 的查找规则。
   const state = recordingSession();
   if (!state.workspaceElement) {
     const template = document.getElementById("recordingLayoutTemplate");
@@ -807,6 +839,8 @@ function createBrowserSurface(state) {
 }
 
 function mountBrowserSurface() {
+  // 每次挂载浏览器界面时重新绑定导航事件；每个标签页的 frame 只创建一次，
+  // 在重新排列视图时继续复用。
   const state = recordingSession(),
     layout = state.workspaceElement,
     browser = state.browserElement || createBrowserSurface(state);
@@ -860,6 +894,8 @@ function browserPageLabel(page) {
 }
 
 function updateBrowserChrome() {
+  // 通过已渲染标签页的签名避免无谓替换 DOM，防止焦点丢失；
+  // 同时根据所选页面同步 frame 显示状态及地址栏、历史导航控件。
   const state = recordingSession(),
     page = syncBrowserSession(),
     browser = state.browserElement;
@@ -967,6 +1003,8 @@ function bindRecordingList() {
 }
 
 function renderRecordingWorkspace() {
+  // 分析和实时浏览是同一布局的两种排列方式。移动或隐藏现有浏览器/结果节点，
+  // 而不是重建浏览器，以保留各标签页的 iframe 和捕获状态。
   const state = recordingSession(),
     focused = currentAssistantItem();
   if (state.view === "analysis" && focused?.analyzed) {
@@ -1077,8 +1115,11 @@ function updateSummaryState() {
 }
 
 async function prepareRecording() {
+  // 若地址栏草稿与当前页面不同，新录制应先导航到草稿地址；
+  // 导航成功后才能重置录制状态，避免失败时丢失当前会话。
   const state = recordingSession();
   if (state.stage === "recording") return;
+  // 新一轮录制前先整理原生浏览器会话；既有录制项不在这一步删除。
   if (typeof resetRecordingForNewSession === "function")
     await resetRecordingForNewSession();
   const page = syncBrowserSession();
@@ -1091,6 +1132,7 @@ async function prepareRecording() {
     }
     await navigateRecordingBrowser(url);
   }
+  // 只有地址校验和必要导航均成功后，才切换到录制状态并清空旧 pending。
   state.hasStartedRecording = true;
   state.pending = null;
   state.focused = null;
@@ -1111,9 +1153,12 @@ function openRecordingURL() {
 }
 
 function startBrowserRecording() {
+  // 首次导航属于全新的捕获内容；重新录制则保留目标节点元数据，
+  // 不再创建第二个 pending 项。
   const state = recordingSession();
   if (state.stage === "recording") return;
   const page = activeBrowserPage();
+  // 首次进入时尽力把草稿地址导航到位；重新录制则保留目标项和其元数据。
   if (!page.url && validatedRecordingURL(page.draftURL))
     navigateRecordingBrowser(page.draftURL);
   syncBrowserSession();
@@ -1127,6 +1172,7 @@ function startBrowserRecording() {
       resultTab: "Process",
       startedAt: Date.now(),
     };
+  // 先发布录制阶段并重绘控件，再启动媒体和记录初始导航，保证界面立即反馈。
   state.stage = "recording";
   state.view = "browser";
   renderRecordingWorkspace();
@@ -1148,15 +1194,19 @@ function validatedRecordingURL(value) {
 }
 
 async function finishBrowserRecording() {
+  // 媒体异步收尾期间拦截重复的 Stop。收尾完成后再将 pending 对象一次性提交到会话列表，
+  // 避免列表出现不完整或重复的录制项。
   const state = recordingSession();
   if (state.stage !== "recording" || !state.pending || state.pending.finishing)
     return;
   const pending = state.pending;
   pending.finishing = true;
   updateBrowserChrome();
+  // 在媒体异步停止期间保留 pending 引用；完成前不把半成品加入 items。
   pending.media = await stopRecordingMedia(state);
   if (state.pending !== pending) return;
   if (pending.reRecordTarget) {
+    // 节点重录由专用提交逻辑替换原节点，不走新增录制项的通用路径。
     finishNodeRecording(state);
     updateBrowserChrome();
     return;
@@ -1179,7 +1229,7 @@ async function finishBrowserRecording() {
   state.view = "browser";
   state.allExplicit = false;
   renderRecordingWorkspace();
-  // Reference analysis remains a local demonstration, separate from the recorded media.
+  // Reference 分析仅用于本地演示，与录制得到的媒体内容相互独立。
   setTimeout(() => {
     if (!state.items.includes(item)) return;
     item.analyzed = true;
@@ -1216,6 +1266,8 @@ function navigateRecordingBrowser(
   addHistory = true,
   page = activeBrowserPage(),
 ) {
+  // 先更新 URL 和历史记录，再加载 frame，使浏览器工具栏立即显示目标地址；
+  // URL 无效时不改动页面状态。
   const next = validatedRecordingURL(url);
   if (!next) return;
   const state = recordingSession();
@@ -1256,6 +1308,8 @@ function moveRecordingHistory(direction) {
 }
 
 function loadRecordingFrame(page = activeBrowserPage()) {
+  // 本地演示路由使用 srcdoc，外部页面则在 sandbox frame 中导航。
+  // snapshot bridge 只注入本地内容，不注入远程源。
   const frame = page.frame;
   if (!frame) return;
   if (!page.url || page.url.startsWith("local://procurement/")) {
@@ -1334,6 +1388,8 @@ function closeBrowserPage(id) {
 }
 
 function offsetFlowSteps(steps, offset) {
+  // 合并后的 Flow 为每段源录制分配互不重叠的页面索引区间；
+  // 同时递归调整嵌套分组，确保标签页引用仍然一致。
   return steps.map((step) => {
     const clone = { ...step };
     if (clone.page?.index !== undefined)
@@ -1413,6 +1469,8 @@ function stepDetailToFlowStep(detail, stepId, pageIndex) {
 }
 
 async function buildMergedFlow(chosen, combined) {
+  // 优先使用每段录制对应的已持久化 Flow；仅对原型演示录制回退到界面推导的数据。
+  // 页面索引偏移用于避免不同录制的标签页编号冲突。
   const mergedSteps = [];
   let pageOffset = 0;
   for (const item of chosen) {
@@ -1478,6 +1536,8 @@ function summarizeRecordings() {
 }
 
 async function confirmRecordingSummary() {
+  // 将选中的已分析录制合并为一个界面项，并在展示前保存合并后的 Flow。
+  // 即使保存失败，该项仍可供界面查看，但 Test 标签页没有可回放的已保存录制。
   const state = recordingSession(),
     chosen = state.items.filter((item) => item.checked && item.analyzed);
   if (chosen.length < 2) {
@@ -1560,6 +1620,8 @@ async function confirmRecordingSummary() {
 }
 
 function renderSummaryWorkspace() {
+  // 结果标签页共用一个工作区，并在 Test 与其他标签页之间移动浏览器。
+  // Test 浏览器按录制项标记重置，避免每次渲染都重复执行异步初始化。
   const state = recordingSession(),
     item = currentAssistantItem(),
     active = item.resultTab || "Process";
@@ -1655,6 +1717,8 @@ function renderSummaryWorkspace() {
 }
 
 async function deleteRecording(id) {
+  // 捕获过程中禁止删除。若删除的是当前选中项，先选定相邻项并推导后续视图/阶段，
+  // 再重新渲染。
   const state = recordingSession();
   if (state.stage === "recording" || state.stage === "preparing") return;
   const index = state.items.findIndex((item) => item.id === id);
@@ -1699,6 +1763,7 @@ $("summaryDialog").addEventListener("cancel", (e) => {
 });
 $("summaryYes").onclick = confirmRecordingSummary;
 window.addEventListener("message", (e) => {
+  // 只接受来自本应用标签页 frame 的消息，再将快照和演示交互交给当前会话的录制流程。
   const state = recordingSession(),
     page = state.browserTabs.find(
       (tab) => tab.frame?.contentWindow === e.source,
@@ -1755,7 +1820,7 @@ for (const id of ["profileTab", "designTab"])
     $(target === "Profile" ? "profileTab" : "designTab").focus();
   };
 
-// Local dialogue and node capture prototype; no external AI requests are made.
+// 本地对话和节点捕获原型，不会发起外部 AI 请求。
 function currentAssistantItem() {
   const s = recordingSession();
   return s.items.find((item) => item.id === s.focused);
@@ -1806,6 +1871,8 @@ function ensureAssistantData(item) {
 }
 
 function renderAIPanel() {
+  // 分析后助手上下文关联到具体录制项，分析前则关联到操作指南。
+  // 是否显示由当前 Design 标签页和 aiOpen 状态共同决定。
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext(),
@@ -2039,6 +2106,8 @@ function submitAssistantMessage() {
 }
 
 function beginNodeRecording(item, index) {
+  // 将捕获内容路由到现有录制项，以重新录制单条指令，而不是新增录制；
+  // finishNodeRecording 会应用这些变更。
   const state = recordingSession();
   state.view = "browser";
   state.aiOpen = true;
@@ -2067,6 +2136,8 @@ function capturedActionText(action) {
 }
 
 function finishNodeRecording(state) {
+  // 没有捕获到操作时保留原步骤文本；捕获到的操作、元数据和截图槽位
+  // 都在同一个节点索引处更新。
   const pending = state.pending,
     item = state.items.find((item) => item.id === pending.reRecordTarget);
   state.pending = null;
@@ -2139,7 +2210,7 @@ function nativeUpdatedProcess(item) {
   return processMapMarkup(item);
 }
 
-// Editable fields follow the supplied Steps reference. Data remains local to its recording.
+// 可编辑字段遵循提供的 Steps 参考内容，数据仅保存在当前录制项中。
 function ensureStepDetails(item) {
   ensureAssistantData(item);
   if (!item.stepDetails || item.stepDetails.length !== item.steps.length)
@@ -2164,6 +2235,8 @@ function ensureStepDetails(item) {
 
 let processGroupSequence = 0;
 function ensureProcessGroups(item) {
+  // 根据演示种子数据按需创建分组，再生成派生视图；分组 ID 保持稳定，
+  // start 偏移则反映其在当前扁平步骤列表中的位置。
   ensureAssistantData(item);
   if (!item.processGroups) {
     let start = 0;
@@ -2384,7 +2457,7 @@ function rebuildTestFlowFromItem(item) {
 
 async function rebuildItemTestFlow(item) {
   if (!item) return;
-  // Prefer the persisted flow file when the UI draft has not diverged.
+  // 界面草稿尚未发生变化时，优先使用已持久化的 Flow 文件。
   if (item.flowFile && !item.nodeUpdates) {
     try {
       const flow = await F.flow.load(item.flowFile);
@@ -2397,11 +2470,13 @@ async function rebuildItemTestFlow(item) {
       }
     } catch {}
   }
-  // Fall back to the current UI draft so Process/Instruction edits show in Test.
+  // 回退使用当前界面草稿，让 Process/Instruction 的编辑结果能在 Test 中体现。
   rebuildTestFlowFromItem(item);
 }
 
 function bindStepEditor() {
+  // 编辑会立即更新录制项的本地草稿；测试从草稿重建，未编辑时则使用已保存的 Flow，
+  // 使 Test 始终反映最新内容。
   const panel = $("summaryResultPanel");
   if (!panel) return;
   panel.oninput = (e) => {
@@ -2467,6 +2542,8 @@ const metricChoices = [
 ];
 const metricDrafts = new Map();
 function metricPreference() {
+  // 同意状态按活动 Flow 隔离，并缓存在当前渲染器会话中；
+  // 只有首次读取该 Flow 的偏好草稿时才访问 localStorage。
   if (!metricDrafts.has(activeFlowKey)) {
     let saved = [];
     try {
@@ -2542,9 +2619,11 @@ function bindMetricPreferences() {
   sync();
 }
 
-// References belong to the recording being viewed; uploaded files stay in this browser session.
+// Reference 文件归当前查看的录制项所有；上传文件仅保留在本浏览器会话中。
 let referenceSequence = 0;
 function ensureReferenceFiles(item) {
+  // 每个录制项只生成一次 Reference。其对象 URL 在本浏览器会话中持续有效，
+  // 上传的文件也仅保存在本地。
   if (!item) return [];
   if (!item.references) {
     const steps = item.steps || referenceOperation;
@@ -2747,7 +2826,7 @@ function processMapMarkup(item) {
             <span>${group.number}-${String(index + 1).padStart(3, "0")}</span>
             <span>${escapeHTML(text)}</span>
             <!-- 
-              // TODO: conditional manual icon
+              // TODO：按条件显示手动操作图标
               <span class="execution-mode-icon" role="img" aria-label="Manual" title="Manual">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="12" cy="7" r="4"></circle>
@@ -2794,6 +2873,8 @@ function processMapMarkup(item) {
 }
 let processCanvasObserver;
 function bindProcessMap() {
+  // Canvas 平移/缩放及分组操作仅属于当前视图；被选中的分组保存在录制项中，
+  // 以便助手也能读取相同上下文。
   processCanvasObserver?.disconnect();
   const panel = $("summaryResultPanel"),
     canvas = panel?.querySelector(".process-canvas"),
@@ -3054,6 +3135,8 @@ function bindProcessMap() {
   requestAnimationFrame(fit);
 }
 async function beginGroupRecording(item, groupId, mode) {
+  // 演示模式会为节点操作启动新的浏览器会话；Electron bridge 会改用前缀回放，
+  // 将浏览器带到目标节点之前的状态。
   const state = recordingSession();
   if (state.stage === "recording") return;
   const group = ensureProcessGroups(item).find((g) => g.id === groupId);
@@ -3108,6 +3191,7 @@ async function beginGroupRecording(item, groupId, mode) {
   await startBrowserRecording();
 }
 function finishGroupRecording(state, pending, item) {
+  // 同步替换或插入步骤、详情和截图范围，再根据更新后的扁平步骤序列重建分组及测试 Flow 状态。
   const group = ensureProcessGroups(item).find((g) => g.id === pending.groupId);
   if (!group) return;
   const steps =
@@ -3217,7 +3301,7 @@ async function deleteProcessGroup(item, groupId) {
   renderSummaryWorkspace();
 }
 
-// Uncompressed ZIP download preserves every original file byte and filename.
+// 以不压缩方式下载 ZIP，保留每个原始文件的字节内容和文件名。
 async function downloadReferenceArchive(item) {
   const files = ensureReferenceFiles(item);
   if (!files.length) return;
@@ -3284,8 +3368,10 @@ async function downloadReferenceArchive(item) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Local embedded-demo capture only. External origins are not screen-recorded.
+// 仅捕获本地嵌入式演示内容，不录制外部源的屏幕。
 function embeddedSnapshotBridge() {
+  // 此 bridge 在本地演示 iframe 内运行，将可见 DOM 绘制为 PNG，
+  // 并只向父页面发送长度受限的交互标签。
   document.addEventListener(
     "click",
     (e) => {
@@ -3440,6 +3526,8 @@ function requestRecordingSnapshot() {
     );
 }
 function startRecordingMedia(state) {
+  // 原型只捕获本地生成的 canvas，不读取任意跨域 iframe 像素；
+  // 截图通过 snapshot 消息传入。
   const canvas = document.createElement("canvas");
   canvas.width = 960;
   canvas.height = 540;
@@ -3515,6 +3603,8 @@ function receiveRecordingSnapshot(data) {
   });
 }
 async function stopRecordingMedia(state) {
+  // 停止轨道前先请求最后一帧；媒体录制器异步关闭，因此需等待 onstop 后
+  // 再释放生成的对象 URL。
   const media = state.mediaCapture;
   if (!media) return { videoURL: "", screenshots: [] };
   requestRecordingSnapshot();
@@ -3544,7 +3634,7 @@ function recordingMediaMarkup(item) {
   return `<div class="recording-media"><section class="recording-video">${media.videoURL ? `<video controls playsinline preload="metadata" aria-label="${escapeHTML(item?.name || "Recording")} video" src="${escapeHTML(media.videoURL)}"></video>` : poster ? `<div class="recording-frame-preview"><img src="${escapeHTML(poster)}" alt="${escapeHTML(item?.name || "Recording")} poster"><span>Recorded video frames</span></div>` : `<div class="recording-frame-preview recording-frame-empty">No recorded video frames found</div>`}<div class="recording-media-name">${escapeHTML(item?.name || "Recording")}${media.videoURL ? ".webm" : " - frame recording"}</div></section><div class="recording-screenshots">${screenshots.map((file) => `<button type="button" class="recording-screenshot-file" data-screenshot-zoom="${escapeHTML(file.image)}" aria-label="Zoom ${escapeHTML(file.name)}"><img src="${file.image}" alt="${escapeHTML(file.name)}"><span>${escapeHTML(file.name)}</span></button>`).join("")}</div></div>`;
 }
 
-// Native pointer and keyboard resizing. No layout labels or icons are added.
+// 使用原生指针和键盘调整尺寸，不额外添加布局标签或图标。
 let workspaceResizeObserver;
 function workspaceWidthBounds(layout) {
   const total = layout.getBoundingClientRect().width;
@@ -3565,6 +3655,8 @@ function setWorkspaceWidth(value) {
   separator.setAttribute("aria-valuenow", String(Math.round(width)));
 }
 function bindWorkspaceResize() {
+  // 工作区 DOM 移动后重新绑定，并通过 ResizeObserver 使分隔条当前值和无障碍范围
+  // 始终符合可用空间。
   workspaceResizeObserver?.disconnect();
   const layout = $("designPanel").querySelector(
       ".recording-layout:not([hidden])",
@@ -3632,6 +3724,8 @@ function setAssistantWidth(value) {
   separator.setAttribute("aria-valuenow", String(Math.round(width)));
 }
 function bindAssistantResize() {
+  // 助手面板宽度按录制会话保存，切换视图时不会丢失用户调整；
+  // 指针和键盘输入共用同一限幅规则。
   const separator = $("assistantResize");
   setAssistantWidth(recordingSession().aiWidth || 320);
   separator.onpointerdown = (e) => {

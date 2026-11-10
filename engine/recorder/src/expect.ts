@@ -7,6 +7,10 @@
  *
  * 不做 textChange / domSignature：它们误报率高，宁可不校验也不要制造 flaky。
  * 纯函数，不碰浏览器。
+ *
+ * URL 比较优先于 DOM 外观：导航结果比同时出现的节点更明确，也更不容易产生歧义。
+ * 节点身份使用采集快照中的 key，而不是临时 UID；采样期间才可能添加 UID，
+ * 它只是后续查找辅助信息，不应影响前后签名的身份比较。
  */
 import type { Expect } from '../../schema/src/index.js'
 
@@ -33,6 +37,7 @@ const WEAK_TAGS = new Set(['html', 'body', 'main', 'section', 'article', 'form',
  * 这样纯函数不需要自己拍快照。
  */
 export function inferExpect(before: PageSignature, after: PageSignature): Expect | undefined {
+	// 此处保持判断确定且无副作用；需要昂贵 UID 查找来附加 ElementRef 时由 record.ts 处理。
 	if (after.url !== before.url) return { kind: 'urlChange', pattern: urlPattern(after.url) }
 
 	const appeared = appearedNodes(before, after)

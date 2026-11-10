@@ -44,6 +44,8 @@ function renderMaybe(value: string | undefined, vars: Record<string, string>): s
  * 只渲染**动作参数**（url/value/files/key/expect.pattern/assert.text），不动 ElementRef。
  */
 export function renderStep(step: Step, vars: Record<string, string>): Step {
+	// 在结构化克隆上展开模板，不能修改调用方持有的 flow 数据；
+	// 尤其 playRuns 会在多次执行中复用同一个 Flow。
 	const clone = structuredClone(step)
 
 	switch (clone.kind) {

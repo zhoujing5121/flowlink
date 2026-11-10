@@ -67,6 +67,7 @@ export class TaskStore {
 
 	constructor(private readonly file: string) {}
 
+	/** 只加载一次，并让并发的首次读取共享同一个 Promise 与数据快照。 */
 	private async ensureLoaded(): Promise<void> {
 		if (this.loaded) return
 		this.loadPromise ??= (async () => {
@@ -91,6 +92,8 @@ export class TaskStore {
 	}
 
 	private async persist(): Promise<void> {
+		// 临时文件与目标文件放在同一目录，确保 rename 不跨文件系统；
+		// 读取方因此不会看到只写入一半的任务 JSON。
 		const data: TasksFile = { tasks: await this.list() }
 		await mkdir(dirname(this.file), { recursive: true })
 		const tmp = `${this.file}.tmp`
@@ -100,9 +103,11 @@ export class TaskStore {
 
 	async list(): Promise<Task[]> {
 		await this.ensureLoaded()
+		// 固定排序可让界面渲染和测试结果保持稳定。
 		return [...this.tasks.values()].sort((a, b) => a.code.localeCompare(b.code))
 	}
 
+	/** 同步查询内存缓存；需要触发初始化时，应先调用 list()。 */
 	get(code: string): Task | undefined {
 		return this.tasks.get(code)
 	}
@@ -120,6 +125,7 @@ export class TaskStore {
 		return task
 	}
 
+	/** 只移除任务记录；Flow 文件和产物目录独立管理，不随之删除。 */
 	async remove(code: string): Promise<void> {
 		await this.ensureLoaded()
 		this.tasks.delete(code)
@@ -153,6 +159,7 @@ export class TaskStore {
 		return task
 	}
 
+	/** 只移除一条录制的元数据，不删除对应 Flow 文件或产物。 */
 	async removeRecording(code: string, recordingId: string): Promise<Task | undefined> {
 		await this.ensureLoaded()
 		const task = this.tasks.get(code)
@@ -163,6 +170,7 @@ export class TaskStore {
 		return task
 	}
 
+	/** 仅更新已存在的录制；任务或录制 ID 不存在时不执行修改。 */
 	async patchRecording(
 		code: string,
 		recordingId: string,

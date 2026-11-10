@@ -87,6 +87,8 @@ export class ArtifactWriter {
 		runId: string,
 		layout: ArtifactLayout = { kind: 'runs' },
 	) {
+		// 在此处统一决定目录布局，让单次与批量执行共用写入逻辑，
+		// 各执行器不必自行判断当前 run 属于哪种模式。
 		this.root = resolve(root)
 		this.flowDir = join(this.root, sanitizeSegment(flowId))
 		this.runDir =
@@ -126,8 +128,11 @@ export class ArtifactWriter {
 
 	/** 落一个 step 的全部证据；返回该 step 的绝对目录 */
 	async writeStepArtifacts(index: number, payload: StepArtifactPayload): Promise<string> {
+		// 序号取自展开后的内存步骤列表，而不是 IR 路径片段；
+		// 固定文件名可维持 UI 与诊断工具依赖的报告格式稳定。
 		const stepDir = join(this.runDir, String(index))
 		await mkdir(stepDir, { recursive: true })
+		// 截图和元素图按需写入；快照与日志始终保留，作为步骤结果的基本证据。
 		if (payload.before) await writeFile(join(stepDir, 'before.png'), payload.before)
 		if (payload.after) await writeFile(join(stepDir, 'after.png'), payload.after)
 		if (payload.element) await writeFile(join(stepDir, 'element.png'), payload.element)

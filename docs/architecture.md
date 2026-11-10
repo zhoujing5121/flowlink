@@ -1,5 +1,8 @@
 # FlowLink Architecture
 
+For a deeper component, data-flow, lifecycle, build, and security-boundary reference, see
+[Technical Architecture](./technical-architecture.md).
+
 ## Runtime layers
 
 ```text

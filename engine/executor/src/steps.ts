@@ -22,6 +22,7 @@ export function stepIdOf(prefix: string, id: string): string {
 /** 深度优先展开（group 不产出自身条目，只展开子步骤）；index 全局连续 */
 export function flattenSteps(steps: Step[], prefix = '', depth = 0): FlatStep[] {
 	const out: FlatStep[] = []
+	// 使用全局展开序号作为 artifact 索引，因此会包含此前各个 group 中的步骤。
 	const visit = (list: Step[], listPrefix: string, listDepth: number): void => {
 		for (const step of list) {
 			const stepId = stepIdOf(listPrefix, step.id)

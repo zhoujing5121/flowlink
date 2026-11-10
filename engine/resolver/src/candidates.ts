@@ -1,29 +1,37 @@
 /**
- * Candidate → Playwright Locator 的映射（L1 的唯一来源）。
+ * 将 Candidate 映射为 Playwright Locator，是 L1 唯一的定位器构造入口。
  *
  * 设计取舍：
- * - 只用 Playwright 官方语义定位器（getByTestId/Role/Label/Text）+ css/xpath 兜底；
- * - 不在这里做任何"重试/超时"逻辑，找得到找不到由 l1.ts 统一处理；
- * - xpath 允许 `xpath=...` 前缀，也允许裸 `/html/body/...`。
+ * - 优先使用 Playwright 官方语义定位器（getByTestId/Role/Label/Text），并提供 css/xpath 兜底；
+ * - 此处不处理重试或超时，命中校验与回退顺序由 l1.ts 统一管理；
+ * - xpath 可带 `xpath=...` 前缀，也可使用 `/html/body/...` 形式的裸路径。
  */
 import type { Candidate } from '../../schema/src/index.js'
 import type { Locator, Page } from 'playwright-core'
 
 import type { Scope } from './types.js'
 
-/** Playwright 内部 role 联合类型 */
+/** 从 Playwright 的 getByRole 签名中取得 role 参数类型。 */
 type AriaRoleArg = Parameters<Page['getByRole']>[0]
 
+/**
+ * 判断 XPath 是否已有 Playwright 引擎前缀，或是常见的绝对路径/括号表达式。
+ * 这里只决定是否补上 `xpath=`；表达式是否有效仍由 Playwright 查询时判定。
+ */
 export function isXPathValue(value: string): boolean {
 	return value.startsWith('xpath=') || value.startsWith('/') || value.startsWith('(')
 }
 
-/** 把 candidate 变成 locator（不执行任何查询） */
+/**
+ * 将 schema 候选转换为惰性的 Playwright Locator。
+ * 本函数不查询页面、不等待或检查唯一性；这些解析策略由 L1 统一负责。
+ * 只有 role 候选可使用 `{ role, name?, exact? }` 对象值，其他对象值都会报错。
+ */
 export function candidateLocator(scope: Scope, candidate: Candidate): Locator {
 	const { kind, value } = candidate
 
 	if (typeof value !== 'string') {
-		// 对象形态目前只用于 role: {role, name?, exact?}
+		// 结构化对象仅表达 role 的可选 name/exact 条件，不能作为其他候选类型的值。
 		if (kind !== 'role') {
 			throw new Error(`candidate 的对象形态只支持 role，收到 kind=${kind}`)
 		}
@@ -51,7 +59,7 @@ export function candidateLocator(scope: Scope, candidate: Candidate): Locator {
 	}
 }
 
-/** 人眼可读的候选描述，写日志用 */
+/** 返回不含页面状态的候选摘要，供解析日志和错误详情复用。 */
 export function describeCandidate(candidate: Candidate): string {
 	if (typeof candidate.value === 'string') {
 		return `${candidate.kind}(${candidate.value})`

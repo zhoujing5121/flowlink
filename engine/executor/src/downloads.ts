@@ -15,6 +15,7 @@ import { uniqueDownloadFilename } from './artifacts.js'
 export interface DownloadRecord {
 	filename: string
 	/** 落盘绝对路径（保存完成前为空字符串） */
+	/** 异步保存成功前为空字符串。 */
 	path: string
 	at: number
 	/** 归属的 step 序号（由 run.ts 在事件到达时写入） */
@@ -56,6 +57,8 @@ export class DownloadManager {
 		const suggested = download.suggestedFilename()
 		const filename = uniqueDownloadFilename(suggested, this.#used)
 		this.#used.add(filename)
+		// 先同步登记下载事件，再安排 saveAs；期望校验依据事件记录而非文件是否已落盘，
+		// 因此磁盘写入较慢也不会让真实下载被漏判。
 		const record: DownloadRecord = {
 			filename,
 			path: '',
@@ -75,6 +78,7 @@ export class DownloadManager {
 				this.#log(`下载保存失败（${filename}）：${(err as Error).message}`)
 			}
 		})()
+		// 保存任务虽异步运行，但会被 flush 收集，确保写最终报告前等待所有任务结束。
 		this.#pending.push(task)
 		return record
 	}
@@ -99,6 +103,7 @@ export class DownloadManager {
 
 	/** 等所有保存任务落盘（写 result.json 前调用） */
 	async flush(): Promise<void> {
+		// track() 已记录保存失败；失败不改变 flow 结果，但仍需等任务全部结束。
 		await Promise.allSettled([...this.#pending])
 	}
 }

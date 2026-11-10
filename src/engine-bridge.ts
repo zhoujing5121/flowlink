@@ -31,6 +31,8 @@ export class EngineBridge {
 	}
 
 	private async ensureBrowser(): Promise<Browser> {
+		// CDP 连接断开后不能继续复用；在实际需要页面时再重连，使应用启动
+		// 不必依赖 Playwright 立即附着成功。
 		if (this.browser?.isConnected()) return this.browser
 		const port = await this.cdpPort()
 		this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
@@ -45,6 +47,8 @@ export class EngineBridge {
 			return cached
 		}
 
+		// 标记依据 FlowLink 标签页 ID 生成，而不是 URL；多个标签页访问同一
+		// 地址时，仍能准确区分各自对应的 Page。
 		const marker = `__flowlinkTab_${tabId.replace(/[^\w-]/g, '')}`
 		const browser = await this.ensureBrowser()
 		// 新建 WebContentsView 后，CDP target 可能晚一拍才进入 pages()。
@@ -88,14 +92,14 @@ export class EngineBridge {
 		return this.tabIdsByPage.get(page)
 	}
 
-	/** 标签页被销毁后清理缓存的 Page 句柄 */
+	/** 原生标签页销毁时，清理两个方向的缓存映射。 */
 	forget(tabId: string): void {
 		const cached = this.pages.get(tabId)
 		if (cached) this.tabIdsByPage.delete(cached)
 		this.pages.delete(tabId)
 	}
 
-	/** 清空全部缓存的 Page 句柄（模式切换后防止复用旧标签页） */
+	/** 切换到一组全新的原生标签页前，清空所有旧映射。 */
 	forgetAll(): void {
 		for (const page of this.pages.values()) {
 			this.tabIdsByPage.delete(page)

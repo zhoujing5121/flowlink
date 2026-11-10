@@ -70,6 +70,8 @@ export function classifyError(
 ): { code: ErrorCode; message: string } {
 	const message = messageOf(err)
 
+	// 先保留已经分类的失败，再检查错误消息；否则看起来像 timeout 的自定义消息
+	// 可能覆盖调用方刻意指定的错误码。
 	if (err instanceof StepFailure) return { code: err.code, message }
 	if (err instanceof TemplateError) {
 		return { code: 'VARIABLE_MISSING', message: `变量渲染失败：${message}` }

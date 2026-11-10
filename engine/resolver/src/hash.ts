@@ -16,7 +16,7 @@
  *   - deny：`class` / `style` / `data-rr-*`（自身打的标记）；
  *   - 空值丢弃；看起来像动态值（uuid / 16+ hex / 4+ 连续数字）的丢弃。
  *
- * 为什么不把 class 计入：fixture /basic 的 #volatile-class-btn 每秒换一次 class，
+ * 不把 class 计入的原因：测试页 /basic 的 #volatile-class-btn 每秒都会更换 class，
  * 但 id / data-testid / aria-label 稳定 —— 这正是 L2 要能命中而「按 class 生成 css」会挂的场景。
  */
 import { createHash } from 'node:crypto'
@@ -69,6 +69,7 @@ export function isDynamicValue(value: string): boolean {
 /** 是否属于指纹属性（录制侧与回放侧共用同一判定） */
 export function isStableAttr(name: string, policy: StableAttrPolicy = STABLE_ATTR_POLICY): boolean {
 	const lower = name.toLowerCase()
+	// 先排除运行时标记和显式禁用项，再检查白名单；被拒绝的属性不能因前缀而重新放行。
 	if (lower.startsWith('data-rr-')) return false // 自己打的标记不参与指纹
 	if (policy.denyExact.includes(lower)) return false
 	if (policy.allowExact.includes(lower)) return true
@@ -84,6 +85,7 @@ export function stableAttrsOf(
 	policy: StableAttrPolicy = STABLE_ATTR_POLICY,
 ): Record<string, string> {
 	const out: Record<string, string> = {}
+	// 先按原属性名排序，再按策略过滤；值本身不归一化，以保证摘要与录制端一致。
 	for (const key of Object.keys(raw).sort()) {
 		if (!isStableAttr(key, policy)) continue
 		const value = raw[key]
@@ -120,6 +122,7 @@ export function canonicalHashInput(input: HashInput): string {
 	)
 }
 
+/** 计算 recorder 兼容的 SHA-1 指纹；字段顺序/空值约定由 canonicalHashInput 固定。 */
 export function computeStableHash(input: HashInput): string {
 	return createHash('sha1').update(canonicalHashInput(input)).digest('hex')
 }
@@ -345,6 +348,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		if (arg.name) {
 			if (accessibleName(el) !== normalize(arg.name)) return false
 		}
+		// 目标提供了哪些稳定属性就逐项要求全等；不以其他相似属性补偿缺失或不一致。
 		const wantKeys = Object.keys(arg.attrs)
 		if (wantKeys.length > 0) {
 			const live = stableAttrs(el)
@@ -355,7 +359,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return true
 	}
 
-	// 清掉上一次残留的标记（崩溃/超时的 run 可能留下）
+	// 先清除前次异常退出留下的标记，避免旧标记被误认为本次命中。
 	for (const stale of Array.from(document.querySelectorAll('[' + arg.marker + ']'))) {
 		stale.removeAttribute(arg.marker)
 	}
@@ -365,6 +369,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 
 	const visit = (root: Document | ShadowRoot | Element): void => {
 		if (out.length >= arg.limit) return
+		// 按 DOM 遍历顺序收集，达到上限立即停止，保证候选数量有界且顺序稳定。
 		for (const el of Array.from(root.querySelectorAll('*'))) {
 			if (out.length >= arg.limit) return
 			const tag = el.tagName.toLowerCase()
@@ -384,7 +389,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 					visible: isVisible(el),
 				})
 			}
-			// open shadow root 递归（closed 在页面内不可见）
+			// 递归进入开放式 shadow root；closed shadow 在页面脚本中不可见。
 			const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot
 			if (shadow) visit(shadow)
 		}

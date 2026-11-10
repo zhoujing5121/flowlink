@@ -81,6 +81,8 @@ export async function playOnPage(opts: PlayOnPageOptions, runId?: string): Promi
 	const finalRunId = runId || makeId('run')
 	const outcome = await executeRunOnPage(opts, finalRunId)
 
+	// 内嵌页面 API 与 playFlow 一样，只有显式选择时才写回；
+	// 页面和 context 的生命周期仍由宿主调用方负责。
 	if (opts.writeBack) {
 		if (!opts.flowPath) {
 			throw new Error('writeBack=true 时必须提供 flowPath（否则不知道该写回哪个文件）')
@@ -141,6 +143,8 @@ export async function playRuns(opts: PlayOptions): Promise<RunResult[]> {
 	const runs = Math.max(1, opts.runs ?? 1)
 	const results: RunResult[] = []
 	for (let index = 0; index < runs; index++) {
+		// 只有最后一次运行可以持久化自愈；前几次都读取同一份输入 flow，
+		// 不应重复递增其版本号。
 		const isLast = index === runs - 1
 		results.push(
 			await playFlow({

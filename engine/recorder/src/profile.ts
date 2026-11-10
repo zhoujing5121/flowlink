@@ -12,6 +12,9 @@
  *    - Studio profile wrapper（`{ origin, savedAt, storageState }`）—— §A.1 的落盘格式。
  *    读到时记住形状，写回时**保持原形状**，这样 Studio 的 profiles/ 目录不会被 recorder 破坏。
  * 5. profile 含凭证：新文件权限 0600（§A.5）。
+ *
+ * 本模块刻意不感知录制会话：只规范化两种受支持的磁盘结构，并以返回值报告失败；
+ * cookie 字段能否被浏览器接受则交由 Playwright 判断。
  */
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -91,7 +94,7 @@ export async function loadProfile(path: string | undefined | null): Promise<Load
 	// 1) 裸 storageState
 	if (isStorageState(parsed)) return { status: 'loaded', state: parsed, shape: 'raw' }
 
-	// 2) Studio profile wrapper
+	// 2) Studio profile 包装格式
 	const wrapper = parsed as { storageState?: unknown; origin?: unknown } | null
 	if (wrapper && typeof wrapper === 'object' && isStorageState(wrapper.storageState)) {
 		return {
@@ -122,6 +125,7 @@ export async function saveProfile(
 	state: StorageState,
 	opts: SaveProfileOptions = {},
 ): Promise<SaveProfileResult> {
+	// 先校验再创建目录或触碰旧 profile；格式错误的数据绝不能覆盖可用的登录态。
 	if (!isStorageState(state)) return { ok: false, error: 'storageState 形状不合法（缺少 cookies/origins）' }
 
 	const shape: ProfileShape = opts.shape ?? 'raw'
