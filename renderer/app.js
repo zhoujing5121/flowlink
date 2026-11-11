@@ -262,6 +262,11 @@ function openDrawer(code, source) {
   $("drawer").showModal();
   document.body.style.overflow = "hidden";
   $("flowName").focus({ preventScroll: true });
+  if (code && typeof window.loadTaskDetails === "function") {
+    void window.loadTaskDetails(code).catch((err) => {
+      console.error("Could not load task details:", err);
+    });
+  }
 }
 
 async function closeDrawer() {
@@ -701,6 +706,7 @@ function recordingSession(key = activeFlowKey) {
       browserTabs: [first],
       activeBrowserTab: first.id,
       browserElement: null,
+      aiConversations: new Map(),
       guideAssistant: {
         steps: [...recordingGuideSteps],
         chat: [],
@@ -1866,9 +1872,30 @@ function syncFloatingAIDock(target) {
 }
 
 function ensureAssistantData(item) {
+  const state = recordingSession();
+  state.aiConversations ??= new Map();
+  const key =
+    item === state.guideAssistant
+      ? "guide"
+      : String(item.recordingId || item.id || "current");
+  let conversation = state.aiConversations.get(key);
+  if (!conversation) {
+    conversation = {
+      messages: Array.isArray(item.chat) ? item.chat : [],
+      draft: typeof item.chatDraft === "string" ? item.chatDraft : "",
+    };
+    state.aiConversations.set(key, conversation);
+  }
   item.steps ??= [...referenceOperation];
-  item.chat ??= [];
-  item.chatDraft ??= "";
+  item.chat = conversation.messages;
+  item.chatDraft = conversation.draft;
+  return conversation;
+}
+
+function setAssistantDraft(item, draft) {
+  const conversation = ensureAssistantData(item);
+  conversation.draft = draft;
+  item.chatDraft = draft;
 }
 
 function renderAIPanel() {
@@ -1980,13 +2007,13 @@ function renderAIPanel() {
         `<p class="assistant-message ${message.role}" aria-label="${message.role === "user" ? "User" : "AI"}">${escapeHTML(message.text)}</p>`,
     )
     .join("");
-  $("assistantChat").scrollTop = $("assistantChat").scrollHeight;
+  $("assistantContent").scrollTop = $("assistantContent").scrollHeight;
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
   $("assistantSend").disabled = !item.chatDraft.trim();
   $("assistantSend").onclick = submitAssistantMessage;
   $("assistantInput").oninput = (e) => {
-    item.chatDraft = e.target.value;
+    setAssistantDraft(item, e.target.value);
     $("assistantSend").disabled = !item.chatDraft.trim();
   };
   $("assistantInput").onkeydown = (e) => {
@@ -2044,7 +2071,7 @@ function aiRequestNeedsMaterial(text) {
 function appendAIMessage(item, role, text) {
   ensureAssistantData(item);
   item.chat.push({ role, text: String(text || "") });
-  item.chatDraft = "";
+  setAssistantDraft(item, "");
   renderAIPanel();
 }
 
@@ -2152,7 +2179,7 @@ async function invokeAIMerge(option, prompt) {
   };
   const userText = prompt || optionLabels[option] || option;
   item.chat.push({ role: "user", text: userText });
-  item.chatDraft = "";
+  setAssistantDraft(item, "");
   renderAIPanel();
 
   const selected = (state.aiSourceIds?.length

@@ -5061,6 +5061,32 @@ body {
   bottom: 8px;
 }
 
+/* Keep recording context and conversation in one scrollable content area. */
+.assistant-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.recording-assistant .assistant-content .assistant-steps {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  height: auto;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
+.recording-assistant .assistant-content .assistant-chat {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
 /* Shared right edge for list controls, table and pagination. */
 .main > .query,
 .main > .content-toolbar,

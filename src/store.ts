@@ -107,6 +107,14 @@ export class TaskStore {
 		return [...this.tasks.values()].sort((a, b) => a.code.localeCompare(b.code))
 	}
 
+	async listMetadata(): Promise<Array<Omit<Task, 'recordings'> & { recordingCount: number }>> {
+		const tasks = await this.list()
+		return tasks.map(({ recordings, ...task }) => ({
+			...task,
+			recordingCount: recordings.length,
+		}))
+	}
+
 	/** 同步查询内存缓存；需要触发初始化时，应先调用 list()。 */
 	get(code: string): Task | undefined {
 		return this.tasks.get(code)

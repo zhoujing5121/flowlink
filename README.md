@@ -134,8 +134,14 @@ FlowLink now writes a FlowForge-compatible evidence sidecar (`flowforge-recordin
 
 ### Pi Coding Agent (optional)
 
-FlowLink can invoke an installed Pi CLI through its main-process bridge. Set `PI_CLI_PATH` if `pi` is not on PATH, configure Pi's model credentials, and call `window.flowlink.pi.status()` / `window.flowlink.pi.prompt({ prompt: "..." })` from the renderer. Requests are read-only by default. Pass `allowEdits: true` only when the user explicitly approves write-capable agent tools.
+FlowLink integrates Pi in-process using `@earendil-works/pi-coding-agent` (not the Pi CLI). The SDK is loaded only when the Pi feature is first used, not during app startup. Configure the provider/model in `config/pi-settings.json`; copy `config/pi-auth.example.json` to `config/pi-auth.json` and add the matching provider API key for development. Packaged builds read credentials from the app's user data directory.
 
-### Pi Coding Agent SDK
+To route Pi requests through a proxy, set `HTTPS_PROXY` (and optionally `HTTP_PROXY` / `NO_PROXY`) in the environment before launching FlowLink. For example, in PowerShell:
 
-FlowLink integrates Pi in-process using `@earendil-works/pi-coding-agent`. Run `npm install` after extracting/updating the project, configure a Pi model/provider, then start FlowLink with `npm start`. The AI pane offers post-recording advice, selected-material refinement advice, and replay-failure diagnosis. It creates a separate refined material only when the user explicitly requests one; the original recording is preserved. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+$env:HTTP_PROXY = $env:HTTPS_PROXY
+npm start
+```
+
+Proxy credentials can be included in the proxy URL if required; keep authenticated proxy URLs out of source control. The Pi bridge applies the environment proxy to Node requests on first use; Chromium browser traffic has separate proxy settings. The AI pane offers post-recording advice, selected-material refinement advice, and replay-failure diagnosis. It creates a separate refined material only when the user explicitly requests one; the original recording is preserved. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.
