@@ -23,6 +23,10 @@ const api = {
 			ipcRenderer.invoke('tasks:removeRecording', code, recordingId),
 	},
 
+	processLandscape: {
+		load: () => ipcRenderer.invoke('processLandscape:load'),
+	},
+
 	recording: {
 		/** 启动录制：主进程附着 CDP + recordOnPage，后台运行，步骤通过 on('recording:step') 推送 */
 		start: (opts: { taskCode: string; startUrl: string; preservePage?: boolean }) =>

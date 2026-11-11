@@ -785,6 +785,11 @@ function registerIpc(): void {
 	// IPC 是渲染进程访问主进程的唯一入口。文件系统、Electron 和引擎操作
 	// 均由处理器执行，preload 只公开经过筛选的窄接口。
 	/* ---------- 任务 CRUD ---------- */
+	ipcMain.handle('processLandscape:load', async () =>
+		JSON.parse(
+			await readFile(join(app.getAppPath(), 'process_landscape', 'full.json'), 'utf8'),
+		),
+	)
 	ipcMain.handle('tasks:list', () => taskStore.listMetadata())
 	ipcMain.handle('tasks:saveProfile', (_e, patch: TaskProfilePatch) =>
 		taskStore.upsertProfile(patch),

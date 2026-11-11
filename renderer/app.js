@@ -6,9 +6,16 @@
  * 会将部分函数替换为通过 IPC 调用的实现。observed 界面状态应与已持久化的 Flow 数据分开。
  */
 // 范围：Flow 列表、Profile，以及提供的四态 Design 录制界面。
-// 当前未提供 Category/Service Level 目录、Validation 和远程服务。
+// Service Level 选项来自主进程加载的流程层级目录；Category 和远程服务仍为演示状态。
 // SVG 资源直接嵌入自提供的文件。
 const flowData = [];
+const serviceLevelIds = [
+  "serviceLine",
+  "serviceLine2",
+  "serviceLine3",
+  "serviceLine4",
+];
+let processLandscape = null;
 
 // 页面级模板（index.html 底部 <template>）的克隆入口。
 const rowTemplate = (id) => document.getElementById(id).content.firstElementChild;
@@ -52,7 +59,88 @@ let currentFlow = null;
 let trigger = null;
 let initialName = "";
 let savedScroll = 0;
+let processLandscapeError = "";
 const profileDrafts = new Map();
+
+function completeProcessNodes(nodes, level) {
+  return nodes.filter(
+    (node) =>
+      level === 4 ||
+      completeProcessNodes(node.children, level + 1).length > 0,
+  );
+}
+
+function populateServiceLevels(values = profileDraft().serviceLines) {
+  if (!processLandscape) {
+    for (const id of serviceLevelIds) {
+      document.getElementById(id).disabled = true;
+    }
+    return;
+  }
+
+  let parent = null;
+  let invalidSelection = false;
+  const resolvedValues = [];
+
+  serviceLevelIds.forEach((id, index) => {
+    const select = document.getElementById(id);
+    const options =
+      index === 0
+        ? completeProcessNodes(processLandscape, 1)
+        : parent
+          ? completeProcessNodes(parent.children, index + 1)
+          : [];
+    select.replaceChildren(new Option("Please select", ""));
+    for (const option of options) {
+      select.add(new Option(option.label, option.label));
+    }
+
+    const requestedValue = invalidSelection ? "" : values[index] || "";
+    const hasRequestedValue = options.some(
+      (option) => option.label === requestedValue,
+    );
+    select.value = hasRequestedValue ? requestedValue : "";
+    select.disabled = options.length === 0;
+    select.setCustomValidity("");
+    resolvedValues[index] = select.value;
+    parent = options.find((option) => option.label === select.value) || null;
+
+    if (requestedValue && !hasRequestedValue) invalidSelection = true;
+  });
+
+  profileDraft().serviceLines = resolvedValues;
+  if (invalidSelection) {
+    $("profileSaveStatus").textContent =
+      "Saved service levels are no longer available. Please select them again.";
+  }
+}
+
+function setProcessLandscape(tree) {
+  const isNode = (node) =>
+    node &&
+    typeof node.label === "string" &&
+    Array.isArray(node.children) &&
+    node.children.every(isNode);
+  if (
+    !Array.isArray(tree) ||
+    !tree.every(isNode) ||
+    completeProcessNodes(tree, 1).length === 0
+  ) {
+    throw new Error("The process landscape data has an invalid format.");
+  }
+
+  processLandscape = tree;
+  processLandscapeError = "";
+  populateServiceLevels();
+}
+
+function setProcessLandscapeError(error) {
+  processLandscapeError = String(error);
+  if ($("drawer").open) {
+    $("profileSaveStatus").textContent =
+      "Could not load process landscape: " + processLandscapeError;
+  }
+}
 
 // Profile 编辑内容在点击 Save 前都只是草稿；新 Flow 尚未持久化时先使用稳定生成的编号，
 // 不要因此过早将它插入列表。
@@ -222,6 +310,10 @@ function openDrawer(code, source) {
     ? code.replace("TASKFLOW", "FlowLink")
     : nextTaskflowCode().replace("TASKFLOW", "FlowLink");
   $("profileSaveStatus").textContent = "";
+  if (processLandscapeError) {
+    $("profileSaveStatus").textContent =
+      "Could not load process landscape: " + processLandscapeError;
+  }
   
   if (!code) {
     profileDrafts.delete("new");
@@ -240,13 +332,7 @@ function openDrawer(code, source) {
   initialName = draft.name;
   renderVersionManagement();
   
-  document
-    .querySelectorAll("[data-service-index]")
-    .forEach(
-      (select) =>
-        (select.value =
-          draft.serviceLines[Number(select.dataset.serviceIndex)] || ""),
-    );
+  populateServiceLevels(draft.serviceLines);
   closePopup("category");
   closePopup("service");
   initializeDrawerRecording(code);
@@ -405,13 +491,16 @@ $("drawer").addEventListener("cancel", (e) => {
 $("category").onclick = () => togglePopup("category");
 
 document.querySelectorAll("[data-service-index]").forEach((control) => {
-  const save = () => {
+  control.onchange = () => {
     control.setCustomValidity("");
-    profileDraft().serviceLines[Number(control.dataset.serviceIndex)] =
-      control.value;
+    const index = Number(control.dataset.serviceIndex);
+    const values = serviceLevelIds.map(
+      (id) => document.getElementById(id).value,
+    );
+    values.fill("", index + 1);
+    populateServiceLevels(values);
+    $("profileSaveStatus").textContent = "";
   };
-  control.oninput = save;
-  control.onchange = save;
 });
 
 for (const type of ["category"]) {

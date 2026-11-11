@@ -29,12 +29,16 @@ The embedded browser is a `WebContentsView`, not an iframe. `renderer/bridge.js`
 `src/preload.ts` exposes a narrow `window.flowlink` API. It groups operations into:
 
 - `tasks`
+- `processLandscape`
 - `recording`
 - `playback`
 - `flow`
 - `browser`
 
 The renderer may subscribe only to explicitly allow-listed event channels.
+The four required Service Level fields load their cascading options from
+`process_landscape/full.json` through a dedicated preload API; the renderer never
+reads the file directly.
 
 ## Persistence
 

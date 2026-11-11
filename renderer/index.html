@@ -436,23 +436,30 @@
                       data-service-index="0"
                       aria-label="Service Level 1"
                       required
+                      disabled
                     >
-                      <option value="">Please select</option>
-                      <option value="Purchasing">Purchasing</option>
-                      <option value="Digital GS">Digital GS</option></select
+                      <option value="">Please select</option></select
                     ><svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m5 9 7 7 7-7" />
                     </svg></div></label
                 ><label class="service-line-control"
-                  ><span>Service Level 2</span>
+                  ><span
+                    >Service Level 2
+                    <span class="required-marker" aria-hidden="true"
+                      >*</span
+                    ></span
+                  >
                   <div class="service-line-select">
-                    <input
+                    <select
                       id="serviceLine2"
                       data-service-index="1"
                       aria-label="Service Level 2"
-                      placeholder="Please enter"
-                      autocomplete="off"
-                    /></div></label
+                      required
+                      disabled
+                    ></select
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m5 9 7 7 7-7" />
+                    </svg></div></label
                 ><label class="service-line-control"
                   ><span
                     >Service Level 3
@@ -461,24 +468,34 @@
                     ></span
                   >
                   <div class="service-line-select">
-                    <input
+                    <select
                       id="serviceLine3"
                       data-service-index="2"
                       aria-label="Service Level 3"
-                      placeholder="Please enter"
-                      autocomplete="off"
                       required
-                    /></div></label
+                      disabled
+                    ></select
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m5 9 7 7 7-7" />
+                    </svg></div></label
                 ><label class="service-line-control"
-                  ><span>Service Level 4</span>
+                  ><span
+                    >Service Level 4
+                    <span class="required-marker" aria-hidden="true"
+                      >*</span
+                    ></span
+                  >
                   <div class="service-line-select">
-                    <input
+                    <select
                       id="serviceLine4"
                       data-service-index="3"
                       aria-label="Service Level 4"
-                      placeholder="Please enter"
-                      autocomplete="off"
-                    /></div
+                      required
+                      disabled
+                    ></select
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m5 9 7 7 7-7" />
+                    </svg></div
                 ></label>
               </div>
             </div>
@@ -1058,7 +1075,7 @@
       <footer class="drawer-footer">
         <button class="btn" id="previous" hidden>Previous</button>
         <span id="profileSaveStatus" role="status"></span>
-        <button class="btn secondary" id="profileSave" type="button">
+        <button class="btn secondary" id="profileSave" type="button" disabled>
           Save
         </button>
         <button class="btn" id="next">Next</button>

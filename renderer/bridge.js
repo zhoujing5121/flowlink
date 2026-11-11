@@ -20,6 +20,16 @@
 		return
 	}
 
+	void F.processLandscape.load()
+		.then((tree) => {
+			setProcessLandscape(tree)
+			$('profileSave').disabled = false
+		})
+		.catch((err) => {
+			console.error('[bridge] 加载 Process Landscape 失败：', err)
+			setProcessLandscapeError(err.message)
+		})
+
 	/* ================================================================
 	 * 1. 数据层：用 IPC 加载任务，替换 mock flowData
 	 * ================================================================ */
