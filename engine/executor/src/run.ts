@@ -10,7 +10,7 @@ import type { ElementRef, Flow } from '../../schema/src/index.js'
 import { makeId } from '../../schema/src/index.js'
 import { resolve, type ResolveResult } from '../../resolver/src/index.js'
 
-import { runAction, type ActionDeps } from './actions.js'
+import { runAction, sameSitePath, OPTIONAL_NAV_WAIT_MS, type ActionDeps } from './actions.js'
 import { ArtifactWriter } from './artifacts.js'
 import { classifyError, StepFailure, type FailurePhase } from './errors.js'
 import {
@@ -590,6 +590,28 @@ export async function runFlowInBrowserContext(
 				steps.push(stepResult)
 				opts.onStep?.(stepResult)
 				continue
+			}
+
+			// 可选导航（机器发起的认证跳转）：先等一小段，看浏览器是否已自行离开录制时
+			// 记录的 previousUrl。已离开 → 重定向自己发生了（可能已串到链上更靠后的
+			// URL），本步跳过；仍在原地（含 previousUrl 缺失的保守回退）→ 正常执行导航。
+			// 等待期间不监听 abortSignal：最多多等 OPTIONAL_NAV_WAIT_MS，由下方既有中止路径兜底。
+			if (item.step.kind === 'navigate' && item.step.isOptional && item.step.previousUrl) {
+				const optionalStart = Date.now()
+				await sleep(OPTIONAL_NAV_WAIT_MS)
+				if (!sameSitePath(page.url(), item.step.previousUrl)) {
+					pushLog(`可选导航：浏览器已在 ${safePageUrl(page)}（${item.stepId} 的重定向已自行发生），跳过`)
+					const stepResult: StepResult = {
+						stepId: item.stepId,
+						kind: item.step.kind,
+						status: 'skip',
+						ms: Date.now() - optionalStart,
+					}
+					steps.push(stepResult)
+					opts.onStep?.(stepResult)
+					continue
+				}
+				pushLog(`可选导航：仍在 ${item.step.previousUrl}，执行 ${item.step.url}`)
 			}
 
 			const stepStart = Date.now()

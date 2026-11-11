@@ -139,6 +139,11 @@ const BaseStepSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().optional(),
 	timeout: z.number().int().positive().optional(),
+	/**
+	 * 回放自适应步骤：效果已自行发生时可以跳过（报告为 skip，不算失败）。
+	 * 目前仅录制器对机器发起的认证跳转 navigate 步骤设置。
+	 */
+	isOptional: z.boolean().optional(),
 	expect: ExpectSchema.optional(),
 	/**
 	 * 这一步发生在哪个标签页（0 = 录制起点页面，1 = 第一个新开的标签页…）。

@@ -71,6 +71,23 @@ Base proposed steps on the supplied source steps and recording evidence.
 Do not invent selectors, URLs, or execution results.
 If a proposed change cannot be grounded in evidence, preserve the
 original step and explain the uncertainty.
+
+Element references: recorded elements are provided as an element library.
+In output steps, target/from/to must be exactly {"$ref": "eN"} referencing a
+library id. Never inline element data, selectors, or coordinates. You may add
+steps that need no element (navigate, wait with condition timeout/networkIdle
+or userOperation, assert with url/title, dialog, group), but never invent
+selectors, URLs, or element identities.
+
+Structure: you may wrap steps into top-level groups (kind "group" with unique
+id and label). A "condition" step must be the final direct step of its group
+and may only branch to existing non-empty top-level groups by id, or omit a
+branch to end the run there. Schema rules are enforced after you answer;
+invalid output is rejected, so stay strictly within the given step shapes.
+
+Do not output flow.variables. Preserve the original step ids when keeping a
+step. Write group labels and step labels in the same language as the source
+labels.
 `;
 
 type PiSdk = typeof import("@earendil-works/pi-coding-agent");

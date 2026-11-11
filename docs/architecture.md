@@ -72,20 +72,23 @@ Core step kinds include navigation, click, input, select, key, hover, scroll, dr
 
 1. The capture script is installed into the page.
 2. DOM events and navigation events enter a raw-event buffer.
-3. Events are coalesced into high-level actions after the configured silence interval.
+3. Events are coalesced into high-level actions after the configured silence interval. A trusted `dragStart`/`drop` pair on the same tab within the pairing window becomes one `drag` step; unpaired, interrupted, or cross-tab drags stay evidence-only.
 4. Stable element facts are recollected by UID.
 5. Candidates and fingerprints are derived and validated.
 6. The element and nearby frame path are stored in `ElementRef`.
 7. Page signatures infer an expectation for the action.
 8. Native Electron tabs created during recording produce `openTab` steps, and explicit activation or subsequent page activity records `switchTab`; the first navigation in a new tab is merged into its `openTab` URL.
-9. Browser address-bar navigation is recorded as a user navigation. Classified SSO/login redirects are omitted, while navigation without an observable cause is retained.
+9. Browser address-bar navigation is recorded as a user navigation. Auth-shaped redirects are classified with built-in IdP host/login-path patterns (no configuration file). Each becomes a `navigate` step flagged `isOptional`, retained in the raw evidence stream and the FlowForge sidecar; replay waits briefly and skips the step when the browser has already redirected on its own.
 10. Text input actions use variable templates; non-secret defaults appear in Reference, and password values remain secret variables without persisted defaults. Stopping the recorder flushes pending actions and writes a validated flow. Stop also aborts in-flight startup navigation/CDP attachment rather than waiting for startup to finish. An empty Stop exits the renderer immediately and performs discard cleanup in the background. If no steps were captured, the recorder raises `EmptyRecordingError`; the main process treats this as clean cancellation and does not persist a recording.
+11. After the recording metadata is durable, the main process fire-and-forget auto-refines it through the shared AI pipeline and saves a `REFINED…` twin via the merge path (never overwriting the source); `ai:autoRefine` events report done/failed/skipped, and `autoRefine: false` in `config/pi-settings.json` disables the twin generation.
 
 `EngineBridge` uses window markers to map Electron `WebContentsView` instances to Playwright `Page` objects. URL matching alone is not sufficient because multiple tabs may share an origin. Pages supplied at recording startup are treated as existing context rather than newly opened tabs.
 
+System identity (`systemId`/`systemName` on steps, raw events, tabs, and the sidecar `systems[]` list) is resolved from the page URL by one shared resolver. A programmatic alias option (exact case-insensitive hostname match) can collapse several hostnames of one logical system into a single identity and merge their domains; the desktop app does not configure aliases, so hosts keep their bare-hostname identity.
+
 ## Replay pipeline
 
-The executor loads or receives a validated `Flow`, resolves elements, executes one step at a time, records screenshots and logs, and writes a run report.
+The executor loads or receives a validated `Flow`, resolves elements, executes one step at a time, records screenshots and logs, and writes a run report. AI-refined (`isMerged`) recordings replay like any recorded flow: generated steps carry the original recorded element evidence because refinement can only re-reference captured `ElementRef`s through the `$ref` rehydration protocol (see `docs/technical-architecture.md` §11).
 
 Element resolution uses ordered candidates, role/text/locator validation, frame paths, fingerprints, and resolver logic. Condition steps evaluate the existing assertion types and route to an optional top-level group; omitting a destination ends that branch. Each group may be entered at most three times in a run, after which replay fails with `FLOW_LOOP_LIMIT`. A `wait` with `condition=userOperation` pauses for explicit user confirmation from the renderer. Replay stops after the first failure when `stopOnFailure` is enabled.
 

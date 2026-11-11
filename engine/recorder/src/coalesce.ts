@@ -13,7 +13,7 @@
  * 无关动作会形成边界，不会被重排或悄悄折叠。每个结果都在 `raw` 中保留来源事件，
  * 让最终 Flow 保持精简，同时诊断信息仍能追溯原始事件。
  */
-import type { CoalescedAction, RawEvent } from './types.js'
+import type { CoalescedAction, RawElementFacts, RawEvent } from './types.js'
 
 export interface CoalesceOptions {
 	/** 合流窗口，默认 500ms */
@@ -27,22 +27,42 @@ const INPUT_MERGE_MS = 2000
 const SCROLL_EPSILON = 4
 /** 「滚动后紧接点击」判定窗口：Playwright 点击前会 scrollIntoView，这类滚动是噪声 */
 const SCROLL_INTO_VIEW_MS = 700
+/** dragStart 与 drop 的配对窗口：超过视为两次无关手势，不生成 drag 动作 */
+export const DRAG_PAIR_MS = 5000
 
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift', 'CapsLock', 'AltGraph'])
+
+/** 这些事件若出现在 dragStart 与 drop 之间，说明拖拽手势已被打断，配对作废 */
+const DRAG_BREAKING_KINDS = new Set(['click', 'contextmenu', 'input', 'change', 'keydown', 'scroll', 'hover', 'navigation'])
+
+interface PendingDrag {
+	ts: number
+	pageIndex: number
+	trusted: boolean
+	facts: RawElementFacts
+	raw: RawEvent[]
+}
 
 export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): CoalescedAction[] {
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
 	// 不原地排序调用方队列：record() 可能还要用原始顺序保存诊断事件。
 	const sorted = [...events].sort((a, b) => a.ts - b.ts)
 	const actions: CoalescedAction[] = []
+	let pendingDrag: PendingDrag | undefined
 
 	for (let i = 0; i < sorted.length; i++) {
 		const event = sorted[i]!
+		if (
+			pendingDrag &&
+			event.kind !== 'dragStart' &&
+			event.kind !== 'drop' &&
+			DRAG_BREAKING_KINDS.has(event.kind)
+		) {
+			pendingDrag = undefined
+		}
 		switch (event.kind) {
 			case 'dblclick':
 			case 'submit':
-			case 'dragStart':
-			case 'drop':
 			case 'copy':
 			case 'paste':
 			case 'extractValue':
@@ -54,6 +74,39 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 			case 'pointerdown':
 				// 只作为事实来源（拖拽/右键判断），本身不成步
 				break
+
+			case 'dragStart': {
+				// 同一时刻只有一个待配对槽：新的 dragStart 直接丢弃上一个未配对的。
+				// 无 facts 的起点无法复核成 ElementRef，只能留在证据流里。
+				pendingDrag = event.facts
+					? { ts: event.ts, pageIndex: event.pageIndex ?? 0, trusted: Boolean(event.trusted), facts: event.facts, raw: [event] }
+					: undefined
+				break
+			}
+
+			case 'drop': {
+				const start = pendingDrag
+				pendingDrag = undefined
+				if (!start || !event.facts) break
+				// 孤儿 drop / 跨页 / 非可信 / 超窗 → 不成步；原始事件始终保留在证据流。
+				// v1 限制：coalesceEvents 按批次无状态运行，起点与落点落在不同冲洗批次
+				// （约 500ms 一批）时不配对，仅存证据；跨批次配对留作后续改进。
+				if (event.pageIndex !== start.pageIndex) break
+				if (!start.trusted || !event.trusted) break
+				if (event.ts - start.ts > DRAG_PAIR_MS) break
+				actions.push({
+					kind: 'drag',
+					ts: event.ts,
+					from: start.facts,
+					to: event.facts,
+					frameIndex: event.frameIndex,
+					frameUrl: event.frameUrl,
+					pageIndex: event.pageIndex,
+					merged: 1,
+					raw: [...start.raw, event],
+				})
+				break
+			}
 
 			case 'hover': {
 				if (!event.facts) break
@@ -426,6 +479,8 @@ export function summarizeAction(action: CoalescedAction): string {
 			return `scroll (${action.delta?.x ?? 0},${action.delta?.y ?? 0})`
 		case 'navigate':
 			return `navigate ${action.url}`
+		case 'drag':
+			return `drag ${action.from?.tag ?? '?'}→${action.to?.tag ?? '?'}`
 		default:
 			return action.kind
 	}

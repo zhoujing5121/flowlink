@@ -11,11 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **Pi:** Auto-refine recordings after Stop: the main process generates a sanitized, stage-grouped `REFINED…` twin through the shared pipeline and reports it via toast; disable with `autoRefine: false` in `config/pi-settings.json`.
 - **AI:** `@` mentions in the AI pane attach saved recordings of the current task to a message (autocomplete picker, removable chips); attachments flow into advice and refinement without ever putting flow JSON into the chat transcript.
 - **AI:** The Refine button opens an options form (preset refinements plus free text) before generating a refined material from one or more analyzed recordings.
-- **Recording:** Record HTML5 drag-and-drop as replayable `drag` steps with resolved source/target element refs; unpaired, cross-tab, stale, or interrupted drags stay evidence-only, and drag steps get no inferred expectation in v1.
-- **Recording:** Configurable navigation/SSO classification and system aliases via `config/classification.json` (see `config/classification.example.json`): custom IdP host/login-path patterns are OR'd with built-in defaults, and `systemAliases` collapse multiple hostnames into one logical system in steps, events, tabs, and the sidecar `systems[]` aggregation.
+- **Recording:** Config-free navigation/SSO handling: auth-shaped redirects detected via built-in heuristics (no classification file to maintain) are recorded as `navigate` steps flagged `isOptional`, kept in the evidence stream, and resolved at replay — skipped when the browser has already redirected on its own, executed otherwise — so flows tolerate differing auth state between record and replay.
+- **Recording:** HTML5 drag-and-drop records as replayable `drag` steps with resolved source/target element refs; unpaired, cross-tab, stale, or interrupted drags stay evidence-only, and drag steps get no inferred expectation in v1.
 - **Pi:** Support a generic `custom` provider using `config/models.json` for private OpenAI-compatible endpoints.
 - **Pi:** Support `--pi-system-proxy` and `--pi-proxy=<URL>` launch options for provider requests.
-- **Recording:** Capture native tab opens, tab switches, and user-requested navigation while suppressing classified SSO/login redirects; save recorded text inputs as Reference variables, marking password values secret.
+- **Recording:** Capture native tab opens, tab switches, and user-requested navigation while marking classified SSO/login redirects as optional steps; save recorded text inputs as Reference variables, marking password values secret.
 - **Process:** Edit grouped flows with manual steps, waits, and assertion-based true/false branches; replay allows at most three visits per group.
 - **UI:** Restore saved recordings into the Design tab after app restart.
 - **UI:** Refine side pane with three mock options that dispatch to the existing merge flow.
@@ -31,7 +31,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **UI:** Rebranded to the FlowLink green identity end to end: theme colors, header wordmark, navigation labels, and app title replace the previous blue/Taskflow look.
 - **Packaging:** The window, taskbar, and packaged `FlowLink.exe` now show the FlowLink icon (multi-size `.ico` under `resources/`, verified by `package.mjs`); the renderer also ships an SVG favicon and logo under `renderer/assets/`.
 - **UI:** Static page and panel structure (flow list rows, version rows, recording rows, analysis tabs, AI pane blocks) now lives in `renderer/index.html` templates that JavaScript fills, instead of being assembled from JS strings.
-- **Recording:** Auth-shaped redirects (`sso_redirect`/`login_redirect`/`auto_redirect`) are now retained in the raw evidence stream and the FlowForge sidecar with their navigation type; they are excluded only from executable planning, with byte-identical Flow output.
+- **Recording:** Auth-shaped redirects (`sso_redirect`/`login_redirect`/`auto_redirect`) are retained in the raw evidence stream and the FlowForge sidecar with their navigation type; they never fold into the previous action's expectation and are kept out of the coalescer, so recorded click expectations are unchanged.
 - **Flow:** Migrate existing schema v1 recordings to schema v2 for condition branches without changing their ordered replay behavior.
 - **Storage:** Delete a recording's Flow and artifacts with the recording, remove all recordings' files when deleting a taskflow, and discard generated files when closing a new unsaved taskflow.
 

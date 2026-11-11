@@ -8,6 +8,7 @@ FlowLink 是一个面向 Windows 的桌面自动化工具，用于录制浏览�
 - 创建任务档案，并为每个任务保存多条录制
 - 回放包含步骤、断言、变量和等待的流程
 - 录制标签页打开/切换和手动导航，并将录制的文本输入参数化到 Reference
+- 将 HTML5 拖拽录制为可回放的 drag 步骤；SSO/登录跳转自动识别并录制为可选步骤，回放时若跳转已自行发生则自动跳过
 - 在 Process 中编辑分组、手动等待和基于断言的条件分支（每次回放每组最多访问三次）
 - 通过原生 Electron 视图打开回放标签页，并在每次进入 Test 时提供全新的单标签浏览器
 - 采集元素证据、截图、对话框、下载、标签页及 iframe 上下文
@@ -139,3 +140,5 @@ artifacts\<flowId>\runs\<runId>\
 FlowLink 按需加载 Pi SDK，不会在应用启动时初始化。Pi 的服务商和模型配置位于 `config/pi-settings.json`，开发环境凭据位于 `config/pi-auth.json`。对于兼容 OpenAI 的企业内部服务，将 provider 设置为 `custom`，把 `config/models.example.json` 复制为 `config/models.json`，并在其中填写服务地址和准确的模型 ID；凭据文件中的 provider 键也使用 `custom`。这样企业服务商 ID 和服务地址只保存在本地 `models.json`，不会出现在 Pi settings 中。`config/models.json` 和 API 密钥文件已从 Git 跟踪中排除。
 
 启动时可以为 Pi 配置代理：打包版使用 `FlowLink.exe --pi-system-proxy` 解析 Windows 系统代理/PAC，或使用 `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` 指定代理。开发环境可运行 `npm start -- -PiSystemProxy` 或 `npm start -- -PiProxy "http://127.0.0.1:7890"`。显式代理优先于系统代理；支持 `http`、`https` 和 `socks5`。也可继续使用 `HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY` 环境变量。以上设置只影响 Pi 请求，不会配置内嵌 Chromium 浏览器的网络代理。不要提交带认证信息的代理 URL。
+
+AI 助手面板提供录制后建议、回放失败诊断，并支持用 `@` 提及当前任务的录制来发起请求。选中已分析的录制并点击 Refine，可选择预设优化项并补充说明后生成细化材料；录制停止后也会自动生成一份 `REFINED…` 孪生录制（在 `config/pi-settings.json` 中设置 `autoRefine: false` 可关闭）。所有细化结果都以新录制保存，原始录制保持不变。

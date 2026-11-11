@@ -58,9 +58,11 @@ import {
  */
 const NAME_KEEPALIVE_SOURCE = 'globalThis.__name = globalThis.__name || ((fn) => fn); true'
 import { coalesceEvents } from './coalesce.js'
+import { compileAuthMatchers, isAuthUrl, AUTO_NAVIGATION_TYPES } from './classify.js'
 import { buildElementRef, deriveCandidates } from './element.js'
 import { appearedNodes, inferExpect, pickExpectTarget, urlPattern } from './expect.js'
 import { describeStorageState, loadProfile, saveProfile, type ProfileShape, type StorageState } from './profile.js'
+import { resolveSystem } from './systems.js'
 import {
 	downloadFilenamePattern,
 	findDownloadFor,
@@ -68,6 +70,8 @@ import {
 	insertDialogs,
 	isMeaningfulHover,
 	pageIndexOf,
+	refineSteps,
+	synthesizeOptionalNavigations,
 	uploadVariableName,
 	withTabSwitches,
 } from './plan.js'
@@ -143,6 +147,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
 	const silenceMs = opts.settleSilenceMs ?? DEFAULT_SETTLE_SILENCE_MS
 	const artifactsRoot = resolve(opts.artifactsRoot ?? './artifacts')
+	// 认证 URL 匹配器编译一次全程复用（始终使用编译进代码的内置规则）。
+	const authMatchers = compileAuthMatchers()
 	const flowId = makeId('flow')
 	const artifactsDir = join(artifactsRoot, flowId)
 	const elementsDir = join(artifactsDir, 'record', 'elements')
@@ -168,6 +174,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const pending: RawEvent[] = []
 	const allEvents: RawEvent[] = []
 	const warnings: string[] = []
+	warnings.push(...authMatchers.warnings)
 	let lastEventTs = Date.now()
 	let rawEventSequence = 0
 
@@ -231,8 +238,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		const sourcePage = pagesByIndex.get(pageIndex)
 		let pageUrl = opts.startUrl
 		try { pageUrl = sourcePage?.url() || opts.startUrl } catch {}
-		let systemId = 'browser', systemName = 'Browser'
-		try { const host = new URL(pageUrl).hostname.toLowerCase(); if (host) { systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'; systemName = host } } catch {}
+		const { systemId, systemName } = resolveSystem(pageUrl, opts.systemAliases)
 		const locatorEvidence = 'target' in step && step.target ? step.target.candidates : undefined
 		const enriched = { ...step, tabId: opts.tabIds?.[pageIndex] ?? `page-${pageIndex}`, systemId, systemName, pageUrl, ...(sourceEvents.length ? { sourceEventIds: sourceEvents.map(event => event.eventId).filter((id): id is string => Boolean(id)) } : {}), ...(locatorEvidence ? { locatorEvidence } : {}) } as Step
 		const marked = markPage(enriched, pageIndex)
@@ -330,11 +336,9 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		event.pageIndex = pageIndex
 		event.tabId = opts.tabIds?.[pageIndex] ?? `page-${pageIndex}`
 		const sourceUrl = sourcePage.url()
-		try {
-			const host = new URL(sourceUrl).hostname.toLowerCase()
-			event.systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'
-			event.systemName = host || 'Unknown system'
-		} catch { event.systemId = 'browser'; event.systemName = 'Browser' }
+		const { systemId, systemName } = resolveSystem(sourceUrl, opts.systemAliases)
+		event.systemId = systemId
+		event.systemName = systemName
 		lastEventTs = event.ts
 		pending.push(event)
 		// 完整证据副本有较高上限；不反过来限制执行 IR 的生成队列。
@@ -450,12 +454,6 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					.filter((item) => item.pageIndex === pageIndex && item.kind === 'click' && now - item.ts >= 0 && now - item.ts < 2500)
 					.at(-1)
 				const clickedHref = recent?.facts?.attributes?.href
-				const authUrl = (value: string): boolean => {
-					try {
-						const parsed = new URL(value)
-						return /(^|\.)(login|logon|auth|sso|signin|identity|idp)(\.|$)/i.test(parsed.hostname) || /\/(login|logon|oauth|authorize|saml|signin|sso)([/?#]|$)/i.test(parsed.pathname)
-					} catch { return false }
-				}
 				const manualRequest = tabId
 					? [...(opts.hostEvents ?? [])].reverse().find((event) =>
 							event.action === 'userNavigateRequested' &&
@@ -475,24 +473,25 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					try {
 						const expected = new URL(clickedHref, previousUrl).href
 						if (expected === url || new URL(expected).origin === new URL(url).origin) { navigationType = 'user_link'; evidence.push('recent-click-href-match') }
-						else if (authUrl(url)) { navigationType = 'sso_redirect'; evidence.push('recent-click-followed-by-auth-url') }
+						else if (isAuthUrl(url, authMatchers)) { navigationType = 'sso_redirect'; evidence.push('recent-click-followed-by-auth-url') }
 					} catch {}
 				}
-				if (navigationType === 'unknown_navigation' && authUrl(url)) { navigationType = authUrl(previousUrl || '') ? 'login_redirect' : 'sso_redirect'; evidence.push('authentication-url-heuristic') }
+				if (navigationType === 'unknown_navigation' && isAuthUrl(url, authMatchers)) { navigationType = isAuthUrl(previousUrl || '', authMatchers) ? 'login_redirect' : 'sso_redirect'; evidence.push('authentication-url-heuristic') }
 				if (navigationType === 'unknown_navigation' && previousUrl && URLSafeHost(previousUrl) !== URLSafeHost(url)) evidence.push('cross-host-navigation-without-matched-user-click')
 				if (navigationType === 'unknown_navigation') evidence.push('cause-not-observable-from-page-event')
-				if (!['sso_redirect', 'login_redirect', 'auto_redirect'].includes(navigationType)) {
-					enqueueRawEvent(target, frame, {
-						kind: 'navigation',
-						ts: now,
-						frameUrl: url,
-						url,
-						previousUrl,
-						directNavigation: !['initial', 'sso_redirect', 'login_redirect', 'auto_redirect'].includes(navigationType),
-						navigationType,
-						navigationEvidence: evidence,
-					})
-				}
+				// 认证类重定向同样入队：observed 证据不可丢。可执行侧由 processBatch 在
+				// coalesceEvents 之前把 AUTO_NAVIGATION_TYPES 事件单独合成为 isOptional
+				// 的 navigate 步骤，保证进入合流器的事件流与历史行为一致。
+				enqueueRawEvent(target, frame, {
+					kind: 'navigation',
+					ts: now,
+					frameUrl: url,
+					url,
+					previousUrl,
+					directNavigation: !['initial', 'sso_redirect', 'login_redirect', 'auto_redirect'].includes(navigationType),
+					navigationType,
+					navigationEvidence: evidence,
+				})
 			})
 
 			target.on('dialog', (dialog) => {
@@ -631,7 +630,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 		const buildRefFor = async (
 			action: CoalescedAction,
-			stepIndex: number,
+			elementKey: number | string,
 		): Promise<ElementRef | undefined> => {
 			const baseFacts = action.facts
 			if (!baseFacts) return undefined
@@ -689,14 +688,14 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			// 用非滚动截图（page.screenshot + clip）：不改变页面滚动/焦点，否则会录到"自己造成的滚动"
 			let crop: ElementRef['crop']
 			if (locator) {
-				const ref = `record/elements/${stepIndex}.png`
+				const ref = `record/elements/${elementKey}.png`
 				await ensureElementsDir()
 				const shot = await screenshotRegion(
 					actionPage,
 					frame,
 					merged.rect ?? facts.rect,
 					merged.scroll ?? facts.scroll ?? { x: 0, y: 0 },
-					join(elementsDir, `${stepIndex}.png`),
+					join(elementsDir, `${elementKey}.png`),
 				)
 				if (shot) {
 					crop = { ref, dpr: facts.dpr ?? dpr }
@@ -818,7 +817,9 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				})
 			} catch {}
 			if (action.kind === 'navigate') {
-				return { kind: 'navigate', id, url: action.url ?? pageOfAction(action).url(), navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence }
+				// 机器跳转合成的 navigate 带 isOptional：回放时若浏览器已自行重定向则跳过
+				const isOptional = AUTO_NAVIGATION_TYPES.has(action.navigationType ?? '')
+				return { kind: 'navigate', id, url: action.url ?? pageOfAction(action).url(), navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence, ...(isOptional ? { isOptional: true } : {}) }
 			}
 			const target = await buildRefFor(action, stepIndex)
 			switch (action.kind) {
@@ -886,6 +887,18 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					// hover 到这里时已经过意义过滤（aria-haspopup / 后面 2s 内点了别的元素）
 					if (!target) return undefined
 					return { kind: 'hover', id, target }
+				}
+				case 'drag': {
+					// 起点与终点各建一个 ElementRef；crop 用 -from/-to 后缀避免互相覆盖。
+					// 任一侧无法复核（无稳定 UID / 元素已消失）就不成步：伪造坐标回放必错，
+					// 原始 dragStart/drop 事件仍在证据流里。
+					const from = await buildRefFor({ ...action, facts: action.from }, `${stepIndex}-from`)
+					const to = await buildRefFor({ ...action, facts: action.to }, `${stepIndex}-to`)
+					if (!from || !to) {
+						warnings.push('拖拽动作的起点/终点元素无法复核，已保留为证据（不生成 drag 步骤）')
+						return undefined
+					}
+					return { kind: 'drag', id, from, to: { target: to } }
 				}
 				case 'scroll': {
 					const delta = { x: Math.round(action.delta?.x ?? 0), y: Math.round(action.delta?.y ?? 0) }
@@ -1077,7 +1090,15 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			const explicitNavigations = hostBatch.filter(
 				(event) => event.action === 'userNavigateRequested' && event.url,
 			)
+			const autoNavigations: RawEvent[] = []
 			const pageEvents = batch.filter((event) => {
+				if (event.kind === 'navigation' && AUTO_NAVIGATION_TYPES.has(event.navigationType ?? '')) {
+					// 机器发起的认证跳转：必须挡在合流器之外（否则并进前一步的 expectUrl，
+					// 改写每个点击的预期），转而合成为 isOptional 的独立 navigate 步骤，
+					// 由回放时观察浏览器实际行为来决定执行还是跳过。
+					autoNavigations.push(event)
+					return false
+				}
 				if (event.kind !== 'navigation') return true
 				return !explicitNavigations.some((request) => {
 					const pageIndex = opts.tabIds?.indexOf(request.tabId) ?? -1
@@ -1126,7 +1147,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					)
 				})
 			})
-			const orderedActions = [...uniqueActions, ...explicitNavigationActions].sort(
+			const optionalNavigationActions = synthesizeOptionalNavigations(autoNavigations)
+			const orderedActions = [...uniqueActions, ...explicitNavigationActions, ...optionalNavigationActions].sort(
 				(a, b) => a.ts - b.ts,
 			)
 
@@ -1233,11 +1255,15 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					if (before) rawEvent.beforeSnapshot = before
 					if (after) rawEvent.afterSnapshot = after
 				}
-				if (before && after) {
+				// v1 的 drag / 可选导航不推断 expect：机器跳转的后果（连锁重定向、DOM 重排）
+				// 极易被误判成 elementVisible/urlChange，回放容忍度由 isOptional 机制承担。
+				const noInferredExpect = action.kind === 'drag' ||
+					(action.kind === 'navigate' && AUTO_NAVIGATION_TYPES.has(action.navigationType ?? ''))
+				if (before && after && !noInferredExpect) {
 					const inferred = await takeExpect(before, after)
 					if (inferred) step.expect = inferred
 				}
-				if (!step.expect && action.expectUrl)
+				if (!step.expect && !noInferredExpect && action.expectUrl)
 					step.expect = { kind: 'urlChange', pattern: urlPattern(action.expectUrl) }
 
 				// 下载是「明确的副作用」，优先级高于推断出来的 expect
@@ -1529,61 +1555,4 @@ function titleFromUrl(rawUrl: string): string {
 	} catch {
 		return rawUrl
 	}
-}
-
-/** 录制后步骤清理：合并碎片化的输入、去掉可编辑元素上多余的 click */
-function refineSteps(steps: Step[]): Step[] {
-	const keyOf = (step: Step): string | undefined => {
-		if (!('target' in step) || !step.target) return undefined
-		const ref = step.target as ElementRef
-		return `${ref.fingerprint.stableHash}|${JSON.stringify(ref.frame?.path ?? [])}|${step.page?.index ?? 0}`
-	}
-	const isEditable = (step: Step): boolean => {
-		if (!('target' in step) || !step.target) return false
-		const ref = step.target as ElementRef
-		const tag = ref.observed.tag
-		return (
-			tag === 'input' ||
-			tag === 'textarea' ||
-			tag === 'select' ||
-			ref.observed.attributes?.['contenteditable'] === 'true'
-		)
-	}
-	const out: Step[] = []
-	const mergedOpenTabs = new Set<string>()
-	for (const step of steps) {
-		const prev = out[out.length - 1]
-		const prevKey = prev ? keyOf(prev) : undefined
-		const curKey = keyOf(step)
-		// 新标签页的第一次地址栏导航是 openTab 的一部分，而不是第二个动作。
-		// 只合并第一次；后续主动导航仍保留为独立 navigate 步骤。
-		if (
-			step.kind === 'navigate' &&
-			prev?.kind === 'openTab' &&
-			(prev.page?.index ?? 0) === (step.page?.index ?? 0) &&
-			!mergedOpenTabs.has(prev.id)
-		) {
-			const merged = { ...prev, url: step.url, expect: step.expect ?? prev.expect } as Step
-			mergedOpenTabs.add(prev.id)
-			out[out.length - 1] = merged
-			continue
-		}
-		// 连续 input（同目标）→ 保留最后一次，沿用第一条的 id（时间线稳定）
-		if (step.kind === 'input' && prev?.kind === 'input' && prevKey && prevKey === curKey) {
-			out[out.length - 1] = { ...step, id: prev.id }
-			continue
-		}
-		// 可编辑元素上的 click 紧跟同目标 input/select → 丢掉 click
-		if (
-			prev?.kind === 'click' &&
-			isEditable(prev) &&
-			prevKey === curKey &&
-			(step.kind === 'input' || step.kind === 'select')
-		) {
-			out[out.length - 1] = step
-			continue
-		}
-		out.push(step)
-	}
-	return out
 }

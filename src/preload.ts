@@ -57,6 +57,13 @@ const api = {
 	pi: {
 		status: () => ipcRenderer.invoke('pi:status'),
 		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
+		/** 从已保存录制生成细化的新 Flow：主进程负责投影、提示词、校验；返回已校验的提案（不落盘） */
+		generateFlow: (opts: {
+			taskCode: string
+			recordingIds: string[]
+			instruction?: string
+			conversation?: Array<{ role: string; text: string }>
+		}) => ipcRenderer.invoke('pi:generateFlow', opts),
 	},
 
 	flow: {
@@ -93,6 +100,7 @@ const api = {
 			'browser:loading',
 			'recording:captureFrame',
 			'browser:tabOpened',
+			'ai:autoRefine',
 		]
 		// 事件通道名称本身就是能力边界：即使通道名由渲染进程传入，也只能
 		// 订阅下方明确允许的事件，不能监听任意 IPC 消息。

@@ -63,7 +63,7 @@ renderer/index.html + app.js + bridge.js
 | `renderer/bridge.js` | Connects the UI to preload IPC; loads persistent tasks and forwards live events |
 | `engine/schema/src/` | Flow types, Zod schemas, migration, validation, serialization |
 | `engine/recorder/src/` | Recording lifecycle, element facts, event coalescing, planning and expectations |
-| `engine/recorder/src/classify.ts` | Auth-URL classification (built-in plus configurable patterns) and the executable-planner navigation suppression set |
+| `engine/recorder/src/classify.ts` | Auth-URL classification on built-in patterns and the auto-navigation type set that becomes optional steps |
 | `engine/recorder/src/systems.ts` | URL-to-system identity resolution with optional hostname aliases |
 | `engine/recorder/src/flowforge-capture-schema.ts` | Zod contract for the FlowForge-compatible capture archive (`flowforge.recording.v1`) |
 | `engine/recorder/src/flowforge-archive.ts` | Converts raw capture plus Electron host events into the validated recording sidecar |
@@ -325,15 +325,13 @@ to emit `openTab`/`switchTab` steps and to classify navigation causes:
 explicit address-bar requests become `user_navigate` steps, link clicks whose
 `href` matches become `user_link`, and auth-shaped transitions are classified
 as `sso_redirect`/`login_redirect`. Classification runs on built-in IdP
-host/login-path patterns OR'd with optional rules from
-`config/classification.json` (`idpHostPatterns`, `loginPathPatterns`); the
-same compiled matchers are reused by the sidecar writer's host-redirect
-re-classification so the Flow and the archive never disagree, and invalid
-patterns are skipped with a recording warning instead of blocking capture.
-Auth redirects are always retained in the raw evidence stream — they are
-filtered out of the executable planner before coalescing (using a suppression
-set identical to the historical enqueue-time one) so click expectations stay
-stable.
+host/login-path patterns compiled into the code — no configuration file is
+read; the same matchers are reused by the sidecar writer's host-redirect
+re-classification so the Flow and the archive never disagree. Auth redirects
+stay in the raw evidence stream and are kept out of the coalescer (they would
+otherwise fold into the previous action's `expectUrl`); instead each is
+synthesized as a standalone `navigate` step flagged `isOptional`, which replay
+resolves at runtime (see §9).
 Navigation without an observable cause is retained as `unknown_navigation`
 with its evidence rather than guessed.
 
@@ -341,9 +339,10 @@ At stop, the recorder also writes the FlowForge sidecar
 (`flowforge-recording.json`): the globally ordered raw event stream with
 stable event IDs, tab/system identity, before/after DOM signatures, locator
 evidence, and `flowStepId` links back to executable steps. System identity is
-resolved from URLs by the shared resolver; `systemAliases` from the same
-config file collapse multiple hostnames into one logical system and merge
-their domains into a single `systems[]` entry. Step provenance
+resolved from URLs by the shared resolver; the optional alias map (a
+programmatic engine API, not a user config file) can collapse multiple
+hostnames into one logical system and merge their domains into a single
+`systems[]` entry. Step provenance
 fields (`tabId`, `systemId`, `pageUrl`, `sourceEventIds`) are part of the
 Flow schema. See `docs/FLOWFORGE_MERGE.md` for the archive contract and
 privacy rules (input values and clipboard text are never written to the
@@ -362,6 +361,15 @@ additional pages). It runs steps serially, reports step status, captures
 before/after evidence and logs, and writes a run result. Cancellation is driven
 by an abort signal. When configured to stop on failure, execution ends at the
 first failing step and preserves its report/artifacts for diagnosis.
+
+Steps flagged `isOptional` (machine-initiated auth redirects recorded as
+`navigate` steps) are resolved at runtime: the executor waits
+`OPTIONAL_NAV_WAIT_MS` (800 ms) and compares the current URL's origin+pathname
+against the step's recorded `previousUrl` (`sameSitePath`; query strings and
+hashes are ignored because SSO round-trips carry per-run state parameters).
+If the browser has already moved on, the redirect happened by itself and the
+step is reported as `skip` (not a failure); otherwise the navigation executes,
+covering the case where record-time and replay-time auth state differ.
 
 Control flow runs on the flattened step cursor. Each flat step records the
 top-level group that owns it; a `condition` step evaluates its assertion as a

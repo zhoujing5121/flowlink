@@ -2,5 +2,6 @@
   "provider": "custom",
   "model": "gpt-5.4",
   "thinkingLevel": "medium",
-  "timeoutMs": 120000
+  "timeoutMs": 120000,
+  "autoRefine": true
 }

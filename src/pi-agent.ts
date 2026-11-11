@@ -26,6 +26,7 @@ interface PiSettings {
   model?: string;
   thinkingLevel?: "off" | "low" | "medium" | "high";
   timeoutMs?: number;
+  autoRefine?: boolean;
 }
 
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -84,6 +85,7 @@ function readSettings(): Required<PiSettings> {
     model: DEFAULT_MODEL,
     thinkingLevel: "medium",
     timeoutMs: 120_000,
+    autoRefine: true,
   };
 
   const settingsPath = getSettingsPath();
@@ -116,9 +118,19 @@ function readSettings(): Required<PiSettings> {
         Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs! >= 5_000
           ? Math.min(parsed.timeoutMs!, 600_000)
           : defaults.timeoutMs,
+      autoRefine: typeof parsed.autoRefine === "boolean" ? parsed.autoRefine : defaults.autoRefine,
     };
   } catch {
     throw new Error(`Cannot parse Pi settings file: ${settingsPath}`);
+  }
+}
+
+/** 录制停止后的自动细化开关（config/pi-settings.json `autoRefine`，缺省开启）。 */
+export function isAutoRefineEnabled(): boolean {
+  try {
+    return readSettings().autoRefine;
+  } catch {
+    return true;
   }
 }
 

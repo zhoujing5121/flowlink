@@ -170,7 +170,7 @@ export interface RawEvent {
 /* ------------------------------------------------------------------ */
 
 export type CoalescedActionKind =
-	'navigate' | 'click' | 'input' | 'select' | 'key' | 'scroll' | 'hover' | 'unknown'
+	'navigate' | 'click' | 'input' | 'select' | 'key' | 'scroll' | 'hover' | 'drag' | 'unknown'
 
 /** 一个可落成 Step 的动作（500ms 缓冲合流之后） */
 export interface CoalescedAction {
@@ -178,6 +178,9 @@ export interface CoalescedAction {
 	/** 动作时间（取合并后最后一条事件的 ts） */
 	ts: number
 	facts?: RawElementFacts
+	/** drag：起点/终点元素事实（其余 kind 只用 facts；drag 必有 from/to） */
+	from?: RawElementFacts
+	to?: RawElementFacts
 	frameIndex?: number
 	frameUrl?: string
 	/** 在哪个标签页（由 RawEvent 透传；合成 switchTab 时用来决定切页） */
@@ -299,6 +302,12 @@ export interface RecordOptions {
 	attachOnly?: boolean
 	/** 页面已经停在 startUrl 时跳过 goto（内嵌浏览器由产品自己导航） */
 	skipNavigate?: boolean
+
+	/**
+	 * 主机名 → 系统名别名：完整主机名精确匹配（大小写不敏感），命中后收敛为同一 systemId。
+	 * 编程调用方专用 API（应用侧不提供配置文件，始终使用裸主机名行为）。
+	 */
+	systemAliases?: Record<string, string>
 
 	/** 事件合流窗口，默认 500ms */
 	bufferMs?: number

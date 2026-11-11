@@ -19,12 +19,11 @@ import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js
 import { EngineBridge } from './engine-bridge.js'
 import { disposePiWorker, piStatus, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
 import { generateRefinedFlow } from './ai-refine.js'
-import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, compileAuthMatchers, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
+import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
-import { z } from 'zod'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -65,60 +64,6 @@ let recordingAdditionalPages: Page[] = []
 let recordingTabIds: string[] = []
 const recordingTabSnapshots = new Map<string, { url: string; title: string }>()
 let recordingHostEvents: HostCaptureEvent[] = []
-
-/* ---------------- 录制分类配置（config/classification.json） ---------------- */
-
-interface RecordingClassification {
-	idpHostPatterns: string[]
-	loginPathPatterns: string[]
-	systemAliases: Record<string, string>
-}
-
-const EMPTY_CLASSIFICATION: RecordingClassification = { idpHostPatterns: [], loginPathPatterns: [], systemAliases: {} }
-
-const ClassificationFileSchema = z.object({
-	idpHostPatterns: z.array(z.string()).default([]),
-	loginPathPatterns: z.array(z.string()).default([]),
-	systemAliases: z.record(z.string()).default({}),
-})
-
-let recordingClassification: RecordingClassification = EMPTY_CLASSIFICATION
-
-/** 与 Pi 凭据文件同一套解析规则：开发态在项目 config/ 下，打包后落在 userData。 */
-function classificationConfigPath(): string {
-	return app.isPackaged
-		? join(app.getPath('userData'), 'classification.json')
-		: join(app.getAppPath(), 'config', 'classification.json')
-}
-
-/**
- * 读取录制分类配置（认证 URL 规则 + 系统别名）。文件缺失 → 空配置（默认规则）；
- * 结构非法 / JSON 解析失败 → 告警并回退空配置，绝不阻断录制启动。
- */
-async function loadRecordingClassification(): Promise<RecordingClassification> {
-	let raw: string
-	try {
-		raw = await readFile(classificationConfigPath(), 'utf8')
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-			console.warn('[flowlink] 读取 classification.json 失败，本次录制使用默认规则：', (error as Error).message)
-		return EMPTY_CLASSIFICATION
-	}
-	try {
-		const parsed = ClassificationFileSchema.safeParse(JSON.parse(raw))
-		if (!parsed.success) {
-			console.warn(
-				'[flowlink] config/classification.json 结构无效，本次录制使用默认规则：',
-				parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; '),
-			)
-			return EMPTY_CLASSIFICATION
-		}
-		return parsed.data
-	} catch (error) {
-		console.warn('[flowlink] classification.json 不是合法 JSON，本次录制使用默认规则：', (error as Error).message)
-		return EMPTY_CLASSIFICATION
-	}
-}
 
 /* ---------------- 回放会话状态 ---------------- */
 let playPromise: Promise<RunResult> | null = null
@@ -188,7 +133,6 @@ function resetRecordingState(): void {
 	recordingTabIds = []
 	recordingTabSnapshots.clear()
 	recordingHostEvents = []
-	recordingClassification = EMPTY_CLASSIFICATION
 	recStopRequested = false
 }
 
@@ -759,13 +703,10 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				const view = browserViews.get(tabId)
 				const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : (recordingTabSnapshots.get(tabId)?.url || '')
 				const title = view && !view.webContents.isDestroyed() ? view.webContents.getTitle() : (recordingTabSnapshots.get(tabId)?.title || '')
-				const system = resolveSystem(url, recordingClassification.systemAliases)
+				const system = resolveSystem(url)
 				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId: system.systemId, systemName: system.systemName }
 			})
-			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents, {
-				matchers: compileAuthMatchers(recordingClassification),
-				aliases: recordingClassification.systemAliases,
-			}).catch((error) => {
+			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents).catch((error) => {
 				console.warn('[flowlink] FlowForge evidence archive could not be written:', (error as Error).message)
 			})
 			const capture = await stopRecordingCapture()
@@ -1115,8 +1056,6 @@ function registerIpc(): void {
 			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
-			recordingClassification = await loadRecordingClassification()
-
 			recPromise = recordOnPage({
 				page,
 				pages: additionalPages,
@@ -1129,11 +1068,6 @@ function registerIpc(): void {
 				hostEvents: recordingHostEvents,
 				stopSignal: controller.signal,
 				title: generatedRecordingName(),
-				classification: {
-					idpHostPatterns: recordingClassification.idpHostPatterns,
-					loginPathPatterns: recordingClassification.loginPathPatterns,
-				},
-				systemAliases: recordingClassification.systemAliases,
 				onStep: (step) => {
 					if (!mainWindow.isDestroyed())
 						mainWindow.webContents.send('recording:step', step)

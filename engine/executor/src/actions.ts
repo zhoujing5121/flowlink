@@ -99,6 +99,26 @@ async function bestEffortNetworkIdle(page: Page, timeoutMs: number): Promise<voi
 	}
 }
 
+/** 可选导航回放：留给自动重定向发生的等待窗口（毫秒） */
+export const OPTIONAL_NAV_WAIT_MS = 800
+
+/**
+ * 比较 URL 的 origin + pathname 是否一致（忽略 query 与 hash）。
+ * SSO 往返携带每次运行都不同的 state/nonce 查询参数，完整比对必然误判；
+ * hash 路由 SPA 不覆盖（已知限制）。解析失败按不相等处理。
+ */
+export function sameSitePath(a: string, b: string): boolean {
+	let left: URL
+	let right: URL
+	try {
+		left = new URL(a)
+		right = new URL(b)
+	} catch {
+		return false
+	}
+	return left.origin === right.origin && left.pathname === right.pathname
+}
+
 export async function runAction(deps: ActionDeps, step: ActionStep): Promise<ActionResult> {
 	const timeout = deps.timeoutMs
 
