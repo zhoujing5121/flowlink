@@ -850,6 +850,190 @@
         ><button class="btn" id="summaryYes">Yes</button>
       </div>
     </dialog>
+    <!-- Repeated-item templates: JS clones these nodes and fills slots by data-* hooks. -->
+    <template id="flowRowTemplate">
+      <tr>
+        <td><a class="code-link" href="#" data-open=""></a></td>
+        <td data-slot="name"></td>
+        <td><span class="flow-description"></span></td>
+        <td data-slot="version"></td>
+        <td>
+          <span class="flow-enabled"
+            ><span class="flow-status-dot" aria-hidden="true"></span>
+            <span data-slot="status"></span></span
+          >
+        </td>
+        <td class="action-cell">
+          <div class="row-actions">
+            <button
+              type="button"
+              class="icon-button"
+              data-action="edit"
+              data-code=""
+              aria-label=""
+              title="Edit"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                xml:space="preserve"
+                viewBox="0 0 192 192"
+                class="icon"
+                aria-hidden="true"
+                focusable="false"
+                fill="currentColor"
+              >
+                <path
+                  d="M16 148h40v8H16zm154.85-70.65-2.829 2.828-.021-.021-65.955 65.955-39.543 9.886 9.886-39.543 68.763-68.805c8.187-8.187 21.51-8.187 29.698 0 8.188 8.189 8.188 21.511 0 29.7M100 136.842l54.35-54.35-18.301-18.385L81.657 118.5zm-26.502 8.16 18.678-4.67-14.009-14.009zm91.694-91.696c-4.858-4.859-12.638-5.06-17.74-.603l-5.747 5.747 18.301 18.386 5.79-5.79c4.456-5.1 4.255-12.88-.604-17.74"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-button"
+              data-action="run"
+              data-code=""
+              aria-label=""
+              title="Run"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M6 4 19 12 6 20Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-button"
+              data-action="delete"
+              data-code=""
+              aria-label=""
+              title="Delete"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                xml:space="preserve"
+                viewBox="0 0 192 192"
+                class="icon"
+                aria-hidden="true"
+                focusable="false"
+                fill="currentColor"
+              >
+                <path
+                  d="M152 56H40V40h112zm-12 104c0 4.411-3.59 8-8 8H60c-4.412 0-8-3.589-8-8V64h16v56h8V64h16v56h8V64h16v56h8V64h16zM80 24h32c4.411 0 8 3.588 8 8H72c0-4.412 3.589-8 8-8m80 8h-32c0-8.822-7.178-16-16-16H80c-8.823 0-16 7.178-16 16H32v32h12v96c0 8.822 7.178 16 16 16h72c8.822 0 16-7.178 16-16V64h12z"
+                />
+              </svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    </template>
+    <template id="flowEmptyRowTemplate">
+      <tr><td class="empty" colspan="6">No matching flows.</td></tr>
+    </template>
+    <template id="versionRowTemplate">
+      <div class="version-management-row">
+        <div class="field version-value-field">
+          <label class="field-label" data-version-label for="">Version</label>
+          <input data-version-input readonly />
+        </div>
+        <div class="field version-state-field">
+          <label class="field-label" data-status-label for="">Status</label>
+          <div class="version-status-field">
+            <select data-version-select aria-label="">
+              <option value="Active">Active</option>
+              <option value="Deactive">Deactive</option>
+            </select>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m5 9 7 7 7-7" />
+            </svg>
+          </div>
+        </div>
+      </div>
+    </template>
+    <template id="recordingItemRowTemplate">
+      <div class="recording-row">
+        <input
+          type="checkbox"
+          class="recording-check"
+          data-recording-check=""
+          aria-label=""
+        />
+        <button class="recording-row-name" data-recording-open=""></button>
+        <span class="recording-badge merged" hidden>Refined</span>
+        <span class="recording-badge recorded" hidden>Record</span>
+        <button
+          class="icon-button recording-delete"
+          data-recording-delete=""
+          aria-label=""
+          title="Delete"
+        >
+          <svg
+            class="design-action-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              d="M4 7h16M9 3h6l1 4H8l1-4ZM6 7l1 14h10l1-14M10 10v7M14 10v7"
+            />
+          </svg>
+        </button>
+      </div>
+    </template>
+    <template id="browserTabTemplate">
+      <div class="browser-page-tab" role="presentation">
+        <button role="tab" data-browser-tab="" aria-label=""></button>
+        <button
+          class="browser-page-close"
+          data-browser-close=""
+          aria-label=""
+          title="Close page"
+        >
+          <svg
+            class="design-action-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="m5 5 14 14M19 5 5 19" />
+          </svg>
+        </button>
+      </div>
+    </template>
+    <template id="assistantMessageTemplate">
+      <p class="assistant-message"><span class="message-attachments"></span></p>
+    </template>
+    <template id="chatChipTemplate">
+      <span class="attachment-chip"></span>
+    </template>
+    <template id="attachmentChipTemplate">
+      <span class="attachment-chip"
+        ><span data-chip-name></span
+        ><button
+          type="button"
+          data-attachment-remove=""
+          aria-label="Remove attachment"
+          >×</button
+        ></span
+      >
+    </template>
+    <template id="mentionOptionTemplate">
+      <button
+        type="button"
+        class="mention-option"
+        role="option"
+        aria-selected="false"
+        data-mention-index=""
+      >
+        <span class="mention-name"></span>
+        <span class="mention-badge refined" hidden>Refined</span>
+        <span class="mention-badge record" hidden>Record</span>
+      </button>
+    </template>
     <script src="app.js"></script>
     <script src="bridge.js"></script>
   </body>

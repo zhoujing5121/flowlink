@@ -8,13 +8,17 @@
 // 范围：Flow 列表、Profile，以及提供的四态 Design 录制界面。
 // 当前未提供 Category/Service Level 目录、Validation 和远程服务。
 // SVG 资源直接嵌入自提供的文件。
-const rowIcons = {
-  edit: '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M16 148h40v8H16zm154.85-70.65-2.829 2.828-.021-.021-65.955 65.955-39.543 9.886 9.886-39.543 68.763-68.805c8.187-8.187 21.51-8.187 29.698 0 8.188 8.189 8.188 21.511 0 29.7M100 136.842l54.35-54.35-18.301-18.385L81.657 118.5zm-26.502 8.16 18.678-4.67-14.009-14.009zm91.694-91.696c-4.858-4.859-12.638-5.06-17.74-.603l-5.747 5.747 18.301 18.386 5.79-5.79c4.456-5.1 4.255-12.88-.604-17.74" /></svg>',
-  delete:
-    '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M152 56H40V40h112zm-12 104c0 4.411-3.59 8-8 8H60c-4.412 0-8-3.589-8-8V64h16v56h8V64h16v56h8V64h16v56h8V64h16zM80 24h32c4.411 0 8 3.588 8 8H72c0-4.412 3.589-8 8-8m80 8h-32c0-8.822-7.178-16-16-16H80c-8.823 0-16 7.178-16 16H32v32h12v96c0 8.822 7.178 16 16 16h72c8.822 0 16-7.178 16-16V64h12z" /></svg>',
-  run: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4 19 12 6 20Z" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>',
-};
 const flowData = [];
+
+// 页面级模板（index.html 底部 <template>）的克隆入口。
+const rowTemplate = (id) => document.getElementById(id).content.firstElementChild;
+
+// 列表行操作按钮的禁用规则；bridge.js 在 IPC 模式下按真实录制状态覆盖。
+function flowRowActionDisabled(name, flow) {
+  if (name === "run") return !!flow.enabled;
+  if (name === "delete") return true;
+  return false;
+}
 
 // 优先在当前显示的 Design 工作区内查找 ID：每个 Flow 都有独立的录制布局副本，
 // 若直接全局查找，隐藏副本中的同名 ID 可能会遮蔽当前活动元素。
@@ -116,28 +120,24 @@ function profileDraft() {
 
 function renderVersionManagement() {
   const draft = profileDraft();
-  $("versionManagementRows").innerHTML = draft.versions
-    .map(
-      (version, index) =>
-        `
-      <div class="version-management-row">
-        <div class="field version-value-field">
-          <label class="field-label" for="${index === 0 ? "flowVersion" : "flowVersion" + index}">Version</label>
-          <input id="${index === 0 ? "flowVersion" : "flowVersion" + index}" value="${escapeHTML(version.name)}" readonly>
-        </div>
-        <div class="field version-state-field">
-          <label class="field-label" for="${index === 0 ? "flowStatus" : "flowStatus" + index}">Status</label>
-          <div class="version-status-field">
-            <select id="${index === 0 ? "flowStatus" : "flowStatus" + index}" data-version-index="${index}" aria-label="${escapeHTML(version.name)} status">
-              <option value="Active" ${version.enabled ? "selected" : ""}>Active</option>
-              <option value="Deactive" ${!version.enabled ? "selected" : ""}>Deactive</option>
-            </select>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg>
-          </div>
-        </div>
-      </div>`,
-    )
-    .join("");
+  $("versionManagementRows").replaceChildren(
+    ...draft.versions.map((version, index) => {
+      const row = rowTemplate("versionRowTemplate").cloneNode(true);
+      const inputId = index === 0 ? "flowVersion" : "flowVersion" + index;
+      const statusId = index === 0 ? "flowStatus" : "flowStatus" + index;
+      row.querySelector("[data-version-label]").setAttribute("for", inputId);
+      const input = row.querySelector("[data-version-input]");
+      input.id = inputId;
+      input.value = version.name;
+      row.querySelector("[data-status-label]").setAttribute("for", statusId);
+      const select = row.querySelector("[data-version-select]");
+      select.id = statusId;
+      select.dataset.versionIndex = index;
+      select.setAttribute("aria-label", version.name + " status");
+      select.value = version.enabled ? "Active" : "Deactive";
+      return row;
+    }),
+  );
 }
 
 function commitVersionStatus(index, value) {
@@ -150,19 +150,6 @@ function commitVersionStatus(index, value) {
     );
     render();
   }
-}
-
-function rowIcon(name, code, disabled = false) {
-  return `
-  <button 
-    type="button" 
-    class="icon-button" 
-    aria-label="${name[0].toUpperCase() + name.slice(1)} ${code}" title="${name[0].toUpperCase() + name.slice(1)}" 
-    data-action="${name}" 
-    data-code="${code}" ${disabled ? "disabled" : ""}
-  >
-    ${rowIcons[name]}
-  </button>`;
 }
 
 function render() {
@@ -180,33 +167,37 @@ function render() {
         (activeStatus === "Active" ? f.enabled : !f.enabled)),
   );
   // 显示列表只由已应用筛选条件决定；空结果仍保留一致的表格结构。
-  $("flowRows").innerHTML =
-    rows
-      .map(
-        (f) =>
-          `
-        <tr>
-          <td>
-            <a class="code-link" href="#${f.code}" data-open="${f.code}">${f.code}</a>
-          </td>
-          <td>${escapeHTML(f.name)}</td>
-          <td><span class="flow-description" title="${escapeHTML(f.description)}">${escapeHTML(f.description)}</span></td>
-          <td>${escapeHTML(f.version)}</td>
-          <td>
-            <span class="flow-enabled ${f.enabled ? "active" : "deactive"}">
-              <span class="flow-status-dot" aria-hidden="true"></span>
-              ${f.enabled ? "Active" : "Deactive"}
-            </span>
-          </td>
-          <td class="action-cell">
-            <div class="row-actions">
-              ${rowIcon("edit", f.code)}${rowIcon("run", f.code, f.enabled)}${rowIcon("delete", f.code, true)}
-            </div>
-          </td>
-        </tr>`,
-      )
-      .join("") ||
-    '<tr><td class="empty" colspan="6">No matching flows.</td></tr>';
+  $("flowRows").replaceChildren(
+    ...(rows.length
+      ? rows.map((f) => {
+          const row = rowTemplate("flowRowTemplate").cloneNode(true);
+          const codeLink = row.querySelector(".code-link");
+          codeLink.href = "#" + f.code;
+          codeLink.dataset.open = f.code;
+          codeLink.textContent = f.code;
+          row.querySelector('[data-slot="name"]').textContent = f.name;
+          const description = row.querySelector(".flow-description");
+          description.title = f.description;
+          description.textContent = f.description;
+          row.querySelector('[data-slot="version"]').textContent = f.version;
+          const status = row.querySelector(".flow-enabled");
+          status.classList.add(f.enabled ? "active" : "deactive");
+          row.querySelector('[data-slot="status"]').textContent = f.enabled
+            ? "Active"
+            : "Deactive";
+          row.querySelectorAll("[data-action]").forEach((button) => {
+            const name = button.dataset.action;
+            button.dataset.code = f.code;
+            button.setAttribute(
+              "aria-label",
+              name[0].toUpperCase() + name.slice(1) + " " + f.code,
+            );
+            button.disabled = flowRowActionDisabled(name, f);
+          });
+          return row;
+        })
+      : [rowTemplate("flowEmptyRowTemplate").cloneNode(true)]),
+  );
 
   $("range").textContent = rows.length
   ? `1 - ${rows.length} of ${rows.length} items`
@@ -916,12 +907,31 @@ function updateBrowserChrome() {
     )
     .join("|");
   if (tabs.dataset.signature !== tabSignature) {
-    tabs.innerHTML = state.browserTabs
-      .map(
-        (tab, index) =>
-          `<div class="browser-page-tab" role="presentation"><button role="tab" data-browser-tab="${tab.id}" aria-label="Browser page ${index + 1}: ${escapeHTML(browserPageLabel(tab))}" aria-selected="${tab.id === page.id}" tabindex="${tab.id === page.id ? 0 : -1}">${escapeHTML(browserPageLabel(tab))}</button><button class="browser-page-close" data-browser-close="${tab.id}" aria-label="Close browser page ${index + 1}" title="Close page">${designIcon("close")}</button></div>`,
-      )
-      .join("");
+    tabs.replaceChildren(
+      ...state.browserTabs.map((tab, index) => {
+        const label = browserPageLabel(tab);
+        const row = rowTemplate("browserTabTemplate").cloneNode(true);
+        const tabButton = row.querySelector("[data-browser-tab]");
+        tabButton.dataset.browserTab = tab.id;
+        tabButton.setAttribute(
+          "aria-label",
+          "Browser page " + (index + 1) + ": " + label,
+        );
+        tabButton.setAttribute(
+          "aria-selected",
+          String(tab.id === page.id),
+        );
+        tabButton.tabIndex = tab.id === page.id ? 0 : -1;
+        tabButton.textContent = label;
+        const close = row.querySelector("[data-browser-close]");
+        close.dataset.browserClose = tab.id;
+        close.setAttribute(
+          "aria-label",
+          "Close browser page " + (index + 1),
+        );
+        return row;
+      }),
+    );
     tabs.dataset.signature = tabSignature;
   }
   tabs.onclick = (e) => {
@@ -1046,32 +1056,27 @@ function renderRecordingWorkspace() {
 function renderRecordingItems() {
   const state = recordingSession();
   if (!$("recordingItems")) return;
-  $("recordingItems").innerHTML = state.items
-    .map(
-      (item) =>
-        `
-      <div class="recording-row ${state.focused === item.id ? "current" : ""}">
-        <input 
-          type="checkbox" 
-          class="recording-check" 
-          data-recording-check="${item.id}" 
-          aria-label="Select ${escapeHTML(item.name)}" 
-          ${item.checked ? "checked" : ""}
-        >
-        <button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>
-        ${item.summary ? '<span class="recording-badge merged">Refined</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}
-        <button 
-          class="icon-button recording-delete" 
-          data-recording-delete="${item.id}" 
-          aria-label="Delete ${escapeHTML(item.name)}" 
-          title="Delete" 
-          ${state.stage === "recording" ? "disabled" : ""}
-        >
-          ${recordingDeleteIcon}
-        </button>
-      </div>`,
-    )
-    .join("");
+  $("recordingItems").replaceChildren(
+    ...state.items.map((item) => {
+      const row = rowTemplate("recordingItemRowTemplate").cloneNode(true);
+      row.classList.toggle("current", state.focused === item.id);
+      const check = row.querySelector(".recording-check");
+      check.dataset.recordingCheck = item.id;
+      check.setAttribute("aria-label", "Select " + item.name);
+      check.checked = !!item.checked;
+      const name = row.querySelector(".recording-row-name");
+      name.dataset.recordingOpen = item.id;
+      name.textContent = item.name;
+      row.querySelector(".recording-badge.merged").hidden = !item.summary;
+      row.querySelector(".recording-badge.recorded").hidden =
+        !!item.summary || !item.recorded;
+      const remove = row.querySelector(".recording-delete");
+      remove.dataset.recordingDelete = item.id;
+      remove.setAttribute("aria-label", "Delete " + item.name);
+      remove.disabled = state.stage === "recording";
+      return row;
+    }),
+  );
   $("recordingItems").onchange = (e) => {
     const id = e.target.dataset.recordingCheck;
     if (!id) return;
@@ -1998,12 +2003,19 @@ function renderAttachmentChips() {
   const box = $("assistantAttachments");
   if (!box) return;
   const items = aiAttachmentItems();
-  box.innerHTML = items
-    .map(
-      (item) =>
-        `<span class="attachment-chip">@${escapeHTML(item.name)}<button type="button" data-attachment-remove="${escapeHTML(item.recordingId || item.id)}" aria-label="Remove attachment ${escapeHTML(item.name)}">×</button></span>`,
-    )
-    .join("");
+  box.replaceChildren(
+    ...items.map((item) => {
+      const chip = rowTemplate("attachmentChipTemplate").cloneNode(true);
+      chip.querySelector("[data-chip-name]").textContent = "@" + item.name;
+      const remove = chip.querySelector("[data-attachment-remove]");
+      remove.dataset.attachmentRemove = item.recordingId || item.id;
+      remove.setAttribute(
+        "aria-label",
+        "Remove attachment " + item.name,
+      );
+      return chip;
+    }),
+  );
   box.hidden = items.length === 0;
   box.onclick = (e) => {
     const remove = e.target.closest("[data-attachment-remove]");
@@ -2033,9 +2045,17 @@ function mentionQueryAtCaret(input) {
   return { tokenStart: caret - match[2].length - 1, query: match[2], caret };
 }
 
-function mentionOptionMarkup(item, index) {
+function mentionOptionNode(item, index) {
+  const option = rowTemplate("mentionOptionTemplate").cloneNode(true);
+  const active = index === mentionPickerState.active;
+  option.classList.toggle("active", active);
+  option.dataset.mentionIndex = index;
+  option.setAttribute("aria-selected", String(active));
+  option.querySelector(".mention-name").textContent = item.name;
   const badge = item.summary ? "Refined" : item.recorded ? "Record" : "";
-  return `<button type="button" class="mention-option${index === mentionPickerState.active ? " active" : ""}" data-mention-index="${index}" role="option" aria-selected="${index === mentionPickerState.active}"><span class="mention-name">${escapeHTML(item.name)}</span>${badge ? `<span class="mention-badge ${badge.toLowerCase()}">${badge}</span>` : ""}</button>`;
+  option.querySelector(".mention-badge.refined").hidden = badge !== "Refined";
+  option.querySelector(".mention-badge.record").hidden = badge !== "Record";
+  return option;
 }
 
 function updateMentionPicker(input) {
@@ -2052,10 +2072,12 @@ function updateMentionPicker(input) {
   }
   picker.hidden = !mentionPickerState.open;
   if (mentionPickerState.open) {
-    picker.innerHTML = items.map(mentionOptionMarkup).join("");
+    picker.replaceChildren(
+      ...items.map((item, index) => mentionOptionNode(item, index)),
+    );
     picker.setAttribute("aria-expanded", "true");
   } else {
-    picker.innerHTML = "";
+    picker.replaceChildren();
     picker.setAttribute("aria-expanded", "false");
   }
 }
@@ -2067,7 +2089,7 @@ function closeMentionPicker() {
   const picker = $("mentionPicker");
   if (picker) {
     picker.hidden = true;
-    picker.innerHTML = "";
+    picker.replaceChildren();
     picker.setAttribute("aria-expanded", "false");
   }
 }
@@ -2218,21 +2240,36 @@ function renderAIPanel() {
     };
   }
 
-  $("assistantChat").innerHTML = item.chat
-    .map((message) => {
+  $("assistantChat").replaceChildren(
+    ...item.chat.map((message) => {
       // 聊天记录只存文本 + 附件 id/name 芯片；Flow JSON 永不进入 transcript。
-      const chips =
-        message.role === "user" && Array.isArray(message.attachments) && message.attachments.length
-          ? `<span class="message-attachments">${message.attachments
-              .map(
-                (attachment) =>
-                  `<span class="attachment-chip">@${escapeHTML(attachment.name)}</span>`,
-              )
-              .join("")}</span>`
-          : "";
-      return `<p class="assistant-message ${message.role}" aria-label="${message.role === "user" ? "User" : "AI"}">${escapeHTML(message.text)}${chips}</p>`;
-    })
-    .join("");
+      const element = rowTemplate("assistantMessageTemplate").cloneNode(true);
+      element.classList.add(message.role);
+      element.setAttribute(
+        "aria-label",
+        message.role === "user" ? "User" : "AI",
+      );
+      element.insertBefore(
+        document.createTextNode(message.text),
+        element.firstChild,
+      );
+      if (
+        message.role === "user" &&
+        Array.isArray(message.attachments) &&
+        message.attachments.length
+      ) {
+        const chips = element.querySelector(".message-attachments");
+        chips.replaceChildren(
+          ...message.attachments.map((attachment) => {
+            const chip = rowTemplate("chatChipTemplate").cloneNode(true);
+            chip.textContent = "@" + attachment.name;
+            return chip;
+          }),
+        );
+      }
+      return element;
+    }),
+  );
   $("assistantContent").scrollTop = $("assistantContent").scrollHeight;
   renderAttachmentChips();
   closeMentionPicker();
@@ -2253,7 +2290,11 @@ function renderAIPanel() {
         const delta = e.key === "ArrowDown" ? 1 : -1;
         const count = mentionPickerState.items.length;
         mentionPickerState.active = (mentionPickerState.active + delta + count) % count;
-        $("mentionPicker").innerHTML = mentionPickerState.items.map(mentionOptionMarkup).join("");
+        $("mentionPicker").replaceChildren(
+          ...mentionPickerState.items.map((item, index) =>
+            mentionOptionNode(item, index),
+          ),
+        );
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {

@@ -1193,14 +1193,11 @@
 	 * 6. 列表 Run / Delete：启用并接线 IPC
 	 * ================================================================ */
 
-	/** 覆盖 rowIcon 的 disabled 参数：Run / Delete 不再禁用 */
-	const _origRowIcon = rowIcon
-	rowIcon = function (name, code, _disabled = false) {
-		/* Run 需要有录制才启用 */
-		const task = flowData.find((f) => f.code === code)
+	/** 覆盖列表行操作的禁用规则：Run 需要有录制，Delete 不再禁用 */
+	flowRowActionDisabled = function (name, task) {
+		if (name !== 'run') return false
 		const hasRecordings = task && (task.recordingCount || task.recordings?.length || 0) > 0
-		const disabled = name === 'run' ? !hasRecordings : false
-		return _origRowIcon(name, code, disabled)
+		return !hasRecordings
 	}
 
 	/** 行操作点击：扩展 Run / Delete */
