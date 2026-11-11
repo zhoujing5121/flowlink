@@ -532,7 +532,99 @@
               class="assistant-steps"
               id="assistantSteps"
               aria-label="Recording steps"
-            ></div>
+            >
+              <div class="assistant-options" data-ai-block="options" hidden>
+                <button
+                  type="button"
+                  class="assistant-option"
+                  data-ai-option="merge"
+                  aria-label="Merge selected recordings"
+                >
+                  Merge selected recordings
+                </button>
+                <button
+                  type="button"
+                  class="assistant-option"
+                  data-ai-option="generate"
+                  aria-label="Generate flow from description"
+                >
+                  Generate flow from description
+                </button>
+                <button
+                  type="button"
+                  class="assistant-option"
+                  data-ai-option="optimize"
+                  aria-label="Optimize current flow"
+                >
+                  Optimize current flow
+                </button>
+              </div>
+              <div class="assistant-refine-options" data-ai-block="refine" hidden>
+                <div class="assistant-refine-title"></div>
+                <div data-refine-presets></div>
+                <textarea
+                  id="refineFreeText"
+                  class="refine-free-text"
+                  rows="3"
+                  placeholder="Anything else?"
+                  aria-label="Anything else?"
+                ></textarea>
+                <div class="assistant-refine-actions">
+                  <button type="button" class="btn" id="refineContinue">
+                    Continue
+                  </button>
+                </div>
+              </div>
+              <div data-ai-block="test" hidden>
+                <div class="assistant-test-toolbar">
+                  <button class="btn" id="runRecordingTest" type="button">
+                    Run
+                  </button>
+                  <button
+                    class="btn secondary"
+                    id="stopRecordingTest"
+                    type="button"
+                  >
+                    Stop
+                  </button>
+                </div>
+                <div class="test-progress-heading">
+                  <strong>Progress</strong><span></span>
+                </div>
+                <div class="assistant-test-steps" aria-live="polite"></div>
+                <div class="test-empty" data-test-empty hidden>
+                  No executable steps in this recording.
+                </div>
+              </div>
+              <div data-ai-block="group" hidden>
+                <div class="assistant-group-name"></div>
+                <div class="assistant-group-options">
+                  <button type="button" id="assistantGroupRecord">
+                    <span>A</span><span>Re-record</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="assistantGroupAdd"
+                    aria-expanded="false"
+                  >
+                    <span>B</span><span>Add node</span>
+                  </button>
+                  <div
+                    id="assistantGroupInsert"
+                    class="assistant-group-insert"
+                    hidden
+                  >
+                    <button type="button" data-ai-group-insert="before">
+                      Before this node
+                    </button>
+                    <button type="button" data-ai-group-insert="after">
+                      After this node
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div data-ai-block="steps" hidden></div>
+            </div>
             <div
               class="assistant-chat"
               id="assistantChat"
@@ -782,7 +874,178 @@
                 role="tabpanel"
                 aria-labelledby="summaryTabProcess"
                 tabindex="0"
-              ></div>
+              >
+                <div
+                  class="process-canvas"
+                  data-result-tab="Process"
+                  tabindex="0"
+                  aria-label="Process canvas"
+                  hidden
+                >
+                  <p class="process-graph-limit">
+                    Conditions route between groups. Each group can run at most
+                    3 times per replay.
+                  </p>
+                  <div class="process-status" role="status" hidden>
+                    Loading saved Flow…
+                  </div>
+                  <div class="process-status error" role="alert" hidden></div>
+                  <div class="process-canvas-world"></div>
+                  <div class="canvas-step-menu" id="canvasStepMenu" hidden>
+                    <button data-step-modify>Modify</button>
+                    <button data-step-break>Break</button>
+                  </div>
+                  <div class="canvas-view-controls">
+                    <button data-canvas-zoom="out" aria-label="Zoom out">
+                      -
+                    </button>
+                    <span class="canvas-zoom-label">100%</span>
+                    <button data-canvas-zoom="in" aria-label="Zoom in">
+                      +
+                    </button>
+                    <button data-canvas-fit>Fit to canvas</button>
+                  </div>
+                </div>
+                <div
+                  class="grouped-steps"
+                  data-result-tab="Instruction"
+                  hidden
+                ></div>
+                <div
+                  class="reference-management"
+                  data-result-tab="Reference"
+                  hidden
+                >
+                  <div class="reference-table-wrap">
+                    <table class="reference-table" aria-label="Reference items">
+                      <colgroup>
+                        <col class="reference-check-column" />
+                        <col class="reference-name-column" />
+                        <col />
+                        <col class="reference-value-column" />
+                        <col class="reference-actions-column" />
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th scope="col" class="reference-check-cell">
+                            <input
+                              type="checkbox"
+                              class="recording-check"
+                              id="referenceSelectAll"
+                              aria-label="Select all reference items"
+                            />
+                          </th>
+                          <th scope="col">Name</th>
+                          <th scope="col">Type</th>
+                          <th scope="col">Value</th>
+                          <th scope="col" aria-label="Reference actions"></th>
+                        </tr>
+                      </thead>
+                      <tbody id="referenceRows"></tbody>
+                    </table>
+                  </div>
+                  <div class="reference-footer">
+                    <span role="status" id="referenceStatus"></span>
+                    <input
+                      type="file"
+                      id="referenceFileInput"
+                      accept=".xlsx,.xls,.csv,.md,.markdown"
+                      multiple
+                      hidden
+                    />
+                    <button
+                      type="button"
+                      class="btn secondary"
+                      id="referenceDownload"
+                    >
+                      <svg
+                        class="design-action-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M12 3v12m0 0 5-5m-5 5-5-5M4 17v4h16v-4"
+                        />
+                      </svg>
+                      <span>Export</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="btn secondary"
+                      id="referenceAdd"
+                    >
+                      <svg
+                        class="design-action-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M12 4v16M4 12h16" />
+                      </svg>
+                      <span>Add</span>
+                    </button>
+                  </div>
+                  <dialog
+                    class="reference-dialog"
+                    id="referenceDialog"
+                    aria-labelledby="referenceDialogTitle"
+                  ></dialog>
+                </div>
+                <form
+                  class="metric-consent"
+                  id="metricConsent"
+                  data-result-tab="Metric"
+                  aria-label="Metric collection preferences"
+                  hidden
+                >
+                  <p class="sr-only" id="metricConsentHint">
+                    Select the metrics you agree to share for platform
+                    statistics. Submit your choices to save them. You can change
+                    your choices and submit again.
+                  </p>
+                  <div class="metric-consent-groups" data-metric-groups></div>
+                  <div class="metric-consent-footer">
+                    <span role="status" id="metricConsentStatus"></span>
+                    <button
+                      class="btn"
+                      type="submit"
+                      id="metricSubmit"
+                      aria-describedby="metricConsentHint"
+                      disabled
+                    >
+                      Submit
+                    </button>
+                  </div>
+                </form>
+                <div
+                  class="recording-media"
+                  data-result-tab="Record"
+                  hidden
+                >
+                  <section class="recording-video">
+                    <video
+                      controls
+                      playsinline
+                      preload="metadata"
+                      hidden
+                    ></video>
+                    <div class="recording-frame-preview" hidden>
+                      <img alt="" />
+                      <span>Recorded video frames</span>
+                    </div>
+                    <div
+                      class="recording-frame-preview recording-frame-empty"
+                      hidden
+                    >
+                      No recorded video frames found
+                    </div>
+                    <div class="recording-media-name"></div>
+                  </section>
+                  <div class="recording-screenshots"></div>
+                </div>
+                <div data-result-tab="Test" hidden></div>
+              </div>
             </section>
             <section class="test-tab-shell" hidden>
               <div class="test-tab-body">
@@ -1033,6 +1296,194 @@
         <span class="mention-badge refined" hidden>Refined</span>
         <span class="mention-badge record" hidden>Record</span>
       </button>
+    </template>
+    <template id="canvasGroupCardTemplate">
+      <section class="canvas-group">
+        <img class="canvas-group-icon" alt="" loading="lazy" />
+        <button class="canvas-group-heading" aria-pressed="false"></button>
+        <div class="canvas-group-nodes"></div>
+      </section>
+    </template>
+    <template id="canvasStepTemplate">
+      <div class="canvas-step">
+        <span data-step-code></span>
+        <span data-step-text></span>
+        <!-- TODO：按条件显示手动操作图标 -->
+        <span
+          class="execution-mode-icon"
+          role="img"
+          aria-label="Automated"
+          title="Automated"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="7" width="16" height="13" rx="2"></rect>
+            <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
+            <circle cx="9" cy="12" r=".5"></circle>
+            <circle cx="15" cy="12" r=".5"></circle>
+          </svg>
+        </span>
+      </div>
+    </template>
+    <template id="canvasEmptyStepTemplate">
+      <div class="canvas-step empty">No steps yet</div>
+    </template>
+    <template id="processGroupActionsTemplate">
+      <div class="canvas-group-actions" hidden>
+        <button data-group-add-step>Add step</button>
+        <button data-group-add-after>Add group after</button>
+        <button data-group-record>Re-record</button>
+        <button data-group-insert="before">Add recording before</button>
+        <button data-group-insert="after">Add recording after</button>
+        <button data-group-delete>Delete</button>
+      </div>
+    </template>
+    <template id="instructionGroupTemplate">
+      <section class="steps-group">
+        <div class="instruction-group-heading">
+          <h3></h3>
+          <button class="instruction-expand" type="button" aria-expanded="false">
+            <span>Expand</span>
+            <svg
+              class="design-action-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="m5 9 7 7 7-7" />
+            </svg>
+          </button>
+        </div>
+      </section>
+    </template>
+    <template id="instructionStepTemplate">
+      <div class="instruction-step">
+        <div class="instruction-row">
+          <span class="step-row-number"></span>
+          <span class="step-row-text"></span>
+        </div>
+        <div class="step-detail-fields" data-group-details hidden>
+          <label
+            >操作内容<textarea data-step-field="text"></textarea
+          ></label>
+          <div class="step-field-grid">
+            <label>操作类型<input data-step-field="type"/></label>
+            <label>目标<input data-step-field="target" /></label>
+            <label>填写内容<input data-step-field="value" /></label>
+          </div>
+        </div>
+      </div>
+    </template>
+    <template id="referenceRowTemplate">
+      <tr>
+        <td class="reference-check-cell">
+          <input type="checkbox" class="recording-check" aria-label="" />
+        </td>
+        <td>
+          <span class="reference-name"></span>
+          <a class="reference-name" hidden></a>
+        </td>
+        <td data-slot="type"></td>
+        <td data-slot="value"></td>
+        <td class="reference-action-cell">
+          <div class="reference-row-actions">
+            <button type="button" class="icon-button" title="Update">
+              <svg
+                class="design-action-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="m4 16 11-11a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4ZM13 7l3 3" />
+              </svg>
+            </button>
+            <button type="button" class="icon-button" title="Delete">
+              <svg
+                class="design-action-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M4 7h16M9 3h6l1 4H8l1-4ZM6 7l1 14h10l1-14M10 10v7M14 10v7"
+                />
+              </svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    </template>
+    <template id="metricGroupTemplate">
+      <section class="metric-consent-group">
+        <h3></h3>
+        <div class="metric-consent-options"></div>
+      </section>
+    </template>
+    <template id="metricRowTemplate">
+      <label class="metric-consent-row">
+        <input type="checkbox" class="recording-check" /><span></span>
+      </label>
+    </template>
+    <template id="recordingScreenshotTemplate">
+      <button type="button" class="recording-screenshot-file">
+        <img alt="" />
+        <span></span>
+      </button>
+    </template>
+    <template id="assistantStepTemplate">
+      <div class="assistant-step">
+        <span class="assistant-step-number"></span>
+        <span data-step-text></span>
+      </div>
+    </template>
+    <template id="refinePresetTemplate">
+      <label class="assistant-refine-preset">
+        <input type="checkbox" /><span></span>
+      </label>
+    </template>
+    <template id="testStepTemplate">
+      <div class="test-step">
+        <span class="test-step-icon" role="img">
+          <svg data-status-icon="pending" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" fill="#f2c811" />
+          </svg>
+          <svg data-status-icon="running" viewBox="0 0 24 24" aria-hidden="true">
+            <circle
+              class="test-step-spinner"
+              cx="12"
+              cy="12"
+              r="8"
+              fill="none"
+              stroke="#00884A"
+              stroke-width="3"
+              stroke-dasharray="34 16"
+            />
+          </svg>
+          <svg data-status-icon="pass" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="#00884a" />
+            <path
+              d="m7 12 3.2 3.2L17 8.5"
+              fill="none"
+              stroke="#fff"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <svg data-status-icon="fail" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="#b00020" />
+            <path
+              d="m8.5 8.5 7 7m0-7-7 7"
+              fill="none"
+              stroke="#fff"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+          </svg>
+        </span>
+        <span class="test-step-name"></span>
+        <span class="test-step-status"></span>
+        <div class="test-step-error" hidden></div>
+      </div>
     </template>
     <script src="app.js"></script>
     <script src="bridge.js"></script>

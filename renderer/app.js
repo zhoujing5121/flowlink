@@ -526,7 +526,6 @@ function designIcon(name) {
   return `<svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || ""}"/></svg>`;
 }
 
-const recordingDeleteIcon = designIcon("delete");
 const summaryTabs = [
   "Process",
   "Instruction",
@@ -576,44 +575,8 @@ function testStepLabel(step, index) {
   return `${kind}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
 }
 
-function testStepRowsMarkup(item) {
-  const steps = item?.testFlowSteps?.length
-    ? item.testFlowSteps
-    : item?.steps || [];
-  const results = item?.testResults || [];
-  return steps.length
-    ? steps
-        .map((step, index) => {
-          const result = results[index];
-          const status = result?.status || "pending";
-          const error = result?.error?.message
-            ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
-            : "";
-          return `<div class="test-step status-${status}">${testStepStatusIcon(status)}<span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
-        })
-        .join("")
-    : `<div class="test-empty">No executable steps in this recording.</div>`;
-}
-
-function testProgressHeadingMarkup(item) {
-  const steps = item?.testFlowSteps?.length
-    ? item.testFlowSteps
-    : item?.steps || [];
-  const succeeded = (item?.testResults || []).filter(
-    (result) => result?.status === "pass",
-  ).length;
-  return `<div class="test-progress-heading"><strong>Progress</strong><span>${succeeded} / ${steps.length}</span></div>`;
-}
-
-function testStepStatusIcon(status) {
-  const icons = {
-    pending:
-      '<circle cx="12" cy="12" r="8" fill="#f2c811" aria-hidden="true"/>',
-    running:
-      '<circle class="test-step-spinner" cx="12" cy="12" r="8" fill="none" stroke="#007bc0" stroke-width="3" stroke-dasharray="34 16" aria-hidden="true"/>',
-    pass: '<circle cx="12" cy="12" r="10" fill="#00884a"/><path d="m7 12 3.2 3.2L17 8.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-    fail: '<circle cx="12" cy="12" r="10" fill="#b00020"/><path d="m8.5 8.5 7 7m0-7-7 7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
-  };
+function testStepNode(step, index, result) {
+  const status = result?.status || "pending";
   const label =
     status === "pass"
       ? "Passed"
@@ -622,7 +585,21 @@ function testStepStatusIcon(status) {
         : status === "running"
           ? "Running"
           : "Pending";
-  return `<span class="test-step-icon status-${status}" role="img" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[status] || icons.pending}</svg></span>`;
+  const node = rowTemplate("testStepTemplate").cloneNode(true);
+  node.classList.add("status-" + status);
+  const icon = node.querySelector(".test-step-icon");
+  icon.classList.add("status-" + status);
+  icon.setAttribute("aria-label", label);
+  icon.querySelectorAll("[data-status-icon]").forEach((svg) => {
+    svg.hidden = svg.dataset.statusIcon !== status;
+  });
+  node.querySelector(".test-step-name").textContent =
+    typeof step === "string" ? step : testStepLabel(step, index);
+  node.querySelector(".test-step-status").textContent = label;
+  const error = node.querySelector(".test-step-error");
+  error.hidden = !result?.error?.message;
+  if (result?.error?.message) error.textContent = result.error.message;
+  return node;
 }
 
 function resetTestExecutionStatus(item) {
@@ -634,18 +611,242 @@ function resetTestExecutionStatus(item) {
   item.testResults = steps.map(() => ({ status: "pending" }));
 }
 
-function analysisResultMarkup(active) {
-  const item = currentAssistantItem(),
-    steps = item?.steps || referenceOperation;
-  if (active === "Process") return processMapMarkup(item);
-  if (active === "Record") return recordingMediaMarkup(item);
-  if (active === "Operation")
-    return `<ol class="analysis-operation">${steps.map((line) => `<li>${escapeHTML(line)}</li>`).join("")}</ol>`;
-  if (active === "Instruction") return editableStepsMarkup(item);
-  if (active === "Reference") return referenceFilesMarkup(item);
-  if (active === "Metric") return metricMarkup(item);
-  if (active === "Test") return "";
-  return "";
+// 结果面板的静态分区已由 recordingLayoutTemplate 提供；这里按标签页填充数据。
+function fillResultPanel(panel, active, item) {
+  panel.querySelectorAll("[data-result-tab]").forEach((section) => {
+    section.hidden = section.dataset.resultTab !== active;
+  });
+  if (active === "Process") fillProcessPanel(panel, item);
+  else if (active === "Instruction") fillInstructionPanel(panel, item);
+  else if (active === "Reference") fillReferencePanel(panel, item);
+  else if (active === "Metric") fillMetricPanel(panel);
+  else if (active === "Record") fillRecordPanel(panel, item);
+}
+
+function canvasStepNode(group, text, index) {
+  const step = rowTemplate("canvasStepTemplate").cloneNode(true);
+  step.dataset.canvasStepIndex = group.start + index;
+  step.querySelector("[data-step-code]").textContent =
+    group.number + "-" + String(index + 1).padStart(3, "0");
+  step.querySelector("[data-step-text]").textContent = text;
+  return step;
+}
+
+function fillProcessPanel(panel, item) {
+  const canvas = panel.querySelector(".process-canvas");
+  canvas.querySelector(".process-status:not(.error)").hidden =
+    !item?.processFlowLoading;
+  const error = canvas.querySelector(".process-status.error");
+  error.hidden = !item?.processFlowError;
+  if (item?.processFlowError) error.textContent = item.processFlowError;
+  const groups = item ? ensureProcessGroups(item) : [];
+  canvas.querySelector(".process-canvas-world").replaceChildren(
+    ...groups.map((group) => {
+      const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
+      const selected = item.selectedGroup === group.id;
+      section.dataset.canvasGroup = group.id;
+      section.classList.toggle("selected", selected);
+      const icon = section.querySelector(".canvas-group-icon");
+      icon.src = groupFaviconUrl(group.url);
+      icon.onerror = () => {
+        icon.src = genericGroupIcon;
+        icon.onerror = null;
+      };
+      const heading = section.querySelector(".canvas-group-heading");
+      heading.dataset.groupSelect = group.id;
+      heading.setAttribute("aria-pressed", String(selected));
+      heading.textContent = group.number + " · " + group.name;
+      section.querySelector(".canvas-group-nodes").replaceChildren(
+        ...(group.steps.length
+          ? group.steps.map((text, index) => canvasStepNode(group, text, index))
+          : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
+      );
+      return section;
+    }),
+  );
+  canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
+  const menu = canvas.querySelector(".canvas-step-menu");
+  for (const group of groups) {
+    const actions = rowTemplate("processGroupActionsTemplate").cloneNode(true);
+    actions.dataset.groupActions = group.id;
+    actions.hidden = item.selectedGroup !== group.id;
+    const addStep = actions.querySelector("[data-group-add-step]");
+    addStep.dataset.groupAddStep = group.id;
+    addStep.disabled = !item.processFlow;
+    const addAfter = actions.querySelector("[data-group-add-after]");
+    addAfter.dataset.groupAddAfter = group.id;
+    addAfter.disabled = !item.processFlow;
+    actions.querySelector("[data-group-record]").dataset.groupRecord = group.id;
+    actions
+      .querySelector('[data-group-insert="before"]')
+      .dataset.groupId = group.id;
+    actions
+      .querySelector('[data-group-insert="after"]')
+      .dataset.groupId = group.id;
+    actions.querySelector("[data-group-delete]").dataset.groupDelete = group.id;
+    canvas.insertBefore(actions, menu);
+  }
+}
+
+function fillInstructionPanel(panel, item) {
+  const container = panel.querySelector('[data-result-tab="Instruction"]');
+  if (!item) {
+    container.replaceChildren();
+    return;
+  }
+  ensureStepDetails(item);
+  item.instructionExpanded ??= [];
+  container.replaceChildren(
+    ...ensureProcessGroups(item).map((group) => {
+      const expanded = item.instructionExpanded.includes(group.id);
+      const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
+      section.dataset.instructionGroup = group.id;
+      section.querySelector("h3").textContent = group.number + " " + group.name;
+      const expand = section.querySelector(".instruction-expand");
+      expand.dataset.instructionExpand = group.id;
+      expand.setAttribute("aria-expanded", String(expanded));
+      expand.querySelector("span").textContent = expanded
+        ? "Collapse"
+        : "Expand";
+      group.steps.forEach((text, offset) => {
+        const index = group.start + offset,
+          detail = item.stepDetails[index],
+          code = group.number + "-" + String(offset + 1).padStart(3, "0");
+        const step = rowTemplate("instructionStepTemplate").cloneNode(true);
+        step.querySelector(".step-row-number").textContent = code;
+        step.querySelector(".step-row-text").textContent = text;
+        const fields = step.querySelector(".step-detail-fields");
+        fields.hidden = !expanded;
+        const textarea = step.querySelector('[data-step-field="text"]');
+        textarea.dataset.stepIndex = index;
+        textarea.setAttribute("aria-label", code + " 操作内容");
+        textarea.value = text;
+        for (const field of ["type", "target", "value"]) {
+          const input = step.querySelector('[data-step-field="' + field + '"]');
+          input.dataset.stepIndex = index;
+          input.value = detail[field];
+        }
+        section.appendChild(step);
+      });
+      return section;
+    }),
+  );
+}
+
+function fillReferencePanel(panel, item) {
+  const section = panel.querySelector('[data-result-tab="Reference"]');
+  const files = ensureReferenceFiles(item);
+  const selectedCount = files.filter((file) => file.selected).length;
+  section.querySelector("#referenceSelectAll").disabled = !files.length;
+  section.querySelector("#referenceRows").replaceChildren(
+    ...files.map((file) => {
+      const row = rowTemplate("referenceRowTemplate").cloneNode(true);
+      row.dataset.referenceRow = file.id;
+      const check = row.querySelector(".recording-check");
+      check.dataset.referenceCheck = file.id;
+      check.setAttribute("aria-label", "Select " + file.name);
+      check.checked = !!file.selected;
+      const isVariable = file.kind === "variable";
+      const span = row.querySelector("span.reference-name");
+      const link = row.querySelector("a.reference-name");
+      span.hidden = !isVariable;
+      link.hidden = isVariable;
+      if (isVariable) {
+        span.textContent = file.name;
+      } else {
+        link.href = file.url;
+        link.setAttribute("download", file.name);
+        link.textContent = file.name;
+      }
+      row.querySelector('[data-slot="type"]').textContent = file.type;
+      row.querySelector('[data-slot="value"]').textContent = isVariable
+        ? file.secret && file.value
+          ? "••••••"
+          : file.value || ""
+        : "";
+      const [edit, remove] = row.querySelectorAll(
+        ".reference-row-actions .icon-button",
+      );
+      edit.dataset.referenceEdit = file.id;
+      edit.setAttribute("aria-label", "Update " + file.name);
+      remove.dataset.referenceDelete = file.id;
+      remove.setAttribute("aria-label", "Delete " + file.name);
+      return row;
+    }),
+  );
+  section.querySelector("#referenceStatus").textContent =
+    item?.referenceLoadError || "";
+  section.querySelector("#referenceDownload").disabled = !selectedCount;
+  section.querySelector("#referenceAdd").disabled = !!(
+    item?.referenceVariablesLoading || item?.referenceLoadError
+  );
+}
+
+function fillMetricPanel(panel) {
+  const state = metricPreference();
+  panel.querySelector("[data-metric-groups]").replaceChildren(
+    ...metricChoices.map(([name, options]) => {
+      const group = rowTemplate("metricGroupTemplate").cloneNode(true);
+      group.setAttribute("aria-label", name);
+      group.querySelector("h3").textContent = name;
+      group.querySelector(".metric-consent-options").replaceChildren(
+        ...options.map(([id, label]) => {
+          const row = rowTemplate("metricRowTemplate").cloneNode(true);
+          const input = row.querySelector("input");
+          input.dataset.metricChoice = id;
+          input.checked = state.selected.includes(id);
+          row.querySelector("span").textContent = label;
+          return row;
+        }),
+      );
+      return group;
+    }),
+  );
+  panel.querySelector("#metricConsentStatus").textContent = state.message;
+}
+
+function fillRecordPanel(panel, item) {
+  const section = panel.querySelector('[data-result-tab="Record"]');
+  const media = item?.media || {},
+    screenshots = media.screenshots || [];
+  const poster = media.posterFile
+    ? "file:///" + String(media.posterFile).replace(/\\/g, "/")
+    : screenshots[0]?.image || "";
+  const name = item?.name || "Recording";
+  const video = section.querySelector("video");
+  video.hidden = !media.videoURL;
+  if (media.videoURL) {
+    video.setAttribute("aria-label", name + " video");
+    video.src = media.videoURL;
+  } else {
+    video.removeAttribute("src");
+  }
+  const preview = section.querySelector(
+    ".recording-frame-preview:not(.recording-frame-empty)",
+  );
+  const showPreview = !media.videoURL && !!poster;
+  preview.hidden = !showPreview;
+  if (showPreview) {
+    const img = preview.querySelector("img");
+    img.src = poster;
+    img.alt = name + " poster";
+  }
+  section.querySelector(".recording-frame-empty").hidden =
+    !!media.videoURL || !!poster;
+  section.querySelector(".recording-media-name").textContent =
+    name + (media.videoURL ? ".webm" : " - frame recording");
+  section.querySelector(".recording-screenshots").replaceChildren(
+    ...screenshots.map((file) => {
+      const shot = rowTemplate("recordingScreenshotTemplate").cloneNode(true);
+      shot.dataset.screenshotZoom = file.image;
+      shot.setAttribute("aria-label", "Zoom " + file.name);
+      const img = shot.querySelector("img");
+      img.src = file.image;
+      img.alt = file.name;
+      shot.querySelector("span").textContent = file.name;
+      return shot;
+    }),
+  );
 }
 
 let activeFlowKey = "TASKFLOW-001",
@@ -1702,8 +1903,7 @@ function renderSummaryWorkspace() {
           ? "metric-active"
           : "");
   resultPanel.setAttribute("aria-labelledby", summaryTabId(active));
-  resultPanel.innerHTML =
-    active === "Test" ? "" : analysisResultMarkup(active);
+  fillResultPanel(resultPanel, active, item);
   if (active === "Test" && state.browserElement) {
     state.browserElement.hidden = false;
     mountBrowserSurface();
@@ -1958,19 +2158,6 @@ const REFINE_PRESETS = [
   "Move repeated text inputs into Reference variables",
 ];
 
-function refineOptionsMarkup(state) {
-  const count = state.aiSourceIds?.length || 0;
-  return `<div class="assistant-refine-options">
-    <div class="assistant-refine-title">Refine ${count === 1 ? "1 selected material" : `${count} selected materials`}</div>
-    ${REFINE_PRESETS.map(
-      (preset, index) =>
-        `<label class="assistant-refine-preset"><input type="checkbox" data-refine-preset="${index}"><span>${escapeHTML(preset)}</span></label>`,
-    ).join("")}
-    <textarea id="refineFreeText" class="refine-free-text" rows="3" placeholder="Anything else?" aria-label="Anything else?"></textarea>
-    <div class="assistant-refine-actions"><button type="button" class="btn" id="refineContinue">Continue</button></div>
-  </div>`;
-}
-
 function submitRefineOptions() {
   const state = recordingSession();
   const presets = REFINE_PRESETS.filter(
@@ -2173,28 +2360,65 @@ function renderAIPanel() {
     "has-group-context",
     !!selectedGroup && !testTab,
   );
-  const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
-  $("assistantSteps").innerHTML = refineOptions
-    ? refineOptionsMarkup(state)
-    : testTab
-    ? `
-    <div class="assistant-test-toolbar">
-      <button class="btn" id="runRecordingTest" type="button" ${recording?.testRunning || !recording?.recordingId ? "disabled" : ""}>
-        ${recording?.testRunning ? "Running…" : "Run"}
-      </button>
-      <button class="btn secondary" id="stopRecordingTest" type="button" ${!recording?.testRunning ? "disabled" : ""}>Stop</button>
-    </div>
-    ${testProgressHeadingMarkup(recording)}
-    <div class="assistant-test-steps" aria-live="polite">${testStepRowsMarkup(recording)}</div>`
-    : selectedGroup
-      ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
-    : aiOptionsMarkup +
-      item.steps
-        .map(
-          (step, index) =>
-            `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
-        )
-        .join("");
+  const stepsHost = $("assistantSteps");
+  const showOptions = !refineOptions && !testTab && !selectedGroup;
+  stepsHost.querySelector('[data-ai-block="options"]').hidden = !showOptions;
+  stepsHost.querySelector('[data-ai-block="steps"]').hidden = !showOptions;
+  stepsHost.querySelector('[data-ai-block="refine"]').hidden = !refineOptions;
+  stepsHost.querySelector('[data-ai-block="test"]').hidden = !testTab;
+  stepsHost.querySelector('[data-ai-block="group"]').hidden = !(
+    selectedGroup && !testTab
+  );
+  if (refineOptions) {
+    const count = state.aiSourceIds?.length || 0;
+    stepsHost.querySelector(".assistant-refine-title").textContent =
+      "Refine " +
+      (count === 1 ? "1 selected material" : count + " selected materials");
+    stepsHost.querySelector("[data-refine-presets]").replaceChildren(
+      ...REFINE_PRESETS.map((preset, index) => {
+        const label = rowTemplate("refinePresetTemplate").cloneNode(true);
+        label.querySelector("input").dataset.refinePreset = index;
+        label.querySelector("span").textContent = preset;
+        return label;
+      }),
+    );
+    stepsHost.querySelector("#refineFreeText").value = "";
+  }
+  if (testTab) {
+    const running = !!recording?.testRunning;
+    const runButton = stepsHost.querySelector("#runRecordingTest");
+    runButton.disabled = running || !recording?.recordingId;
+    runButton.textContent = running ? "Running…" : "Run";
+    stepsHost.querySelector("#stopRecordingTest").disabled = !running;
+    const testSteps = recording?.testFlowSteps?.length
+      ? recording.testFlowSteps
+      : recording?.steps || [];
+    const results = recording?.testResults || [];
+    stepsHost.querySelector(".test-progress-heading span").textContent =
+      results.filter((result) => result?.status === "pass").length +
+      " / " +
+      testSteps.length;
+    const list = stepsHost.querySelector(".assistant-test-steps");
+    stepsHost.querySelector("[data-test-empty]").hidden = !!testSteps.length;
+    list.replaceChildren(
+      ...testSteps.map((step, index) =>
+        testStepNode(step, index, results[index]),
+      ),
+    );
+  }
+  if (selectedGroup && !testTab)
+    stepsHost.querySelector(".assistant-group-name").textContent =
+      selectedGroup.number + " " + selectedGroup.name;
+  if (showOptions)
+    stepsHost.querySelector('[data-ai-block="steps"]').replaceChildren(
+      ...item.steps.map((step, index) => {
+        const node = rowTemplate("assistantStepTemplate").cloneNode(true);
+        node.querySelector(".assistant-step-number").textContent =
+          "Step " + (index + 1) + ":";
+        node.querySelector("[data-step-text]").textContent = step;
+        return node;
+      }),
+    );
   const continueButton = $("refineContinue");
   if (continueButton) continueButton.onclick = submitRefineOptions;
   const runButton = $("runRecordingTest");
@@ -2707,10 +2931,6 @@ function finishNodeRecording(state) {
   $("assistantInput").focus();
 }
 
-function nativeUpdatedProcess(item) {
-  return processMapMarkup(item);
-}
-
 // 可编辑字段遵循提供的 Steps 参考内容，数据仅保存在当前录制项中。
 function ensureStepDetails(item) {
   ensureAssistantData(item);
@@ -3014,25 +3234,6 @@ function buildTabGroupsForItem(item) {
       ];
 }
 
-function editableStepsMarkup(item) {
-  if (!item) return "";
-  ensureStepDetails(item);
-  item.instructionExpanded ??= [];
-  return `<div class="grouped-steps">${ensureProcessGroups(item)
-    .map((group) => {
-      const expanded = item.instructionExpanded.includes(group.id);
-      return `<section class="steps-group" data-instruction-group="${group.id}"><div class="instruction-group-heading"><h3>${group.number} ${escapeHTML(group.name)}</h3><button class="instruction-expand" type="button" data-instruction-expand="${group.id}" aria-expanded="${expanded}"><span>${expanded ? "Collapse" : "Expand"}</span><svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg></button></div>${group.steps
-        .map((text, offset) => {
-          const index = group.start + offset,
-            detail = item.stepDetails[index],
-            code = group.number + "-" + String(offset + 1).padStart(3, "0");
-          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
-        })
-        .join("")}</section>`;
-    })
-    .join("")}</div>`;
-}
-
 function normalizeStepKind(type) {
   if (type === "open" || type === "navigate" || type === "打开页面")
     return "navigate";
@@ -3211,12 +3412,6 @@ function metricPreference() {
   return metricDrafts.get(activeFlowKey);
 }
 
-function metricMarkup(item) {
-  if (!item) return "";
-  const state = metricPreference();
-  return `<form class="metric-consent" id="metricConsent" aria-label="Metric collection preferences"><p class="sr-only" id="metricConsentHint">Select the metrics you agree to share for platform statistics. Submit your choices to save them. You can change your choices and submit again.</p><div class="metric-consent-groups">${metricChoices.map(([name, options]) => `<section class="metric-consent-group" aria-label="${name}"><h3>${name}</h3><div class="metric-consent-options">${options.map(([id, label]) => `<label class="metric-consent-row"><input type="checkbox" class="recording-check" data-metric-choice="${id}" ${state.selected.includes(id) ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></section>`).join("")}</div><div class="metric-consent-footer"><span role="status" id="metricConsentStatus">${escapeHTML(state.message)}</span><button class="btn" type="submit" id="metricSubmit" aria-describedby="metricConsentHint" disabled>Submit</button></div></form>`;
-}
-
 function bindMetricPreferences() {
   const form = $("metricConsent");
   if (!form) return;
@@ -3373,18 +3568,13 @@ async function persistReferenceVariables(item, references) {
   });
 }
 
-function referenceFilesMarkup(item) {
-  const files = ensureReferenceFiles(item);
-  const selectedCount = files.filter((file) => file.selected).length;
-  return `<div class="reference-management"><div class="reference-table-wrap"><table class="reference-table" aria-label="Reference items"><colgroup><col class="reference-check-column"><col class="reference-name-column"><col><col class="reference-value-column"><col class="reference-actions-column"></colgroup><thead><tr><th scope="col" class="reference-check-cell"><input type="checkbox" class="recording-check" id="referenceSelectAll" aria-label="Select all reference items" ${files.length ? "" : "disabled"}></th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Value</th><th scope="col" aria-label="Reference actions"></th></tr></thead><tbody>${files.map((file) => `<tr data-reference-row="${file.id}"><td class="reference-check-cell"><input type="checkbox" class="recording-check" data-reference-check="${file.id}" aria-label="Select ${escapeHTML(file.name)}" ${file.selected ? "checked" : ""}></td><td>${file.kind === "variable" ? `<span class="reference-name">${escapeHTML(file.name)}</span>` : `<a class="reference-name" href="${file.url}" download="${escapeHTML(file.name)}">${escapeHTML(file.name)}</a>`}</td><td>${escapeHTML(file.type)}</td><td>${file.kind === "variable" ? escapeHTML(file.secret && file.value ? "••••••" : file.value || "") : ""}</td><td class="reference-action-cell"><div class="reference-row-actions"><button type="button" class="icon-button" data-reference-edit="${file.id}" aria-label="Update ${escapeHTML(file.name)}" title="Update">${designIcon("edit")}</button><button type="button" class="icon-button" data-reference-delete="${file.id}" aria-label="Delete ${escapeHTML(file.name)}" title="Delete">${recordingDeleteIcon}</button></div></td></tr>`).join("")}</tbody></table></div><div class="reference-footer"><span role="status" id="referenceStatus">${escapeHTML(item.referenceLoadError || "")}</span><input type="file" id="referenceFileInput" accept=".xlsx,.xls,.csv,.md,.markdown" multiple hidden><button type="button" class="btn secondary" id="referenceDownload" ${selectedCount ? "" : "disabled"}>${designIcon("export")}<span>Export</span></button><button type="button" class="btn secondary" id="referenceAdd" ${item.referenceVariablesLoading || item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add</span></button></div><dialog class="reference-dialog" id="referenceDialog" aria-labelledby="referenceDialogTitle"></dialog></div>`;
-}
 function bindReferenceFiles() {
   const input = $("referenceFileInput"),
     panel = $("summaryResultPanel"),
     item = currentAssistantItem();
   if (!input || !item) return;
   const redraw = () => {
-    panel.innerHTML = referenceFilesMarkup(item);
+    fillReferencePanel(panel, item);
     bindReferenceFiles();
   };
   const variablesLoaded = hydrateReferenceVariables(item);
@@ -3622,76 +3812,6 @@ function bindScreenshotZoom() {
     };
   });
   panel.dataset.screenshotZoomBound = "true";
-}
-
-function processMapMarkup(item) {
-  if (!item) return "";
-  const groups = ensureProcessGroups(item);
-  return `
-  <div class="process-canvas" tabindex="0" aria-label="Process canvas">
-    <p class="process-graph-limit">Conditions route between groups. Each group can run at most 3 times per replay.</p>
-    ${item.processFlowLoading ? `<div class="process-status" role="status">Loading saved Flow…</div>` : ""}
-    ${item.processFlowError ? `<div class="process-status error" role="alert">${escapeHTML(item.processFlowError)}</div>` : ""}
-    <div class="process-canvas-world">
-      ${groups.map((group) => `
-      <section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${escapeHTML(group.id)}">
-        <img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null">
-        <button class="canvas-group-heading" data-group-select="${escapeHTML(group.id)}" aria-pressed="${item.selectedGroup === group.id}">
-          ${group.number} · ${escapeHTML(group.name)}
-        </button>
-        <div class="canvas-group-nodes">
-          ${group.steps.map((text, index) => `
-          <div class="canvas-step" data-canvas-step-index="${group.start + index}">
-            <span>${group.number}-${String(index + 1).padStart(3, "0")}</span>
-            <span>${escapeHTML(text)}</span>
-            <!-- 
-              // TODO：按条件显示手动操作图标
-              <span class="execution-mode-icon" role="img" aria-label="Manual" title="Manual">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <circle cx="12" cy="7" r="4"></circle>
-                  <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
-                </svg>
-              </span> 
-            -->
-            <span class="execution-mode-icon" role="img" aria-label="Automated" title="Automated">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="4" y="7" width="16" height="13" rx="2"></rect>
-                <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
-                <circle cx="9" cy="12" r=".5"></circle>
-                <circle cx="15" cy="12" r=".5"></circle>
-              </svg>
-            </span>
-          </div>`).join("")
-          }
-          ${group.steps.length ? "" : `<div class="canvas-step empty">No steps yet</div>`}
-        </div>
-      </section>`).join("")
-      }
-    </div>
-    ${groups
-      .map(
-        (group) => `
-    <div class="canvas-group-actions" data-group-actions="${escapeHTML(group.id)}" ${item.selectedGroup === group.id ? "" : "hidden"}>
-      <button data-group-add-step="${escapeHTML(group.id)}" ${item.processFlow ? "" : "disabled"}>Add step</button>
-      <button data-group-add-after="${escapeHTML(group.id)}" ${item.processFlow ? "" : "disabled"}>Add group after</button>
-      <button data-group-record="${group.id}">Re-record</button>
-      <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
-      <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
-      <button data-group-delete="${group.id}">Delete</button>
-    </div>`,
-      )
-      .join("")}
-    <div class="canvas-step-menu" id="canvasStepMenu" hidden>
-      <button data-step-modify>Modify</button>
-      <button data-step-break>Break</button>
-    </div>
-    <div class="canvas-view-controls">
-      <button data-canvas-zoom="out" aria-label="Zoom out">-</button>
-      <span class="canvas-zoom-label">100%</span>
-      <button data-canvas-zoom="in" aria-label="Zoom in">+</button>
-      <button data-canvas-fit>Fit to canvas</button>
-    </div>
-  </div>`;
 }
 
 function nextFlowVariableName(flow, prefix) {
@@ -3946,7 +4066,7 @@ function bindProcessMap() {
   const panel = $("summaryResultPanel"),
     canvas = panel?.querySelector(".process-canvas"),
     item = currentAssistantItem();
-  if (!canvas || !item) return;
+  if (!canvas || canvas.hidden || !item) return;
   const world = canvas.querySelector(".process-canvas-world");
   const placeGroupActions = () => {
     const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
@@ -4805,15 +4925,6 @@ async function stopRecordingMedia(state) {
   state.mediaCapture = null;
   return { videoURL, screenshots: media.screenshots };
 }
-function recordingMediaMarkup(item) {
-  const media = item?.media || {},
-    screenshots = media.screenshots || [];
-  const poster = media.posterFile
-    ? `file:///${String(media.posterFile).replace(/\\/g, "/")}`
-    : screenshots[0]?.image || "";
-  return `<div class="recording-media"><section class="recording-video">${media.videoURL ? `<video controls playsinline preload="metadata" aria-label="${escapeHTML(item?.name || "Recording")} video" src="${escapeHTML(media.videoURL)}"></video>` : poster ? `<div class="recording-frame-preview"><img src="${escapeHTML(poster)}" alt="${escapeHTML(item?.name || "Recording")} poster"><span>Recorded video frames</span></div>` : `<div class="recording-frame-preview recording-frame-empty">No recorded video frames found</div>`}<div class="recording-media-name">${escapeHTML(item?.name || "Recording")}${media.videoURL ? ".webm" : " - frame recording"}</div></section><div class="recording-screenshots">${screenshots.map((file) => `<button type="button" class="recording-screenshot-file" data-screenshot-zoom="${escapeHTML(file.image)}" aria-label="Zoom ${escapeHTML(file.name)}"><img src="${file.image}" alt="${escapeHTML(file.name)}"><span>${escapeHTML(file.name)}</span></button>`).join("")}</div></div>`;
-}
-
 // 使用原生指针和键盘调整尺寸，不额外添加布局标签或图标。
 let workspaceResizeObserver;
 function workspaceWidthBounds(layout) {
