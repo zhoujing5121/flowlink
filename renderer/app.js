@@ -512,12 +512,14 @@ $("versionManagementRows").onchange = (e) => {
   if (e.target.matches("[data-version-index]"))
     commitVersionStatus(Number(e.target.dataset.versionIndex), e.target.value);
 };
-// 原生文件选择器取消时会向模态 <dialog> 派发 cancel 事件；抑制期内忽略抽屉关闭，
-// 避免取消上传直接弹出 Close 确认框。
-let suppressDrawerCancel = false;
+// 原生文件选择器取消时产生的 cancel 事件可能在选择器关闭后才异步到达（可能指向
+// input 也可能指向抽屉本身）；三层防护：input 处截停冒泡、抽屉监听只响应直接
+// 作用于自身的事件，并在打开选择器后短暂抑制，确保取消上传不会触发 Close 确认。
+let suppressDrawerCancelUntil = 0;
 $("drawer").addEventListener("cancel", (e) => {
   e.preventDefault();
-  if (suppressDrawerCancel) return;
+  if (e.target !== e.currentTarget) return;
+  if (Date.now() < suppressDrawerCancelUntil) return;
   closeDrawer();
 });
 $("category").onclick = () => togglePopup("category");
@@ -3785,6 +3787,8 @@ function bindReferenceFiles() {
   };
   $("referenceAdd").onclick = showChooser;
   input.onchange = () => {
+    // 文件选择完成（选择器已关闭）后恢复抽屉 Escape 响应。
+    setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
     for (const file of input.files) {
       const ext = file.name.split(".").pop().toLowerCase(),
         type = ["xlsx", "xls", "csv"].includes(ext)
@@ -3816,9 +3820,12 @@ function bindReferenceFiles() {
     }
     if (upload) {
       dialog.close();
-      suppressDrawerCancel = true;
+      input.oncancel = (e) => {
+        e.stopPropagation();
+        setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
+      };
+      suppressDrawerCancelUntil = Date.now() + 60000;
       input.click();
-      setTimeout(() => (suppressDrawerCancel = false), 0);
       return;
     }
     if (closeDialog) {

@@ -562,9 +562,9 @@ h1 {
 }
 
 .icon-button {
-  height: 48px;
-  width: 48px;
-  min-width: 48px;
+  height: 32px;
+  width: 32px;
+  min-width: 32px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -1465,7 +1465,7 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 16px;
+  padding: 0 8px;
   font-size: 16px;
   line-height: 24px;
 }
@@ -1501,13 +1501,24 @@ h1 {
 }
 
 .recording-check.all:checked:after {
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+}
+
+.recording-check.all:indeterminate {
+  background: #00884a;
+  border-color: #00884a;
+}
+
+.recording-check.all:indeterminate:after {
+  content: "";
+  position: absolute;
   left: 3px;
   top: 7px;
   width: 10px;
   height: 0;
   border: 0;
   border-bottom: 2px solid #fff;
-  transform: none;
 }
 
 .recording-items {
@@ -1527,7 +1538,7 @@ h1 {
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #d7dee7;
-  padding: 0 16px;
+  padding: 0 8px;
 }
 
 .recording-row.current {
@@ -1858,7 +1869,7 @@ h1 {
 }
 
 .recording-delete {
-  flex: 0 0 48px;
+  flex: 0 0 32px;
   color: #838b92;
 }
 
@@ -1889,13 +1900,13 @@ h1 {
   display: inline-flex;
   align-items: center;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid;
   border-radius: 2px;
   font-size: 10px;
   line-height: 14px;
   margin-left: auto;
-  margin-right: 8px;
+  margin-right: 0;
 }
 
 .recording-badge.recorded {
