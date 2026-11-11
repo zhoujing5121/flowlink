@@ -51,7 +51,7 @@ Flow JSON files and recorder artifacts are written below:
 <userData>/flowlink/artifacts/
 ```
 
-Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid. On startup, the renderer loads task profiles and recording counts only; opening a task drawer loads its recording metadata and saved Flow details. Transient UI state such as open tabs, focus, and panel sizes is intentionally not restored.
+Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid. On startup, the renderer loads task profiles and recording counts only; opening a task drawer loads its recording metadata and saved Flow details. Deleting a recording removes its Flow JSON, Flow artifacts, and capture-frame directory; deleting a task removes all of those files for its recordings. Closing a new, unsaved taskflow discards recordings created under that draft. Transient UI state such as open tabs, focus, and panel sizes is intentionally not restored.
 
 ## Flow IR
 

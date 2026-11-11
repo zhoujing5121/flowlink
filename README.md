@@ -75,6 +75,8 @@ The package script uses `electron-packager`, then creates:
 6. Run the recording to replay it in the embedded browser. Native tab creation and its first navigation replay as one `openTab` action.
 7. Inspect screenshots, step results, downloads, and execution logs.
 
+Deleting a recording removes its Flow and recording artifacts. Deleting a task removes all of its recordings and files; closing a new taskflow before saving discards recordings created in that draft.
+
 ## Project layout
 
 ```text

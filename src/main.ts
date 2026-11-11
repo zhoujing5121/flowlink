@@ -11,7 +11,7 @@
  */
 import { app, BrowserWindow, ipcMain, WebContentsView } from 'electron'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 
@@ -132,6 +132,59 @@ function resetRecordingState(): void {
 	recordingTabSnapshots.clear()
 	recordingHostEvents = []
 	recStopRequested = false
+}
+
+function managedDirectChild(root: string, targetPath: string, description: string): string {
+	const target = resolve(targetPath)
+	const rel = relative(resolve(root), target)
+	if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || rel.includes(sep)) {
+		throw new Error(`Refusing to remove ${description} outside its managed directory`)
+	}
+	return target
+}
+
+async function removeRecordingFiles(recording: RecordingMeta): Promise<void> {
+	const directories = new Set<string>()
+	const files = new Set<string>()
+	const artifactDir = managedDirectChild(artifactsRoot, recording.artifactsDir, 'recording artifacts')
+	if (basename(artifactDir) !== recording.id) {
+		throw new Error('Refusing to remove recording artifacts with a mismatched ID')
+	}
+	directories.add(artifactDir)
+
+	const flowFile = managedDirectChild(flowsRoot, recording.flowFile, 'Flow file')
+	if (!/^(?:\d+-[\w-]+|recording-[\w-]+)\.json$/i.test(basename(flowFile))) {
+		throw new Error('Refusing to remove a Flow file with an invalid generated name')
+	}
+	files.add(flowFile)
+	files.add(`${flowFile}.bak`)
+	files.add(flowFile.replace(/\.json$/i, '.raw.json'))
+
+	const captureDirs = [recording.captureDir].filter((path): path is string => !!path)
+	for (const frame of recording.frames ?? []) {
+		const framePath = resolve(frame)
+		const rel = relative(resolve(artifactsRoot), framePath)
+		const parts = rel.split(sep)
+		if (
+			parts.length === 4 &&
+			parts[0].startsWith('recording-') &&
+			parts[1] === 'record' &&
+			parts[2] === 'video' &&
+			/^frame-\d+\.png$/i.test(parts[3])
+		) {
+			captureDirs.push(join(artifactsRoot, parts[0]))
+		}
+	}
+	for (const captureDir of new Set(captureDirs)) {
+		const managedDir = managedDirectChild(artifactsRoot, captureDir, 'recording capture')
+		if (!basename(managedDir).startsWith('recording-')) {
+			throw new Error('Refusing to remove an invalid recording capture directory')
+		}
+		directories.add(managedDir)
+	}
+
+	for (const directory of directories) await rm(directory, { recursive: true, force: true })
+	for (const file of files) await rm(file, { force: true })
 }
 
 /** 启动被取消或没有记录到步骤时，清理本次会话产生的临时捕获文件。 */
@@ -584,6 +637,7 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				name: generatedRecordingName(),
 				flowFile: recOutPath,
 				artifactsDir: result.artifactsDir,
+				captureDir: recordingCaptureRoot,
 				createdAt: result.flow.createdAt,
 				steps: result.flow.steps.length,
 				posterFile: capture.poster,
@@ -642,13 +696,24 @@ function registerIpc(): void {
 	ipcMain.handle('tasks:saveProfile', (_e, patch: TaskProfilePatch) =>
 		taskStore.upsertProfile(patch),
 	)
-	ipcMain.handle('tasks:delete', (_e, code: string) => taskStore.remove(code))
-	ipcMain.handle('tasks:getRecordings', (_e, code: string) =>
-		taskStore.get(code)?.recordings ?? [],
-	)
-	ipcMain.handle('tasks:removeRecording', (_e, code: string, recordingId: string) =>
-		taskStore.removeRecording(code, recordingId),
-	)
+	ipcMain.handle('tasks:delete', async (_e, code: string) => {
+		await taskStore.list()
+		const task = taskStore.get(code)
+		if (!task) return
+		for (const recording of task.recordings) await removeRecordingFiles(recording)
+		await taskStore.remove(code)
+	})
+	ipcMain.handle('tasks:getRecordings', async (_e, code: string) => {
+		await taskStore.list()
+		return taskStore.get(code)?.recordings ?? []
+	})
+	ipcMain.handle('tasks:removeRecording', async (_e, code: string, recordingId: string) => {
+		await taskStore.list()
+		const recording = taskStore.get(code)?.recordings.find((item) => item.id === recordingId)
+		if (!recording) return
+		await removeRecordingFiles(recording)
+		await taskStore.removeRecording(code, recordingId)
+	})
 
 	/* ---------- 内嵌浏览器：定位 / 显隐 ---------- */
 	ipcMain.handle('browser:setBounds', (_e, rect: { x: number; y: number; width: number; height: number }) => {

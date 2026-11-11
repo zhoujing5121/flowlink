@@ -1736,6 +1736,19 @@ async function deleteRecording(id) {
     ))
   )
     return;
+  const itemToDelete = state.items[index];
+  if (itemToDelete.recordingId && window.flowlink?.tasks?.removeRecording) {
+    try {
+      await window.flowlink.tasks.removeRecording(
+        currentFlow?.code || activeFlowKey,
+        itemToDelete.recordingId,
+      );
+    } catch (err) {
+      console.error("Could not delete recording files:", err);
+      alert("Could not delete recording: " + err.message);
+      return;
+    }
+  }
   const wasFocused = state.focused === id;
   state.items.splice(index, 1);
   state.allExplicit = false;

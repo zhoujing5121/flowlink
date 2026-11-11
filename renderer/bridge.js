@@ -1303,6 +1303,8 @@
 			await F.tasks.remove(code)
 			const idx = flowData.findIndex((f) => f.code === code)
 			if (idx >= 0) flowData.splice(idx, 1)
+			recordingSessions.delete(code)
+			profileDrafts.delete(code)
 			render()
 		} catch (err) {
 			console.error('[bridge] 删除失败：', err)
@@ -1515,6 +1517,19 @@
 			if (session.stage === 'recording') return
 		} else if (!(await confirmWorkspaceAction('Close this taskflow?'))) {
 			return
+		}
+		if (!currentFlow && activeFlowKey) {
+			try {
+				// A new taskflow is only a draft until Save; discard every recording
+				// persisted under its temporary generated code when the drawer closes.
+				await F.tasks.remove(activeFlowKey)
+				recordingSessions.delete(activeFlowKey)
+				profileDrafts.delete(activeFlowKey)
+			} catch (err) {
+				console.error('[bridge] 未保存 Taskflow 清理失败：', err)
+				alert('Could not discard this unsaved taskflow: ' + err.message)
+				return
+			}
 		}
 		F.browser.hide()
 		boundsObserver?.disconnect()
