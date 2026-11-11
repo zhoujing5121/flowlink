@@ -36,6 +36,21 @@ await build({
 	},
 })
 
+/* Pi SDK worker: keep SDK initialization and provider calls off Electron's main thread. */
+await build({
+	entryPoints: [here + 'src/pi-agent-worker.ts'],
+	outfile: here + 'dist/pi-agent-worker.js',
+	bundle: true,
+	platform: 'node',
+	format: 'esm',
+	target: 'node20',
+	sourcemap: true,
+	logLevel: 'info',
+	external: ['undici', '@earendil-works/pi-coding-agent'],
+	mainFields: ['module', 'main'],
+	conditions: ['node', 'import'],
+})
+
 /* ---------- Preload（CJS）构建 ---------- */
 await build({
 	entryPoints: [here + 'src/preload.ts'],

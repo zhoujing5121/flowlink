@@ -117,9 +117,9 @@ Electron host events separately record address-bar navigation requests, `will-re
 
 ## 10. Pi Coding Agent integration
 
-FlowLink embeds the Pi SDK in the Electron main process through `src/pi-agent.ts`. The renderer accesses it through `window.flowlink.pi.status()` and `window.flowlink.pi.prompt({ prompt, timeoutMs? })`. SDK sessions use FlowLink's system prompt and `noTools: "all"`; proposed workflow changes are validated and saved separately by FlowLink.
+FlowLink embeds the Pi SDK in a Node worker thread through `src/pi-agent-worker.ts`; `src/pi-agent.ts` manages the worker and IPC. The renderer accesses it through `window.flowlink.pi.status()` and `window.flowlink.pi.prompt({ prompt, timeoutMs? })`. SDK sessions use FlowLink's system prompt and `noTools: "all"`; proposed workflow changes are validated and saved separately by FlowLink.
 
-The SDK package is loaded on demand when a Pi status or prompt request occurs; it is not initialized as part of normal application startup. For restricted networks, set `HTTPS_PROXY` before launching FlowLink (optionally also set `HTTP_PROXY` and `NO_PROXY`). The bridge configures the Node/Undici proxy dispatcher on first Pi use. This affects Node requests in the main process; Chromium browser traffic must be configured separately. Do not commit authenticated proxy URLs.
+The worker and SDK package are loaded on demand when a Pi prompt is requested; they are not initialized as part of normal application startup. For restricted networks, set `HTTPS_PROXY` before launching FlowLink (optionally also set `HTTP_PROXY` and `NO_PROXY`). The worker configures the Node/Undici proxy dispatcher before importing the SDK. This affects Pi worker requests; Chromium browser traffic must be configured separately. Do not commit authenticated proxy URLs.
 
 ## 11. Navigation validation cases
 
@@ -139,14 +139,16 @@ SSO rules are heuristic and must be configurable for the enterprise's identity-p
 - Configure the provider and model in `config/pi-settings.json`.
 - Copy `config/pi-auth.example.json` to `config/pi-auth.json` and replace its placeholder with the provider's API key for development. The credential entry name must match the provider in `pi-settings.json`. Packaged builds read `pi-auth.json` from Electron's user data directory.
 - For a proxy, set `HTTPS_PROXY` before launching FlowLink; `HTTP_PROXY` and `NO_PROXY` are also honored by the Node proxy dispatcher. In PowerShell, for example: `$env:HTTPS_PROXY = "http://127.0.0.1:7890"; $env:HTTP_PROXY = $env:HTTPS_PROXY`.
-- `window.flowlink.pi.status()` verifies local provider/model configuration and SDK session creation; it does not make a live provider request or validate that the remote API key is accepted.
+- `window.flowlink.pi.status()` checks local provider settings and credential-file shape only; it does not initialize the SDK or validate the remote API key.
 - `window.flowlink.pi.prompt({ prompt: 'Summarize the workflow JSON files in this workspace.' })` sends a request using the selected provider and model. Provider errors are returned when the SDK supplies them.
 
 The project build was attempted in this packaging environment but could not start because `node_modules` is absent (`esbuild` was not found). This archive has not been verified by a complete TypeScript build, Electron launch, live recording, or replay run.
 
 ## Pi Coding Agent SDK and AI refinement workflows (2026-11-10 update)
 
-FlowLink embeds Pi through the in-process `@earendil-works/pi-coding-agent` TypeScript SDK (`createAgentSession`), not by spawning the `pi` CLI. The SDK is hosted in Electron's Node main process; the renderer calls a narrow preload IPC bridge. SDK sessions use a restricted resource loader, FlowLink's system prompt, and `noTools: "all"`: Pi receives bounded recording/execution context in the prompt and cannot directly edit project files or run shell commands. FlowLink validates and persists any proposed workflow as a separate material.
+FlowLink embeds Pi through the `@earendil-works/pi-coding-agent` TypeScript SDK (`createAgentSession`), not by spawning the `pi` CLI. The SDK runs in an on-demand Node worker thread; the renderer calls a narrow preload IPC bridge, leaving Electron's main process responsive while Pi initializes and waits for provider responses. SDK sessions use a restricted resource loader, FlowLink's system prompt, and `noTools: "all"`: Pi receives bounded recording/execution context in the prompt and cannot directly edit project files or run shell commands. FlowLink validates and persists any proposed workflow as a separate material.
+
+The renderer loads task/profile and recording-list metadata at startup. Saved flow steps and references are loaded when a task's detail drawer is opened.
 
 ### AI intervention points
 

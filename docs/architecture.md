@@ -20,7 +20,7 @@ Embedded WebContentsView
 
 `src/main.ts` creates the Electron window, embedded browser view, task store, IPC handlers, and recorder/playback sessions. It enables Electron CDP on a random port and waits for `DevToolsActivePort` before constructing `EngineBridge`.
 
-The renderer window is shown after its local HTML loads; the initial browser URL loads asynchronously so restricted or slow external networks do not delay application startup. Pi's SDK is also loaded on demand, only when its status or prompt IPC is called.
+The renderer window is shown after its local HTML loads; the initial browser URL loads asynchronously so restricted or slow external networks do not delay application startup. Task-list metadata is loaded at startup, while recording flows and their step/reference details are hydrated only when that task's detail drawer opens. Pi's SDK is loaded on demand in a Node worker thread, keeping SDK initialization and provider requests off Electron's main thread.
 
 The embedded browser is a `WebContentsView`, not an iframe. `renderer/bridge.js` reports the DOM rectangle occupied by the browser surface; the main process moves and shows the native view at that rectangle. Native visibility has one explicit owner independent of `webContents.isLoading()`, so navigation and load completion do not blank the view or reveal it over dialogs. Workspace confirmations temporarily hide the native view, then restore the reported bounds.
 
@@ -51,7 +51,7 @@ Flow JSON files and recorder artifacts are written below:
 <userData>/flowlink/artifacts/
 ```
 
-Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid. On startup, the renderer reloads stored recordings into the Design tab so users can continue working across app restarts; transient UI state such as open tabs, focus, and panel sizes is intentionally not restored.
+Writes are persisted atomically where implemented. The store falls back to an empty task list if the JSON file is missing or invalid. On startup, the renderer loads task profiles and recording counts only; opening a task drawer loads its recording metadata and saved Flow details. Transient UI state such as open tabs, focus, and panel sizes is intentionally not restored.
 
 ## Flow IR
 

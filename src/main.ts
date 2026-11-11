@@ -17,7 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { piStatus, runPiPrompt } from './pi-agent.js'
+import { disposePiWorker, piStatus, runPiPrompt } from './pi-agent.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { flattenSteps, playOnPage, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
@@ -425,6 +425,8 @@ app.on('window-all-closed', () => {
 	app.quit()
 })
 
+app.on('before-quit', () => disposePiWorker())
+
 /* ================================================================ */
 /* 窗口 + 内嵌浏览器                                                  */
 /* ================================================================ */
@@ -636,7 +638,7 @@ function registerIpc(): void {
 	// IPC 是渲染进程访问主进程的唯一入口。文件系统、Electron 和引擎操作
 	// 均由处理器执行，preload 只公开经过筛选的窄接口。
 	/* ---------- 任务 CRUD ---------- */
-	ipcMain.handle('tasks:list', () => taskStore.list())
+	ipcMain.handle('tasks:list', () => taskStore.listMetadata())
 	ipcMain.handle('tasks:saveProfile', (_e, patch: TaskProfilePatch) =>
 		taskStore.upsertProfile(patch),
 	)

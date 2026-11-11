@@ -37,14 +37,13 @@
 			versions: [{ name: 'V1', enabled: false }],
 			serviceLines: ['', '', '', ''],
 			recordings: [],
+			recordingCount: 0,
 		}
 	}
 
 	/** 从 IPC 加载任务列表并刷新渲染 */
 	async function loadTasksFromStore() {
-		// 原位填充现有数组，因为列表渲染和 Profile 事件处理器持有该数组引用。
-		// 随后将已保存的录制项恢复到各自任务会话；若缺少步骤展示数据，则先从 Flow 文件补齐，
-		// 再进行首次完整列表渲染。
+		// 启动阶段只读取任务列表元数据；录制 Flow 和步骤详情延迟到打开任务抽屉时加载。
 		try {
 			const tasks = await F.tasks.list()
 			flowData.length = 0
@@ -59,69 +58,85 @@
 					enabled: !!t.enabled,
 					versions: t.versions || [{ name: 'V1', enabled: false }],
 					serviceLines: t.serviceLines || ['', '', '', ''],
-					recordings: t.recordings || [],
+					recordings: [],
+					recordingCount: t.recordingCount || 0,
 				})
-				const session = recordingSession(t.code)
-				if (Array.isArray(t.recordings)) {
-					for (const recording of t.recordings) {
-						if (session.items.some((item) => item.id === recording.id)) continue
-						session.items.push({
-							id: recording.id,
-							name: recording.name || recording.id,
-							analyzed: true,
-							recorded: true,
-							summary: !!recording.isMerged,
-							resultTab: 'Process',
-							url: '',
-							route: 'suppliers',
-							actions: [],
-							checked: false,
-							steps: [],
-							stepDetails: [],
-							flowFile: recording.flowFile,
-							artifactsDir: recording.artifactsDir,
-							recordingId: recording.id,
-							media: {
-								videoURL: recording.videoFile
-									? `file:///${String(recording.videoFile).replace(/\\/g, '/')}`
-									: '',
-								screenshots: (recording.stepScreenshots || recording.frames || []).map((filePath, index) => ({
-								image: `file:///${String(filePath).replace(/\\/g, '/')}`,
-								name: `Step-${String(index + 1).padStart(2, '0')}.png`,
-							})),
-								posterFile: recording.posterFile || '',
-							},
-						})
-					}
-				}
-			}
-			for (const session of recordingSessions.values()) {
-				for (const item of session.items) {
-					if (!item.recordingId || !item.flowFile || item.testFlowSteps?.length) continue
-					try {
-						const flow = await F.flow.load(item.flowFile)
-						item.testFlowSteps = flatFlowSteps(flow?.steps || [])
-						item.steps = item.testFlowSteps.map((step) => {
-							const kind = step.kind || 'action'
-							const value = step.url || step.text || step.value || ''
-							return value ? `${kind} · ${String(value).replace(/^(?:https?:\/\/)/, '')}` : kind
-						})
-						const stepCount = item.steps.length
-						item.media.screenshots = item.media.screenshots.slice(0, stepCount)
-						while (item.media.screenshots.length < stepCount) {
-							item.media.screenshots.push({
-								image: '',
-								name: `Step-${String(item.media.screenshots.length + 1).padStart(2, '0')}.png`,
-							})
-						}
-						item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
-					} catch {}
-				}
 			}
 			render()
 		} catch (err) {
 			console.error('[bridge] 加载任务失败：', err)
 		}
+	}
+
+	window.loadTaskDetails = async function (taskCode) {
+		const state = recordingSession(taskCode)
+		if (state.detailsLoaded) return
+		state.detailsLoadPromise ||= (async () => {
+			const recordings = await F.tasks.getRecordings(taskCode)
+			const existing = new Map(state.items.map((item) => [item.recordingId, item]))
+			state.items = recordings.map((recording) => existing.get(recording.id) || ({
+				id: recording.id,
+				name: recording.name || recording.id,
+				analyzed: true,
+				recorded: true,
+				summary: !!recording.isMerged,
+				resultTab: 'Process',
+				url: '',
+				route: 'suppliers',
+				actions: [],
+				checked: false,
+				steps: [],
+				stepDetails: [],
+				flowFile: recording.flowFile,
+				artifactsDir: recording.artifactsDir,
+				recordingId: recording.id,
+				media: {
+					videoURL: recording.videoFile
+						? `file:///${String(recording.videoFile).replace(/\\/g, '/')}`
+						: '',
+					screenshots: (recording.stepScreenshots || recording.frames || []).map((filePath, index) => ({
+						image: `file:///${String(filePath).replace(/\\/g, '/')}`,
+						name: `Step-${String(index + 1).padStart(2, '0')}.png`,
+					})),
+					posterFile: recording.posterFile || '',
+				},
+			}))
+			if (activeFlowKey === taskCode && $('drawer').open) {
+				renderRecordingItems()
+			}
+
+			await Promise.all(state.items.map(async (item) => {
+				if (!item.recordingId || !item.flowFile || item.testFlowSteps?.length) return
+				try {
+					const flow = await F.flow.load(item.flowFile)
+					item.testFlowSteps = flatFlowSteps(flow?.steps || [])
+					item.steps = item.testFlowSteps.map((step) => {
+						const kind = step.kind || 'action'
+						const value = step.url || step.text || step.value || ''
+						return value ? `${kind} · ${String(value).replace(/^(?:https?:\/\/)/, '')}` : kind
+					})
+					const stepCount = item.steps.length
+					item.media.screenshots = item.media.screenshots.slice(0, stepCount)
+					while (item.media.screenshots.length < stepCount) {
+						item.media.screenshots.push({
+							image: '',
+							name: `Step-${String(item.media.screenshots.length + 1).padStart(2, '0')}.png`,
+						})
+					}
+					item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
+				} catch (err) {
+					console.error(`[bridge] 录制详情加载失败 (${item.recordingId}):`, err)
+				}
+			}))
+
+			state.detailsLoaded = true
+			if (activeFlowKey === taskCode && $('drawer').open && drawerView === 'Design') {
+				renderRecordingWorkspace()
+			}
+		})().finally(() => {
+			state.detailsLoadPromise = null
+		})
+		await state.detailsLoadPromise
 	}
 
 	/* ================================================================
@@ -154,9 +169,17 @@
 			const task = await F.tasks.saveProfile(patch)
 			// IPC 成功后才更新内存列表；新任务此时才取得正式编号并结束 "new" 草稿。
 			if (currentFlow) {
-				Object.assign(currentFlow, patch, { recordings: task.recordings || [] })
+				Object.assign(currentFlow, patch, {
+					recordings: task.recordings || [],
+					recordingCount: task.recordings?.length || 0,
+				})
 			} else {
-				currentFlow = { ...emptyTask(code), ...patch, recordings: task.recordings || [] }
+				currentFlow = {
+					...emptyTask(code),
+					...patch,
+					recordings: task.recordings || [],
+					recordingCount: task.recordings?.length || 0,
+				}
 				flowData.push(currentFlow)
 				profileDrafts.set(code, draft)
 				profileDrafts.delete('new')
@@ -639,6 +662,12 @@
 			}
 
 			state.items.push(item)
+			if (currentFlow) {
+				currentFlow.recordingCount = Math.max(
+					currentFlow.recordingCount || 0,
+					state.items.filter((entry) => entry.recordingId).length,
+				)
+			}
 			state.focused = item.id
 			state.pending = null
 			state.stage = 'done'
@@ -1169,7 +1198,7 @@
 	rowIcon = function (name, code, _disabled = false) {
 		/* Run 需要有录制才启用 */
 		const task = flowData.find((f) => f.code === code)
-		const hasRecordings = task && task.recordings && task.recordings.length > 0
+		const hasRecordings = task && (task.recordingCount || task.recordings?.length || 0) > 0
 		const disabled = name === 'run' ? !hasRecordings : false
 		return _origRowIcon(name, code, disabled)
 	}
@@ -1251,14 +1280,16 @@
 
 	async function runFlow(code) {
 		const task = flowData.find((f) => f.code === code)
-		if (!task || !task.recordings?.length) return
+		if (!task || !(task.recordingCount || task.recordings?.length)) return
 		openDrawer(code, null)
 		showDrawerTab('Design')
-		const recording = task.recordings[task.recordings.length - 1]
 		try {
-			const item = recordingSession(code).items.find((entry) => entry.recordingId === recording.id)
+			await window.loadTaskDetails(code)
+			const items = recordingSession(code).items
+			const item = items[items.length - 1]
+			if (!item?.recordingId) throw new Error('The task has no saved recordings to run.')
 			const variables = item ? await window.referenceVariablesForReplay(item) : {}
-			const result = await F.playback.run({ taskCode: code, recordingId: recording.id, variables })
+			const result = await F.playback.run({ taskCode: code, recordingId: item.recordingId, variables })
 			console.log('[bridge] 回放完成：', result)
 		} catch (err) {
 			console.error('[bridge] 回放失败：', err)
