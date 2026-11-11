@@ -40,11 +40,11 @@
 			code,
 			name: '',
 			description: '',
-			version: 'r1',
+			version: 'v1.0.0',
 			status: 'Ready',
 			category: '',
 			enabled: false,
-			versions: [{ name: 'V1', enabled: false }],
+			versions: [{ name: 'v1.0.0', enabled: false }],
 			serviceLines: ['', '', '', ''],
 			recordings: [],
 			recordingCount: 0,
@@ -161,6 +161,10 @@
 		// 先复制表单值和数组内容构成独立 patch；等待 IPC 时，输入草稿不会被服务端调用改写。
 		const draft = profileDraft()
 		const code = currentFlow?.code || nextTaskflowCode()
+		// 每次保存推进一位版本号；首次保存归一为 v1.0.0。
+		const version = currentFlow?.version ? nextTaskVersion(currentFlow.version) : 'v1.0.0'
+		if (draft.versions.length) draft.versions[draft.versions.length - 1].name = version
+		else draft.versions.push({ name: version, enabled: false })
 		const patch = {
 			code,
 			name: $('flowName').value.trim(),
@@ -168,7 +172,7 @@
 			serviceLines: [...draft.serviceLines],
 			versions: draft.versions.map((v) => ({ ...v })),
 			enabled: draft.versions.some((v) => v.enabled),
-			version: currentFlow?.version || 'r1',
+			version,
 			category: currentFlow?.category || '',
 			status: currentFlow?.status || 'Ready',
 		}
@@ -1203,11 +1207,11 @@
 	 * 6. 列表 Run / Delete：启用并接线 IPC
 	 * ================================================================ */
 
-	/** 覆盖列表行操作的禁用规则：Run 需要有录制，Delete 不再禁用 */
+	/** 覆盖列表行操作的禁用规则：Run 需要任务启用且有录制，Delete 不再禁用 */
 	flowRowActionDisabled = function (name, task) {
 		if (name !== 'run') return false
 		const hasRecordings = task && (task.recordingCount || task.recordings?.length || 0) > 0
-		return !hasRecordings
+		return !task?.enabled || !hasRecordings
 	}
 
 	/** 行操作点击：扩展 Run / Delete */

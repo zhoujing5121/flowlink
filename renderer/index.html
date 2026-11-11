@@ -678,7 +678,7 @@
               <textarea
                 id="assistantInput"
                 aria-label="AI message"
-                placeholder="Ask .."
+                placeholder="Ask anything..."
                 rows="2"
               ></textarea>
               <div class="assistant-send-row">
@@ -712,7 +712,51 @@
                 <button class="btn secondary" id="summarizeRecordings">
                   Refine
                 </button>
-                <button class="btn" id="prepareRecording">Record</button>
+                <div class="recording-import">
+                  <button class="btn" id="prepareRecording">Import</button>
+                  <div
+                    class="recording-import-menu"
+                    id="recordingImportMenu"
+                    role="menu"
+                    aria-label="Import options"
+                    hidden
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-import-action="browser"
+                    >
+                      Browser recording capture
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-import-action="goal"
+                    >
+                      AI goal-driven capture
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-import-action="material"
+                    >
+                      AI material-driven capture
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-import-action="automation"
+                    >
+                      Automation file reverse analysis
+                    </button>
+                  </div>
+                  <input
+                    type="file"
+                    id="automationFileInput"
+                    accept=".json"
+                    hidden
+                  />
+                </div>
               </div>
             </section>
             <div

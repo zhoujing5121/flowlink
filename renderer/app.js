@@ -22,7 +22,7 @@ const rowTemplate = (id) => document.getElementById(id).content.firstElementChil
 
 // 列表行操作按钮的禁用规则；bridge.js 在 IPC 模式下按真实录制状态覆盖。
 function flowRowActionDisabled(name, flow) {
-  if (name === "run") return !!flow.enabled;
+  if (name === "run") return !flow?.enabled;
   if (name === "delete") return true;
   return false;
 }
@@ -50,6 +50,31 @@ const escapeHTML = (s) =>
         c
       ],
   );
+
+// 列表与抽屉标题共用同一展示码，保证两处编号完全一致（存储前缀保持不变）。
+const displayCode = (code) => String(code || "").replace("TASKFLOW", "FlowLink");
+
+// 版本号统一为 vX.Y.Z；无法解析的旧值（r1/V1）在下次保存时归一为 v1.0.0。
+function nextTaskVersion(current) {
+  const match = /v(\d+)\.(\d+)\.(\d+)/i.exec(String(current || ""));
+  if (!match) return "v1.0.0";
+  return `v${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+function taskVersionLabel(flow) {
+  const rows = flow?.versions;
+  return (rows?.length ? rows[rows.length - 1].name : flow?.version) || "v1.0.0";
+}
+
+// Import 子菜单在点击页面其他位置或按 Escape 时关闭。
+document.addEventListener("click", (e) => {
+  const menu = $("recordingImportMenu");
+  if (menu && !menu.hidden && !e.target.closest(".recording-import"))
+    closeImportMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeImportMenu();
+});
 
 let appliedName = "";
 let  appliedVersion = "";
@@ -160,17 +185,24 @@ function saveProfile() {
   if (!validateProfileServices()) return;
   const draft = profileDraft(),
     code = currentFlow?.code || nextTaskflowCode(),
-    snapshot = {
-      code,
-      name: $("flowName").value.trim(),
-      description: $("flowDescription").value.trim(),
-      serviceLines: [...draft.serviceLines],
-      versions: draft.versions.map((version) => ({ ...version })),
-      enabled: draft.versions.some((version) => version.enabled),
-      version: currentFlow?.version || "r1",
-      category: currentFlow?.category || "",
-      status: currentFlow?.status || "Ready",
-    };
+    // 每次保存推进一位版本号；首次保存归一为 v1.0.0。
+    version = currentFlow?.version
+      ? nextTaskVersion(currentFlow.version)
+      : "v1.0.0";
+  if (draft.versions.length)
+    draft.versions[draft.versions.length - 1].name = version;
+  else draft.versions.push({ name: version, enabled: false });
+  const snapshot = {
+    code,
+    name: $("flowName").value.trim(),
+    description: $("flowDescription").value.trim(),
+    serviceLines: [...draft.serviceLines],
+    versions: draft.versions.map((version) => ({ ...version })),
+    enabled: draft.versions.some((version) => version.enabled),
+    version,
+    category: currentFlow?.category || "",
+    status: currentFlow?.status || "Ready",
+  };
   // 先从表单和草稿构造快照，避免未保存输入提前污染 flowData。
   if (currentFlow) Object.assign(currentFlow, snapshot);
   else {
@@ -199,9 +231,9 @@ function profileDraft() {
       name: currentFlow?.name || "",
       description: currentFlow?.description || "",
       serviceLines: [...(currentFlow?.serviceLines || ["", "", "", ""])],
-      versions: (currentFlow?.versions || [{ name: "V1", enabled: false }]).map(
-        (version) => ({ ...version }),
-      ),
+      versions: (
+        currentFlow?.versions || [{ name: "v1.0.0", enabled: false }]
+      ).map((version) => ({ ...version })),
     });
   return profileDrafts.get(key);
 }
@@ -262,12 +294,13 @@ function render() {
           const codeLink = row.querySelector(".code-link");
           codeLink.href = "#" + f.code;
           codeLink.dataset.open = f.code;
-          codeLink.textContent = f.code;
+          codeLink.textContent = displayCode(f.code);
           row.querySelector('[data-slot="name"]').textContent = f.name;
           const description = row.querySelector(".flow-description");
           description.title = f.description;
           description.textContent = f.description;
-          row.querySelector('[data-slot="version"]').textContent = f.version;
+          row.querySelector('[data-slot="version"]').textContent =
+            taskVersionLabel(f);
           const status = row.querySelector(".flow-enabled");
           status.classList.add(f.enabled ? "active" : "deactive");
           row.querySelector('[data-slot="status"]').textContent = f.enabled
@@ -1307,6 +1340,71 @@ function bindRecordingList() {
   };
   updateRecordingActionButton();
   $("summarizeRecordings").onclick = summarizeRecordings;
+  const menu = $("recordingImportMenu");
+  if (menu)
+    menu.onclick = (e) => {
+      const option = e.target.closest("[data-import-action]");
+      if (option) runImportAction(option.dataset.importAction);
+    };
+  const automationInput = $("automationFileInput");
+  if (automationInput)
+    automationInput.onchange = (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      const sessionState = recordingSession();
+      sessionState.aiOpen = true;
+      renderRecordingWorkspace();
+      const input = $("assistantInput");
+      if (input) {
+        input.value = "Reverse analyze automation file: " + file.name;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+      }
+    };
+}
+
+function closeImportMenu() {
+  const menu = $("recordingImportMenu");
+  if (menu) {
+    menu.hidden = true;
+    $("prepareRecording")?.setAttribute("aria-expanded", "false");
+  }
+}
+
+function runImportAction(action) {
+  closeImportMenu();
+  const state = recordingSession();
+  if (action === "browser") {
+    void prepareRecording();
+    return;
+  }
+  if (action === "goal") {
+    state.aiOpen = true;
+    renderRecordingWorkspace();
+    const input = $("assistantInput");
+    if (input) {
+      input.placeholder = "Describe the goal to capture…";
+      input.focus();
+    }
+    return;
+  }
+  if (action === "material") {
+    state.aiOpen = true;
+    const selected = state.items.filter(
+      (item) => item.checked && (item.recordingId || item.id),
+    );
+    const materials = selected.length
+      ? selected
+      : state.items.filter((item) => item.recordingId || item.id);
+    state.aiAttachments = materials.map(
+      (item) => item.recordingId || item.id,
+    );
+    renderRecordingWorkspace();
+    $("assistantInput")?.focus();
+    return;
+  }
+  if (action === "automation") $("automationFileInput")?.click();
 }
 
 function renderRecordingWorkspace() {
@@ -1399,10 +1497,18 @@ function updateRecordingActionButton() {
     state = recordingSession();
   if (!button) return;
   const recording = state.stage === "recording";
-  button.textContent = recording ? "Stop" : "Record";
-  button.setAttribute("aria-label", recording ? "Stop recording" : "Record");
+  button.textContent = recording ? "Stop" : "Import";
+  button.setAttribute("aria-label", recording ? "Stop recording" : "Import");
+  button.setAttribute("aria-expanded", String(!recording && ! $("recordingImportMenu")?.hidden));
   button.disabled = !!state.pending?.finishing || !!state.groupPreparing;
-  button.onclick = recording ? finishBrowserRecording : prepareRecording;
+  button.onclick = recording
+    ? finishBrowserRecording
+    : () => {
+        const menu = $("recordingImportMenu");
+        if (!menu) return;
+        menu.hidden = !menu.hidden;
+        button.setAttribute("aria-expanded", String(!menu.hidden));
+      };
 }
 
 function refineSelection(state) {
@@ -2587,6 +2693,7 @@ function renderAIPanel() {
   renderAttachmentChips();
   closeMentionPicker();
   bindMentionPicker();
+  $("assistantInput").placeholder = "Ask anything...";
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
   $("assistantSend").disabled = !item.chatDraft.trim();
