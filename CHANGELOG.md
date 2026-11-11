@@ -8,6 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **Pi:** Auto-refine recordings after Stop: the main process generates a sanitized, stage-grouped `REFINED…` twin through the shared pipeline and reports it via toast; disable with `autoRefine: false` in `config/pi-settings.json`.
+- **AI:** `@` mentions in the AI pane attach saved recordings of the current task to a message (autocomplete picker, removable chips); attachments flow into advice and refinement without ever putting flow JSON into the chat transcript.
+- **AI:** The Refine button opens an options form (preset refinements plus free text) before generating a refined material from one or more analyzed recordings.
+- **Recording:** Record HTML5 drag-and-drop as replayable `drag` steps with resolved source/target element refs; unpaired, cross-tab, stale, or interrupted drags stay evidence-only, and drag steps get no inferred expectation in v1.
+- **Recording:** Configurable navigation/SSO classification and system aliases via `config/classification.json` (see `config/classification.example.json`): custom IdP host/login-path patterns are OR'd with built-in defaults, and `systemAliases` collapse multiple hostnames into one logical system in steps, events, tabs, and the sidecar `systems[]` aggregation.
 - **Pi:** Support a generic `custom` provider using `config/models.json` for private OpenAI-compatible endpoints.
 - **Pi:** Support `--pi-system-proxy` and `--pi-proxy=<URL>` launch options for provider requests.
 - **Recording:** Capture native tab opens, tab switches, and user-requested navigation while suppressing classified SSO/login redirects; save recorded text inputs as Reference variables, marking password values secret.
@@ -15,7 +20,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **UI:** Restore saved recordings into the Design tab after app restart.
 - **UI:** Refine side pane with three mock options that dispatch to the existing merge flow.
 - **UI:** "Auto" badge on every step in Process, Instruction, and Test views.
-- **UI:** Sidebar "Automation rate -%" indicator with a light blue background.
+- **UI:** Sidebar "Automation rate -%" indicator with a light green background.
 - **Recording:** Replay the required flow prefix before re-recording or inserting a process node, then preserve the resulting browser state and active tab.
 - Repository documentation for English and Chinese users, architecture, contribution, agent development, and changelog maintenance.
 - Windows Electron/Playwright application build and packaging workflow.
@@ -23,11 +28,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **UI:** Rebranded to the FlowLink green identity end to end: theme colors, header wordmark, navigation labels, and app title replace the previous blue/Taskflow look.
+- **Packaging:** The window, taskbar, and packaged `FlowLink.exe` now show the FlowLink icon (multi-size `.ico` under `resources/`, verified by `package.mjs`); the renderer also ships an SVG favicon and logo under `renderer/assets/`.
+- **UI:** Static page and panel structure (flow list rows, version rows, recording rows, analysis tabs, AI pane blocks) now lives in `renderer/index.html` templates that JavaScript fills, instead of being assembled from JS strings.
+- **Recording:** Auth-shaped redirects (`sso_redirect`/`login_redirect`/`auto_redirect`) are now retained in the raw evidence stream and the FlowForge sidecar with their navigation type; they are excluded only from executable planning, with byte-identical Flow output.
 - **Flow:** Migrate existing schema v1 recordings to schema v2 for condition branches without changing their ordered replay behavior.
 - **Storage:** Delete a recording's Flow and artifacts with the recording, remove all recordings' files when deleting a taskflow, and discard generated files when closing a new unsaved taskflow.
 
 ### Fixed
 
+- **AI:** The Refine button no longer enables for (or silently ignores) selections that mix un-analyzed recordings; it now enables exactly when the selection is refinable and explains otherwise.
+- **AI:** Refined-material generation no longer truncates source steps at 65k characters (which could yield unparseable output); oversized prompts now fail with a clear message, and generated steps are schema-validated in the main process with recorded element evidence rehydrated from an immutable `$ref` library.
 - **Startup:** Load task-list metadata and recording counts first, then defer recording metadata and saved Flow detail hydration until its task drawer opens.
 - **Pi:** Run SDK initialization and provider prompts in a worker thread so slow provider/proxy requests do not block the Electron main process.
 - **AI:** Scroll recording context and conversation together, and retain chat history when the assistant pane is reopened.

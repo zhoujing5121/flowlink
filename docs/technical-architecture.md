@@ -58,10 +58,13 @@ renderer/index.html + app.js + bridge.js
 | `src/engine-bridge.ts` | CDP connection and mapping native WebContents tabs to Playwright Pages |
 | `src/pi-agent.ts` | Pi worker lifecycle, settings/credential validation, `pi:*` IPC handlers |
 | `src/pi-agent-worker.ts` | Node worker thread hosting Pi SDK sessions with a restricted resource loader |
-| `renderer/app.js` | UI rendering, local interaction state, profile/recording workflows, Process editor, AI advice pane |
+| `renderer/index.html` | Static UI shells and `<template>` elements for repeated rows and per-flow recording workspaces; JavaScript fills these instead of authoring markup |
+| `renderer/app.js` | UI state, profile/recording workflows, Process editor, AI advice pane, and template slot filling |
 | `renderer/bridge.js` | Connects the UI to preload IPC; loads persistent tasks and forwards live events |
 | `engine/schema/src/` | Flow types, Zod schemas, migration, validation, serialization |
 | `engine/recorder/src/` | Recording lifecycle, element facts, event coalescing, planning and expectations |
+| `engine/recorder/src/classify.ts` | Auth-URL classification (built-in plus configurable patterns) and the executable-planner navigation suppression set |
+| `engine/recorder/src/systems.ts` | URL-to-system identity resolution with optional hostname aliases |
 | `engine/recorder/src/flowforge-capture-schema.ts` | Zod contract for the FlowForge-compatible capture archive (`flowforge.recording.v1`) |
 | `engine/recorder/src/flowforge-archive.ts` | Converts raw capture plus Electron host events into the validated recording sidecar |
 | `engine/recorder/capture/capture.js` | Page-side event collector installed into captured pages |
@@ -75,7 +78,8 @@ renderer/index.html + app.js + bridge.js
 Electron, Playwright Core, Zod, the Pi coding-agent SDK, and undici remain
 external runtime dependencies. The capture script is a static engine resource
 and is located relative to the built main entry. `package.mjs` validates the
-packaged executable and `ffmpeg.dll` before creating the Windows ZIP.
+packaged executable, `ffmpeg.dll`, and `resources/icon.ico` before creating
+the Windows ZIP.
 
 ## 3. Electron security and browser boundary
 
@@ -295,7 +299,13 @@ Contract invariants:
    interpreted together rather than saved as unrelated low-level events.
 4. The coalescer groups event bursts into meaningful actions after the
    configured quiet interval. It handles cases such as typing followed by
-   change/blur and drag sequences that should yield one user intent.
+   change/blur and drag sequences that should yield one user intent: a trusted
+   `dragStart`+`drop` pair on one tab within `DRAG_PAIR_MS` (5 s) coalesces
+   into a `drag` action carrying source and target facts, and its step planner
+   resolves both into `ElementRef`s (skipping the step with a warning when
+   either side cannot be re-verified); unpaired, cross-tab, stale, or
+   interrupted drags remain evidence-only, and v1 does not infer expectations
+   for drag steps.
 5. Element collection re-reads stable facts by capture UID, derives candidate
    locators and fingerprint information, and records frame context. Facts that
    cannot safely be recovered are not silently fabricated from a later page
@@ -314,14 +324,26 @@ native tab IDs. The planner merges this timeline with page events by timestamp
 to emit `openTab`/`switchTab` steps and to classify navigation causes:
 explicit address-bar requests become `user_navigate` steps, link clicks whose
 `href` matches become `user_link`, and auth-shaped transitions are classified
-as `sso_redirect`/`login_redirect` and suppressed from the executable Flow.
+as `sso_redirect`/`login_redirect`. Classification runs on built-in IdP
+host/login-path patterns OR'd with optional rules from
+`config/classification.json` (`idpHostPatterns`, `loginPathPatterns`); the
+same compiled matchers are reused by the sidecar writer's host-redirect
+re-classification so the Flow and the archive never disagree, and invalid
+patterns are skipped with a recording warning instead of blocking capture.
+Auth redirects are always retained in the raw evidence stream — they are
+filtered out of the executable planner before coalescing (using a suppression
+set identical to the historical enqueue-time one) so click expectations stay
+stable.
 Navigation without an observable cause is retained as `unknown_navigation`
 with its evidence rather than guessed.
 
 At stop, the recorder also writes the FlowForge sidecar
 (`flowforge-recording.json`): the globally ordered raw event stream with
 stable event IDs, tab/system identity, before/after DOM signatures, locator
-evidence, and `flowStepId` links back to executable steps. Step provenance
+evidence, and `flowStepId` links back to executable steps. System identity is
+resolved from URLs by the shared resolver; `systemAliases` from the same
+config file collapse multiple hostnames into one logical system and merge
+their domains into a single `systems[]` entry. Step provenance
 fields (`tabId`, `systemId`, `pageUrl`, `sourceEventIds`) are part of the
 Flow schema. See `docs/FLOWFORGE_MERGE.md` for the archive contract and
 privacy rules (input values and clipboard text are never written to the
@@ -409,16 +431,61 @@ Renderer integration is advice-first. Four intervention points exist:
 
 1. After a recording stops, the AI pane opens automatically and asks for
    evidence-grounded replay-reliability advice.
-2. Selecting one or more materials and choosing Refine asks Pi to analyze the
-   selection; nothing is saved unless the user asks for a refinement.
+2. Selecting one or more analyzed materials and choosing Refine opens an
+   options form (preset refinements plus free text); Continue dispatches one
+   generation request. Nothing is saved unless generation succeeds and the
+   user-driven persistence path runs.
 3. After a failed replay, failed steps and whole-run metrics are passed to Pi
    for diagnosis.
-4. When the user explicitly asks to generate/apply a refinement, Pi must
-   return a single JSON object (`title`, `summary`, `steps`, `rationale`,
-   `risks`). FlowLink re-parses the proposed steps through the schema and, if
-   valid, saves them via `recording:persistMerged` as a new recording
-   (`isMerged: true`). The source recording is never overwritten, and invalid
-   output is rejected at the persistence gate.
+4. When the user explicitly asks to generate/apply a refinement (typed request,
+   `@`-attached flows, or the Refine options form), FlowLink re-parses the
+   proposed steps through the schema and, if valid, saves them via
+   `recording:persistMerged` as a new recording (`isMerged: true`). The source
+   recording is never overwritten, and invalid output is rejected at the
+   persistence gate.
+
+### Generation pipeline (`src/ai-refine.ts`, IPC `pi:generateFlow`)
+
+Material generation runs entirely in the main process. The renderer sends only
+recording ids, an optional instruction, and plain-text conversation; `ai-refine.ts`
+loads the source flows and drives four stages:
+
+1. **Projection** — every `target`/`from`/`to`/`expect.target` ElementRef in the
+   source steps is replaced by `{"$ref": "eN"}` against a deduplicated element
+   library (keyed by `fingerprint.stableHash` + first candidate). The prompt
+   carries each library element once as a one-line summary plus compact step
+   JSON; budget caps (library 10k, steps 60k, conversation 12k, instruction 4k
+   characters) fail loudly instead of truncating.
+2. **Prompt** — one of two fixed templates: auto-sanitize (recording stop) or
+   refine-with-instruction; the worker system prompt additionally forbids
+   inlined element data and `flow.variables` output.
+3. **Rehydration** — the model's steps may only reference elements as
+   `{"$ref": "eN"}`; unknown ids and any inline element object are rejected
+   with the offending step named. Library entries are deep-cloned back in, so
+   `observed` evidence returns byte-identical. Missing step ids are generated;
+   colliding ids are suffixed `-2`, `-3`.
+4. **Validation** — the rehydrated steps go through `parseFlow` (schema v2
+   contract included); variables are merged from all sources with the first
+   non-secret default winning. The validated flow is returned as a proposal —
+   never saved here.
+
+Chat hygiene is enforced in the renderer: `item.chat` entries hold text plus
+`{id, name}` attachment chips only, and a 300-step attached flow costs nothing
+in UI state because flow payloads are assembled in the main process from the
+store.
+
+### Auto-refine (`ai:autoRefine`)
+
+When a recording persists after Stop, the main process (guarded by an
+in-flight set, `autoRefine` setting default-on, source `isMerged` excluded)
+runs the same pipeline in auto-sanitize mode and saves the result through the
+shared merge-persistence helper as `REFINED…` (name collisions get ` (2)`,
+` (3)`). Events: `{state:'done', taskCode, sourceRecordingId,
+refinedRecordingId, name}` refresh the recording list and toast;
+`{state:'failed', error}` shows a dismissible warning; `{state:'skipped'}`
+(Pi not configured) is silent. The raw recording is always left intact. The
+Pi worker processes prompts sequentially, so an in-flight advice call simply
+delays the twin by its remaining duration.
 
 The AI pane conversation history (recent turns) is included as bounded context
 in follow-up prompts. AI-generated materials are not considered verified until
