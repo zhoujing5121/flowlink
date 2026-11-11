@@ -17,12 +17,14 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { disposePiWorker, piStatus, runPiPrompt } from './pi-agent.js'
-import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
+import { disposePiWorker, piStatus, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { generateRefinedFlow } from './ai-refine.js'
+import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, compileAuthMatchers, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
+import { z } from 'zod'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -63,6 +65,60 @@ let recordingAdditionalPages: Page[] = []
 let recordingTabIds: string[] = []
 const recordingTabSnapshots = new Map<string, { url: string; title: string }>()
 let recordingHostEvents: HostCaptureEvent[] = []
+
+/* ---------------- 录制分类配置（config/classification.json） ---------------- */
+
+interface RecordingClassification {
+	idpHostPatterns: string[]
+	loginPathPatterns: string[]
+	systemAliases: Record<string, string>
+}
+
+const EMPTY_CLASSIFICATION: RecordingClassification = { idpHostPatterns: [], loginPathPatterns: [], systemAliases: {} }
+
+const ClassificationFileSchema = z.object({
+	idpHostPatterns: z.array(z.string()).default([]),
+	loginPathPatterns: z.array(z.string()).default([]),
+	systemAliases: z.record(z.string()).default({}),
+})
+
+let recordingClassification: RecordingClassification = EMPTY_CLASSIFICATION
+
+/** 与 Pi 凭据文件同一套解析规则：开发态在项目 config/ 下，打包后落在 userData。 */
+function classificationConfigPath(): string {
+	return app.isPackaged
+		? join(app.getPath('userData'), 'classification.json')
+		: join(app.getAppPath(), 'config', 'classification.json')
+}
+
+/**
+ * 读取录制分类配置（认证 URL 规则 + 系统别名）。文件缺失 → 空配置（默认规则）；
+ * 结构非法 / JSON 解析失败 → 告警并回退空配置，绝不阻断录制启动。
+ */
+async function loadRecordingClassification(): Promise<RecordingClassification> {
+	let raw: string
+	try {
+		raw = await readFile(classificationConfigPath(), 'utf8')
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+			console.warn('[flowlink] 读取 classification.json 失败，本次录制使用默认规则：', (error as Error).message)
+		return EMPTY_CLASSIFICATION
+	}
+	try {
+		const parsed = ClassificationFileSchema.safeParse(JSON.parse(raw))
+		if (!parsed.success) {
+			console.warn(
+				'[flowlink] config/classification.json 结构无效，本次录制使用默认规则：',
+				parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; '),
+			)
+			return EMPTY_CLASSIFICATION
+		}
+		return parsed.data
+	} catch (error) {
+		console.warn('[flowlink] classification.json 不是合法 JSON，本次录制使用默认规则：', (error as Error).message)
+		return EMPTY_CLASSIFICATION
+	}
+}
 
 /* ---------------- 回放会话状态 ---------------- */
 let playPromise: Promise<RunResult> | null = null
@@ -132,6 +188,7 @@ function resetRecordingState(): void {
 	recordingTabIds = []
 	recordingTabSnapshots.clear()
 	recordingHostEvents = []
+	recordingClassification = EMPTY_CLASSIFICATION
 	recStopRequested = false
 }
 
@@ -493,6 +550,7 @@ async function createWindow(): Promise<void> {
 		minHeight: 700,
 		show: false,
 		title: 'FlowLink',
+		icon: join(app.getAppPath(), 'resources', 'icon.ico'),
 		autoHideMenuBar: true,
 		webPreferences: {
 			preload: join(app.getAppPath(), 'dist', 'preload.cjs'),
@@ -579,6 +637,92 @@ interface RecordingStopResult {
 	error?: string
 }
 
+/** 把（已通过 schema 校验的）细化 Flow 保存为一条全新的 isMerged 录制；永不覆盖已有录制。 */
+async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Promise<RecordingMeta> {
+	const recordingId = makeId('recording')
+	const artifactsDir = join(artifactsRoot, recordingId)
+	const flowFile = join(flowsRoot, `${recordingId}.json`)
+	await mkdir(artifactsDir, { recursive: true })
+	await saveFlow(flow, flowFile)
+	const recording: RecordingMeta = {
+		id: recordingId,
+		name,
+		flowFile,
+		artifactsDir,
+		createdAt: new Date().toISOString(),
+		steps: flow.steps.length,
+		posterFile: '',
+		frames: [],
+		stepScreenshots: [],
+		isMerged: true,
+	}
+	await taskStore.addRecording(taskCode, recording)
+	return recording
+}
+
+/** RECORD-YYYY-MM-DD → REFINED-YYYY-MM-DD；其余名称加 REFINED 前缀；重名追加 (2)/(3)。 */
+function refinedRecordingName(sourceName: string, existingNames: Set<string>): string {
+	const base = /^RECORD-/i.test(sourceName)
+		? sourceName.replace(/^RECORD-/i, 'REFINED-')
+		: `REFINED ${sourceName}`
+	if (!existingNames.has(base)) return base
+	let suffix = 2
+	while (existingNames.has(`${base} (${suffix})`)) suffix++
+	return `${base} (${suffix})`
+}
+
+const autoRefineInFlight = new Set<string>()
+
+function emitAutoRefine(payload: Record<string, unknown>): void {
+	if (!mainWindow.isDestroyed()) mainWindow.webContents.send('ai:autoRefine', payload)
+}
+
+/**
+ * 录制停止后的自动细化：走与手动细化相同的生成管线（投影 → Pi → 再水化 →
+ * parseFlow 校验），成功后经 persistMergedFlow 另存为 REFINED 录制并广播
+ * ai:autoRefine。原始录制始终保持原样；任何失败只以事件告知，不影响 Stop。
+ */
+async function autoRefineRecording(taskCode: string, recording: RecordingMeta): Promise<void> {
+	if (autoRefineInFlight.has(recording.id)) return
+	autoRefineInFlight.add(recording.id)
+	try {
+		const status = await piStatus()
+		if (!status.available) {
+			emitAutoRefine({ state: 'skipped', taskCode, recordingId: recording.id, reason: status.error })
+			return
+		}
+		const result = await generateRefinedFlow({
+			flowFiles: [recording.flowFile],
+			mode: 'auto',
+			runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
+		})
+		if (!result.ok) {
+			emitAutoRefine({ state: 'failed', taskCode, recordingId: recording.id, error: result.error })
+			return
+		}
+		await taskStore.list()
+		const names = new Set((taskStore.get(taskCode)?.recordings ?? []).map((item) => item.name))
+		const name = refinedRecordingName(recording.name, names)
+		const refined = await persistMergedFlow(taskCode, result.flow, name)
+		emitAutoRefine({
+			state: 'done',
+			taskCode,
+			sourceRecordingId: recording.id,
+			refinedRecordingId: refined.id,
+			name,
+		})
+	} catch (error) {
+		emitAutoRefine({
+			state: 'failed',
+			taskCode,
+			recordingId: recording.id,
+			error: error instanceof Error ? error.message : String(error),
+		})
+	} finally {
+		autoRefineInFlight.delete(recording.id)
+	}
+}
+
 /** 所有 Stop/Test reset 共用同一份收尾，避免并发删除、重复保存或旧会话复活。 */
 async function stopRecordingSession(options: { discard?: boolean } = {}): Promise<RecordingStopResult> {
 	// 并发 Stop 请求共享同一个收尾 Promise，避免重复保存或删除同一份 Flow；
@@ -615,11 +759,13 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				const view = browserViews.get(tabId)
 				const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : (recordingTabSnapshots.get(tabId)?.url || '')
 				const title = view && !view.webContents.isDestroyed() ? view.webContents.getTitle() : (recordingTabSnapshots.get(tabId)?.title || '')
-				let systemId = 'browser', systemName = 'Browser'
-				try { const host = new URL(url).hostname.toLowerCase(); if (host) { systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'; systemName = host } } catch {}
-				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId, systemName }
+				const system = resolveSystem(url, recordingClassification.systemAliases)
+				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId: system.systemId, systemName: system.systemName }
 			})
-			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents).catch((error) => {
+			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents, {
+				matchers: compileAuthMatchers(recordingClassification),
+				aliases: recordingClassification.systemAliases,
+			}).catch((error) => {
 				console.warn('[flowlink] FlowForge evidence archive could not be written:', (error as Error).message)
 			})
 			const capture = await stopRecordingCapture()
@@ -646,6 +792,11 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				stepScreenshots,
 			}
 			await taskStore.addRecording(recTaskCode, recording)
+			// 元数据已持久化后火后即忘地触发自动细化；不阻塞 Stop 响应，
+			// 失败只通过 ai:autoRefine 事件告知，细化产物（isMerged）本身不再二次细化。
+			if (!recording.isMerged && isAutoRefineEnabled()) {
+				void autoRefineRecording(recTaskCode, recording)
+			}
 			// 先持久化元数据再发送完成事件，确保 UI 收到通知后能立即重新加载。
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('recording:done', { recording })
@@ -824,26 +975,59 @@ function registerIpc(): void {
 
 	ipcMain.handle(
 		'recording:persistMerged',
-		async (_event, opts: { taskCode: string; flow: Flow; name: string }) => {
-			const recordingId = makeId('recording')
-			const artifactsDir = join(artifactsRoot, recordingId)
-			const flowFile = join(flowsRoot, `${recordingId}.json`)
-			await mkdir(artifactsDir, { recursive: true })
-			await saveFlow(opts.flow, flowFile)
-			const recording: RecordingMeta = {
-				id: recordingId,
-				name: opts.name,
-				flowFile,
-				artifactsDir,
-				createdAt: new Date().toISOString(),
-				steps: opts.flow.steps.length,
-				posterFile: '',
-				frames: [],
-				stepScreenshots: [],
-				isMerged: true,
+		async (_event, opts: { taskCode: string; flow: Flow; name: string }) =>
+			persistMergedFlow(opts.taskCode, opts.flow, opts.name),
+	)
+
+	/* ---------- Pi：从已保存录制生成细化的新 Flow（校验后返回，不落盘） ---------- */
+	ipcMain.handle(
+		'pi:generateFlow',
+		async (
+			_event,
+			opts: {
+				taskCode: string
+				recordingIds: string[]
+				instruction?: string
+				conversation?: Array<{ role: string; text: string }>
+			},
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				!Array.isArray(opts.recordingIds) ||
+				!opts.recordingIds.length ||
+				opts.recordingIds.some((id) => typeof id !== 'string')
+			) {
+				throw new Error('Pi generateFlow request is invalid')
 			}
-			await taskStore.addRecording(opts.taskCode, recording)
-			return recording
+			await taskStore.list()
+			const task = taskStore.get(opts.taskCode)
+			const flowFiles: string[] = []
+			for (const recordingId of opts.recordingIds) {
+				const recording = task?.recordings.find((item) => item.id === recordingId)
+				if (!recording) throw new Error(`Recording not found: ${recordingId}`)
+				flowFiles.push(recording.flowFile)
+			}
+			await mkdir(flowsRoot, { recursive: true })
+			const result = await generateRefinedFlow({
+				flowFiles,
+				instruction: typeof opts.instruction === 'string' ? opts.instruction : undefined,
+				conversation: Array.isArray(opts.conversation)
+					? opts.conversation.filter(
+							(turn): turn is { role: string; text: string } =>
+								!!turn && typeof turn === 'object' && typeof (turn as { text?: unknown }).text === 'string',
+						)
+					: undefined,
+				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
+			})
+			if (!result.ok) throw new Error(result.error)
+			return {
+				flow: result.flow,
+				title: result.title,
+				summary: result.summary,
+				rationale: result.rationale,
+				risks: result.risks,
+			}
 		},
 	)
 
@@ -931,6 +1115,8 @@ function registerIpc(): void {
 			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
+			recordingClassification = await loadRecordingClassification()
+
 			recPromise = recordOnPage({
 				page,
 				pages: additionalPages,
@@ -943,6 +1129,11 @@ function registerIpc(): void {
 				hostEvents: recordingHostEvents,
 				stopSignal: controller.signal,
 				title: generatedRecordingName(),
+				classification: {
+					idpHostPatterns: recordingClassification.idpHostPatterns,
+					loginPathPatterns: recordingClassification.loginPathPatterns,
+				},
+				systemAliases: recordingClassification.systemAliases,
 				onStep: (step) => {
 					if (!mainWindow.isDestroyed())
 						mainWindow.webContents.send('recording:step', step)

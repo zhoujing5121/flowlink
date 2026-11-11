@@ -1,7 +1,7 @@
 :root {
-  --blue: #007bc0;
-  --hover: #00629a;
-  --pressed: #004975;
+  --blue: #00884A;
+  --hover: #006A3A;
+  --pressed: #00532D;
   --line: #d7dee7;
   --query-line: #979ea4;
   --secondary: #525f6b;
@@ -99,7 +99,7 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 [tabindex]:focus-visible {
-  outline: 1px solid #007bc0;
+  outline: 1px solid #00884A;
   box-shadow: none;
   outline-offset: 0;
 }
@@ -207,7 +207,7 @@ input:focus-visible,
 }
 
 .nav-item[aria-current="page"]:hover {
-  background: #0096e8;
+  background: #00884A;
 }
 
 .nav-item:active {
@@ -257,21 +257,9 @@ input:focus-visible,
 }
 
 .web-brand {
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.bosch-logo {
-  width: 120.214286px;
-  height: 48px;
-  flex: 0 0 120.214286px;
-}
-
-.bosch-logo svg {
-  width: 100%;
-  height: 100%;
+  height: 28px;
+  width: auto;
+  flex: 0 0 auto;
 }
 
 .main {
@@ -415,13 +403,13 @@ h1 {
 }
 
 .btn.secondary:hover:not(:disabled) {
-  background: #d1e4ff;
+  background: #D1EBDD;
   color: var(--hover);
   border-color: var(--hover);
 }
 
 .btn.secondary:active:not(:disabled) {
-  background: #9dc9ff;
+  background: #A4D9BD;
   color: var(--pressed);
   border-color: var(--pressed);
 }
@@ -1176,14 +1164,14 @@ h1 {
 
 .btn.secondary:hover:not(:disabled),
 .btn.secondary:active:not(:disabled) {
-  background: #eff7fc;
-  border-color: #00629a;
-  color: #00629a;
+  background: #EDF8F1;
+  border-color: #006A3A;
+  color: #006A3A;
 }
 
 .btn:active:not(:disabled) {
-  background: #00629a;
-  border-color: #00629a;
+  background: #006A3A;
+  border-color: #006A3A;
 }
 
 .btn:disabled {
@@ -1253,12 +1241,12 @@ h1 {
 
 .nav-item[aria-current="page"]:hover,
 .nav-item[aria-current="page"]:active {
-  background: #007bc0;
+  background: #00884A;
 }
 
 .nav-toggle:focus-visible,
 .nav-item:focus-visible {
-  outline: 1px solid #007bc0;
+  outline: 1px solid #00884A;
   box-shadow: none;
   outline-offset: 0;
 }
@@ -1329,7 +1317,7 @@ h1 {
 .field input:focus-visible {
   outline: 0;
   box-shadow: none;
-  border-bottom-color: #007bc0;
+  border-bottom-color: #00884A;
 }
 
 .service-button {
@@ -1350,7 +1338,7 @@ h1 {
 .service-button:focus-visible {
   outline: 0;
   box-shadow: none;
-  border-bottom-color: #007bc0;
+  border-bottom-color: #00884A;
 }
 
 .service-arrow {
@@ -1496,8 +1484,8 @@ h1 {
 }
 
 .recording-check:checked {
-  background: #007bc0;
-  border-color: #007bc0;
+  background: #00884A;
+  border-color: #00884A;
 }
 
 .recording-check:checked:after {
@@ -1543,7 +1531,7 @@ h1 {
 }
 
 .recording-row.current {
-  background: #e6f1ff;
+  background: #E4F4EB;
 }
 
 .recording-row-name {
@@ -1559,7 +1547,7 @@ h1 {
 }
 
 .recording-row-name:hover {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .recording-actions {
@@ -1600,7 +1588,7 @@ h1 {
 
 .capture-surface.preparing,
 .capture-surface.recording {
-  border-color: #007bc0;
+  border-color: #00884A;
   border-style: dashed;
 }
 
@@ -1672,7 +1660,7 @@ h1 {
 .browser-address:focus-visible {
   outline: 0;
   box-shadow: none;
-  border-bottom-color: #007bc0;
+  border-bottom-color: #00884A;
 }
 
 .capture-control,
@@ -1699,17 +1687,17 @@ h1 {
   height: 24px;
   min-width: 24px;
   fill: none;
-  stroke: #007bc0;
+  stroke: #00884A;
   stroke-width: 1.5;
 }
 
 .capture-control svg .solid {
-  fill: #007bc0;
+  fill: #00884A;
   stroke: none;
 }
 
 .capture-control:hover {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .recording-guide {
@@ -1751,7 +1739,7 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #007bc0;
+  background: #00884A;
   color: #fff;
   border-radius: 8px 0 0 8px;
   font-size: 20px;
@@ -1869,8 +1857,8 @@ h1 {
 }
 
 .recording-badge.recorded {
-  color: #007bc0;
-  border-color: #007bc0;
+  color: #00884A;
+  border-color: #00884A;
   background: #fff;
 }
 
@@ -1987,7 +1975,7 @@ h1 {
 }
 
 .test-step.status-running .test-step-status {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .test-step-error {
@@ -2134,7 +2122,7 @@ h1 {
   position: absolute;
   top: 8px;
   right: 8px;
-  color: #007bc0;
+  color: #00884A;
 }
 
 .summary-dialog p {
@@ -2272,7 +2260,7 @@ h1 {
 
 .workspace-splitter:hover:after,
 .workspace-splitter:focus-visible:after {
-  background: #007bc0;
+  background: #00884A;
 }
 
 .workspace-resizing {
@@ -2355,7 +2343,7 @@ h1 {
   align-items: center;
   min-width: 24px;
   height: 24px;
-  background: #243440;
+  background: #00532D;
   color: #fff;
   font-size: 12px;
   line-height: 18px;
@@ -2391,8 +2379,8 @@ h1 {
 }
 
 .editable-step-tools button:hover:not(:disabled) {
-  color: #007bc0;
-  border-color: #007bc0;
+  color: #00884A;
+  border-color: #00884A;
 }
 
 .editable-step-card textarea {
@@ -2473,8 +2461,8 @@ h1 {
 }
 
 .markdown-file .file-type-badge {
-  color: #007bc0;
-  border-color: #007bc0;
+  color: #00884A;
+  border-color: #00884A;
 }
 
 .reference-file-preview {
@@ -2543,8 +2531,8 @@ body {
   align-items: center;
   justify-content: center;
   padding: 8px 16px;
-  background: #eff7fc;
-  border: 1px solid #007bc0;
+  background: #EDF8F1;
+  border: 1px solid #00884A;
   font-size: 12px;
   line-height: 18px;
   text-align: center;
@@ -2642,14 +2630,14 @@ body {
 }
 
 .process-map-node:hover {
-  border-color: #007bc0;
-  background: #eff7fc;
+  border-color: #00884A;
+  background: #EDF8F1;
 }
 
 .process-map-node.selected {
-  background: #e6f1ff;
-  border-color: #007bc0;
-  box-shadow: inset 3px 0 #007bc0;
+  background: #E4F4EB;
+  border-color: #00884A;
+  box-shadow: inset 3px 0 #00884A;
 }
 
 .process-map-number {
@@ -2666,7 +2654,7 @@ body {
 }
 
 .process-map-node.selected .process-map-number {
-  color: #007bc0;
+  color: #00884A;
   background: #fff;
 }
 
@@ -2863,8 +2851,8 @@ body {
 }
 
 .recording-screenshot-file:hover {
-  color: #007bc0;
-  border-color: #007bc0;
+  color: #00884A;
+  border-color: #00884A;
 }
 
 /* Reference geometry: CoQ Workspace table and Medium button dimensions. */
@@ -2951,7 +2939,7 @@ body {
 }
 
 .reference-name:hover {
-  color: #007bc0;
+  color: #00884A;
   text-decoration: underline;
 }
 
@@ -2974,7 +2962,7 @@ body {
 }
 
 .reference-row-actions .icon-button:hover {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .reference-row-actions .icon-button svg {
@@ -2988,7 +2976,7 @@ body {
   min-width: 0;
   padding: 0 8px;
   border: 0;
-  border-bottom: 1px solid #007bc0;
+  border-bottom: 1px solid #00884A;
   background: #fff;
   color: #101416;
   font-family: inherit;
@@ -3137,7 +3125,7 @@ body {
 }
 
 .recording-layout.is-recording .capture-surface {
-  border: 1px solid #007bc0;
+  border: 1px solid #00884A;
   border-style: solid;
 }
 
@@ -3177,7 +3165,7 @@ body {
 }
 
 .browser-new-page:hover {
-  color: #007bc0;
+  color: #00884A;
   background: #fff;
 }
 
@@ -3252,8 +3240,8 @@ body {
 }
 
 .browser-page-tab > [role="tab"][aria-selected="true"] {
-  color: #007bc0;
-  box-shadow: inset 0 -2px #007bc0;
+  color: #00884A;
+  box-shadow: inset 0 -2px #00884A;
 }
 
 .browser-page-close {
@@ -3270,7 +3258,7 @@ body {
 }
 
 .browser-page-close:hover {
-  color: #007bc0;
+  color: #00884A;
   background: #fff;
 }
 
@@ -3310,7 +3298,7 @@ body {
 }
 
 .recording-layout.is-recording .capture-surface {
-  border: 2px solid #007bc0;
+  border: 2px solid #00884A;
 }
 
 /* One optical size, stroke and neutral colour for Design action icons. */
@@ -3356,7 +3344,7 @@ body {
 #designPanel .reference-row-actions .icon-button:hover,
 #designPanel .capture-control:hover:not(:disabled),
 #designPanel .editable-step-tools button:hover:not(:disabled) {
-  color: #007bc0;
+  color: #00884A;
 }
 
 #designPanel .editable-step-tools button {
@@ -3380,11 +3368,11 @@ body {
 }
 
 #designPanel .capture-control svg.recording-status-icon {
-  stroke: #007bc0;
+  stroke: #00884A;
 }
 
 #designPanel .capture-control svg.recording-status-icon .recording-solid {
-  fill: #007bc0;
+  fill: #00884A;
   stroke: none;
 }
 
@@ -3395,7 +3383,7 @@ body {
 }
 
 #designPanel .capture-status svg.design-action-icon {
-  stroke: #007bc0;
+  stroke: #00884A;
 }
 
 /* Grouped Process canvas and compact Steps list. */
@@ -3507,8 +3495,8 @@ body {
 }
 
 .canvas-group.selected {
-  border-color: #007bc0;
-  background: #f8fbfd;
+  border-color: #00884A;
+  background: #F5FBF7;
 }
 
 .canvas-group-heading {
@@ -3532,7 +3520,7 @@ body {
 
 .canvas-group-heading:hover,
 .canvas-group.selected .canvas-group-heading {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .canvas-group-icon {
@@ -3574,7 +3562,7 @@ body {
 }
 
 .canvas-step:has(.execution-mode-icon[aria-label="Automated"]) {
-  background: #e6f1ff;
+  background: #E4F4EB;
 }
 
 .execution-mode-icon {
@@ -3657,13 +3645,13 @@ body {
   font-size: 14px;
   line-height: 24px;
   font-weight: 400;
-  color: #007bc0;
+  color: #00884A;
   background: #fff;
   white-space: nowrap;
 }
 
 .canvas-group-actions button:hover {
-  background: #eff7fc;
+  background: #EDF8F1;
 }
 
 .canvas-step-menu {
@@ -3697,8 +3685,8 @@ body {
 }
 
 .canvas-step-menu button:hover {
-  background: #eff7fc;
-  color: #007bc0;
+  background: #EDF8F1;
+  color: #00884A;
 }
 
 .canvas-step-menu button:disabled {
@@ -3736,14 +3724,14 @@ body {
   min-width: 40px;
   padding: 0 16px;
   font-size: 14px;
-  color: #007bc0;
+  color: #00884A;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .canvas-view-controls button:hover {
-  background: #eff7fc;
+  background: #EDF8F1;
 }
 
 .canvas-zoom-label {
@@ -3805,7 +3793,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #007bc0;
+  color: #00884A;
   flex-shrink: 0;
 }
 
@@ -4019,8 +4007,8 @@ body {
 }
 
 #designPanel .canvas-group-actions button:hover {
-  background: #eff7fc;
-  color: #007bc0;
+  background: #EDF8F1;
+  color: #00884A;
 }
 
 .action-confirm-dialog {
@@ -4174,7 +4162,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 0 16px;
-  color: #007bc0;
+  color: #00884A;
   font-family: inherit;
   font-size: 16px;
   line-height: 24px;
@@ -4231,8 +4219,8 @@ body {
 }
 
 .reference-check-cell .recording-check:indeterminate {
-  background: #007bc0;
-  border-color: #007bc0;
+  background: #00884A;
+  border-color: #00884A;
 }
 
 .reference-check-cell .recording-check:indeterminate:after {
@@ -4383,7 +4371,7 @@ body {
 .assistant-composer textarea:focus-visible {
   outline: 0;
   box-shadow: none;
-  border-bottom-color: #007bc0;
+  border-bottom-color: #00884A;
 }
 
 .updated-records {
@@ -4408,7 +4396,7 @@ body {
 
 .native-process-node {
   position: relative;
-  border: 1px solid #6089ff;
+  border: 1px solid #00884A;
   min-height: 40px;
   width: 86%;
   display: flex;
@@ -4438,8 +4426,8 @@ body {
 }
 
 .native-process-node.current {
-  background: #e6f1ff;
-  border-color: #007bc0;
+  background: #E4F4EB;
+  border-color: #00884A;
 }
 
 @media (max-width: 1055px) {
@@ -4504,7 +4492,7 @@ body {
 }
 
 .assistant-width-resizer:hover {
-  background: #007bc020;
+  background: #00884A20;
 }
 
 .assistant-composer {
@@ -4521,7 +4509,7 @@ body {
 }
 
 .assistant-input-box:focus-within {
-  border-color: #007bc0;
+  border-color: #00884A;
 }
 
 .assistant-composer textarea {
@@ -4742,7 +4730,7 @@ body {
 }
 
 .assistant-close:hover {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .assistant-steps {
@@ -4825,7 +4813,7 @@ body {
   gap: 8px;
   margin-bottom: 8px;
   font: 400 16px/24px var(--font-ui);
-  color: #007BC0
+  color: #00884A
 }
 
 .execution-monitor>div {
@@ -4848,7 +4836,7 @@ body {
 .assistant-input-box {
   position: relative;
   padding: 0;
-  border: 1px solid #007bc0;
+  border: 1px solid #00884A;
   background: #fff;
 }
 
@@ -4885,7 +4873,7 @@ body {
   background: transparent;
   border: 0;
   padding: 0;
-  color: #007bc0;
+  color: #00884A;
 }
 
 .assistant-send:disabled {
@@ -4896,7 +4884,7 @@ body {
 
 .assistant-send:hover:not(:disabled) {
   background: transparent;
-  color: #00629a;
+  color: #006A3A;
 }
 
 @media (min-width: 951px) {
@@ -5036,11 +5024,11 @@ body {
 }
 
 .assistant-group-options > button:hover {
-  color: #007bc0;
+  color: #00884A;
 }
 
 .assistant-group-options > button:focus-visible {
-  outline: 1px solid #007bc0;
+  outline: 1px solid #00884A;
   outline-offset: 0;
 }
 
@@ -5059,8 +5047,8 @@ body {
   height: 48px;
   padding: 0 16px;
   background: #fff;
-  color: #007bc0;
-  border: 1px solid #007bc0;
+  color: #00884A;
+  border: 1px solid #00884A;
   font-family: inherit;
   font-size: 16px;
   line-height: 24px;
@@ -5068,7 +5056,7 @@ body {
 }
 
 .assistant-group-insert button:hover {
-  background: #eff7fc;
+  background: #EDF8F1;
 }
 
 /* Major-node actions are visibly selectable and follow the 8px spacing scale. */
@@ -5081,22 +5069,22 @@ body {
 
 .assistant-group-options > button {
   padding: 8px 16px;
-  background: #e6f2fa;
+  background: #EDF8F1;
   cursor: pointer;
   gap: 16px;
 }
 
 .assistant-group-options > button:hover {
-  background: #cce6f5;
-  color: #00629a;
+  background: #D1EBDD;
+  color: #006A3A;
 }
 
 .assistant-group-options > button:active {
-  background: #b3daf0;
+  background: #A4D9BD;
 }
 
 .assistant-group-options > button:focus-visible {
-  outline: 2px solid #007bc0;
+  outline: 2px solid #00884A;
   outline-offset: -2px;
 }
 
@@ -5278,7 +5266,7 @@ body {
 }
 
 .version-status-field select:focus-visible {
-  outline: 1px solid #007bc0;
+  outline: 1px solid #00884A;
   outline-offset: 0;
 }
 
@@ -5692,7 +5680,7 @@ body .btn {
 #query .query-expand {
   background: transparent;
   border-color: transparent;
-  color: #007bc0;
+  color: #00884A;
   gap: 8px;
   text-decoration: none;
 }
@@ -5949,13 +5937,13 @@ body .btn {
   position: absolute;
   right: 0;
   top: 0;
-  color: #007bc0;
+  color: #00884A;
   font-size: 12px;
   line-height: 16px;
 }
 
 #query .query-expand:hover {
-  color: #00629a;
+  color: #006A3A;
   background: transparent;
   border-color: transparent;
 }
@@ -5995,7 +5983,7 @@ body .btn {
   right: 8px;
   bottom: 0;
   height: 2px;
-  background: #007bc0;
+  background: #00884A;
   z-index: 1;
 }
 
@@ -6056,11 +6044,11 @@ body .btn {
 
 /* Exact action-state palette from Design Standard 8.4.3. */
 :root {
-  --action-primary: #007bc0;
-  --action-hover: #00629a;
-  --action-pressed: #004975;
-  --action-secondary-hover: #d1e4ff;
-  --action-secondary-pressed: #9dc9ff;
+  --action-primary: #00884A;
+  --action-hover: #006A3A;
+  --action-pressed: #00532D;
+  --action-secondary-hover: #D1EBDD;
+  --action-secondary-pressed: #A4D9BD;
   --action-disabled-surface: #f1f3f5;
   --action-disabled-border: #dee2e6;
   --action-disabled-text: #adb5bd;
@@ -6164,8 +6152,8 @@ body .btn.secondary:disabled {
   margin-left: auto;
   margin-right: 12px;
   padding: 4px 12px;
-  background: #e6f1ff;
-  color: #007bc0;
+  background: #E4F4EB;
+  color: #00884A;
   font-size: 12px;
   line-height: 18px;
   font-weight: 600;
@@ -6182,8 +6170,8 @@ body .btn.secondary:disabled {
   top: 0;
   right: 0;
   padding: 2px 8px;
-  background: #e6f1ff;
-  color: #007bc0;
+  background: #E4F4EB;
+  color: #00884A;
   font-size: 10px;
   line-height: 16px;
   font-weight: 600;
@@ -6214,7 +6202,7 @@ body .btn.secondary:disabled {
   width: 100%;
   min-height: 48px;
   padding: 8px 16px;
-  background: #e6f2fa;
+  background: #EDF8F1;
   border: 0;
   color: #101416;
   font-family: inherit;
@@ -6225,15 +6213,214 @@ body .btn.secondary:disabled {
 }
 
 .assistant-option:hover {
-  background: #cce6f5;
-  color: #00629a;
+  background: #D1EBDD;
+  color: #006A3A;
 }
 
 .assistant-option:active {
-  background: #b3daf0;
+  background: #A4D9BD;
 }
 
 .assistant-option:focus-visible {
-  outline: 2px solid #007bc0;
+  outline: 2px solid #00884A;
   outline-offset: -2px;
+}
+
+/* ------------------------------------------------------------------ */
+/* AI pane: refine options form, @-mention picker, attachment chips   */
+/* ------------------------------------------------------------------ */
+
+.assistant-refine-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 16px;
+}
+
+.assistant-refine-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.assistant-refine-preset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.assistant-refine-preset input {
+  margin: 0;
+}
+
+.refine-free-text {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid #c5cdd4;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.assistant-refine-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.assistant-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e5e9ed;
+}
+
+.assistant-attachments[hidden] {
+  display: none;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #EDF8F1;
+  border: 1px solid #A4D9BD;
+  border-radius: 10px;
+  color: #006A3A;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.attachment-chip button {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-attachments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.assistant-input-box {
+  position: relative;
+}
+
+.mention-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #c5cdd4;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(16, 20, 22, 0.12);
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: 0;
+  color: #101416;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mention-option.active,
+.mention-option:hover {
+  background: #EDF8F1;
+  color: #006A3A;
+}
+
+.mention-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e5e9ed;
+  color: #101416;
+  font-size: 11px;
+}
+
+.mention-badge.refined {
+  background: #EDF8F1;
+  color: #006A3A;
+}
+
+/* ------------------------------------------------------------------ */
+/* App-level notices (auto-refine toast / warning)                    */
+/* ------------------------------------------------------------------ */
+
+#flowlinkNotices {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.flowlink-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #002213;
+  border-radius: 6px;
+  color: #f0f4f8;
+  font-size: 13px;
+  line-height: 18px;
+  box-shadow: 0 6px 16px rgba(16, 20, 22, 0.25);
+}
+
+.flowlink-notice.warn {
+  background: #8a3a00;
+}
+
+.flowlink-notice span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.flowlink-notice-close {
+  flex: none;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 16px;
+  line-height: 18px;
+  cursor: pointer;
 }

@@ -89,7 +89,7 @@ function saveProfile() {
     profileDrafts.delete("new");
     activeFlowKey = code;
   }
-  $("drawerTitle").textContent = code.replace("TASKFLOW", "Taskflow");
+  $("drawerTitle").textContent = code.replace("TASKFLOW", "FlowLink");
   draft.name = snapshot.name;
   draft.description = snapshot.description;
   render();
@@ -228,8 +228,8 @@ function openDrawer(code, source) {
   trigger = source;
   savedScroll = window.scrollY;
   $("drawerTitle").textContent = code
-    ? code.replace("TASKFLOW", "Taskflow")
-    : nextTaskflowCode().replace("TASKFLOW", "Taskflow");
+    ? code.replace("TASKFLOW", "FlowLink")
+    : nextTaskflowCode().replace("TASKFLOW", "FlowLink");
   $("profileSaveStatus").textContent = "";
   
   if (!code) {
@@ -1110,15 +1110,19 @@ function updateRecordingActionButton() {
   button.onclick = recording ? finishBrowserRecording : prepareRecording;
 }
 
+function refineSelection(state) {
+  // Refine 需要至少一个已分析的录制，且不能混入未分析的录制（与点击处理同一判定）。
+  const chosen = state.items.filter((item) => item.checked && item.analyzed);
+  const hasUnanalyzed = state.items.some((item) => item.checked && !item.analyzed);
+  return { chosen, ready: chosen.length > 0 && !hasUnanalyzed, hasUnanalyzed };
+}
+
 function updateSummaryState() {
   const state = recordingSession(),
     button = $("summarizeRecordings");
-  if (button) {
-    button.disabled =
-      state.stage === "recording" ||
-      state.stage === "preparing" ||
-      !state.items.some((item) => item.checked);
-  }
+  if (!button) return;
+  const busy = state.stage === "recording" || state.stage === "preparing";
+  button.disabled = busy || !refineSelection(state).ready;
 }
 
 async function prepareRecording() {
@@ -1536,10 +1540,28 @@ async function buildMergedFlow(chosen, combined) {
 
 function summarizeRecordings() {
   const state = recordingSession();
-  const chosen = state.items.filter((item) => item.checked && item.analyzed);
-  if (!chosen.length || state.items.some((item) => item.checked && !item.analyzed) || state.stage === "recording" || state.stage === "preparing") return;
-  // Refine is an AI review action; merging remains available as a separate explicit operation.
-  startAIAdvice({ mode: "selected-materials", items: chosen, reason: "Review the selected material(s) and recommend concrete reliability improvements. Do not change or save anything yet." });
+  // 与 updateSummaryState 相同的守卫：守卫失败时给出可见提示而不是静默返回。
+  if (state.stage === "recording" || state.stage === "preparing") return;
+  const { chosen, ready, hasUnanalyzed } = refineSelection(state);
+  if (!ready) {
+    state.aiOpen = true;
+    renderRecordingWorkspace();
+    appendAIMessage(
+      currentAssistantContext(),
+      "assistant",
+      hasUnanalyzed
+        ? "Refine needs analyzed recordings only. The current selection includes recordings that have not finished analysis; uncheck them and try again."
+        : "Select at least one analyzed recording to refine.",
+    );
+    return;
+  }
+  // Refine 打开选项模式：用户选择预设 + 补充说明后，再走共享的生成管线。
+  state.aiMode = "refine-options";
+  state.aiSourceIds = chosen.map((item) => item.id);
+  state.aiOpen = true;
+  renderRecordingWorkspace();
+  renderAIPanel();
+  $("assistantInput")?.focus();
 }
 
 async function confirmRecordingSummary() {
@@ -1923,6 +1945,168 @@ function setAssistantDraft(item, draft) {
   item.chatDraft = draft;
 }
 
+const REFINE_PRESETS = [
+  "Group steps into labeled stages",
+  "Remove redundant or accidental steps",
+  "Add stability waits around page transitions",
+  "Add assertions for key outcomes",
+  "Move repeated text inputs into Reference variables",
+];
+
+function refineOptionsMarkup(state) {
+  const count = state.aiSourceIds?.length || 0;
+  return `<div class="assistant-refine-options">
+    <div class="assistant-refine-title">Refine ${count === 1 ? "1 selected material" : `${count} selected materials`}</div>
+    ${REFINE_PRESETS.map(
+      (preset, index) =>
+        `<label class="assistant-refine-preset"><input type="checkbox" data-refine-preset="${index}"><span>${escapeHTML(preset)}</span></label>`,
+    ).join("")}
+    <textarea id="refineFreeText" class="refine-free-text" rows="3" placeholder="Anything else?" aria-label="Anything else?"></textarea>
+    <div class="assistant-refine-actions"><button type="button" class="btn" id="refineContinue">Continue</button></div>
+  </div>`;
+}
+
+function submitRefineOptions() {
+  const state = recordingSession();
+  const presets = REFINE_PRESETS.filter(
+    (preset, index) =>
+      document.querySelector(`input[data-refine-preset="${index}"]`)?.checked,
+  );
+  const freeText = $("refineFreeText")?.value.trim() || "";
+  const instruction =
+    [...presets, freeText].filter(Boolean).join(" ") ||
+    "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
+  state.aiMode = undefined;
+  invokeAIMerge("input", instruction, { forceMaterial: true });
+}
+
+/* ---------------- @ 提及与附件（录制 id 进 UI 状态，Flow 载荷只在主进程组装） ---------------- */
+
+function aiAttachmentItems(ids) {
+  const state = recordingSession();
+  const list = Array.isArray(ids) ? ids : state.aiAttachments || [];
+  const resolved = [];
+  for (const id of list) {
+    const item = (state.items || []).find((entry) => (entry.recordingId || entry.id) === id);
+    if (item && !resolved.includes(item)) resolved.push(item);
+  }
+  return resolved;
+}
+
+function renderAttachmentChips() {
+  const state = recordingSession();
+  const box = $("assistantAttachments");
+  if (!box) return;
+  const items = aiAttachmentItems();
+  box.innerHTML = items
+    .map(
+      (item) =>
+        `<span class="attachment-chip">@${escapeHTML(item.name)}<button type="button" data-attachment-remove="${escapeHTML(item.recordingId || item.id)}" aria-label="Remove attachment ${escapeHTML(item.name)}">×</button></span>`,
+    )
+    .join("");
+  box.hidden = items.length === 0;
+  box.onclick = (e) => {
+    const remove = e.target.closest("[data-attachment-remove]");
+    if (!remove) return;
+    state.aiAttachments = (state.aiAttachments || []).filter((id) => id !== remove.dataset.attachmentRemove);
+    renderAttachmentChips();
+  };
+}
+
+const mentionPickerState = { open: false, items: [], active: 0, tokenStart: 0, caret: 0 };
+
+function mentionCandidates(query) {
+  const state = recordingSession();
+  const q = String(query || "").toLowerCase();
+  return (state.items || [])
+    .filter((item) => item.name && (!q || String(item.name).toLowerCase().includes(q)))
+    .slice(0, 8);
+}
+
+function mentionQueryAtCaret(input) {
+  if (!input) return null;
+  const caret = input.selectionStart ?? input.value.length;
+  if (caret !== input.selectionEnd) return null;
+  const before = input.value.slice(0, caret);
+  const match = before.match(/(^|\s)@([\w.\-À-ɏ㐀-鿿]*)$/u);
+  if (!match) return null;
+  return { tokenStart: caret - match[2].length - 1, query: match[2], caret };
+}
+
+function mentionOptionMarkup(item, index) {
+  const badge = item.summary ? "Refined" : item.recorded ? "Record" : "";
+  return `<button type="button" class="mention-option${index === mentionPickerState.active ? " active" : ""}" data-mention-index="${index}" role="option" aria-selected="${index === mentionPickerState.active}"><span class="mention-name">${escapeHTML(item.name)}</span>${badge ? `<span class="mention-badge ${badge.toLowerCase()}">${badge}</span>` : ""}</button>`;
+}
+
+function updateMentionPicker(input) {
+  const picker = $("mentionPicker");
+  if (!picker) return;
+  const at = mentionQueryAtCaret(input);
+  const items = at ? mentionCandidates(at.query) : [];
+  mentionPickerState.open = items.length > 0;
+  mentionPickerState.items = items;
+  mentionPickerState.active = 0;
+  if (at) {
+    mentionPickerState.tokenStart = at.tokenStart;
+    mentionPickerState.caret = at.caret;
+  }
+  picker.hidden = !mentionPickerState.open;
+  if (mentionPickerState.open) {
+    picker.innerHTML = items.map(mentionOptionMarkup).join("");
+    picker.setAttribute("aria-expanded", "true");
+  } else {
+    picker.innerHTML = "";
+    picker.setAttribute("aria-expanded", "false");
+  }
+}
+
+function closeMentionPicker() {
+  mentionPickerState.open = false;
+  mentionPickerState.items = [];
+  mentionPickerState.active = 0;
+  const picker = $("mentionPicker");
+  if (picker) {
+    picker.hidden = true;
+    picker.innerHTML = "";
+    picker.setAttribute("aria-expanded", "false");
+  }
+}
+
+function chooseMention(item) {
+  const state = recordingSession();
+  const id = item.recordingId || item.id;
+  state.aiAttachments ??= [];
+  if (!state.aiAttachments.includes(id)) state.aiAttachments.push(id);
+  const input = $("assistantInput");
+  if (input) {
+    input.value = input.value.slice(0, mentionPickerState.tokenStart) + input.value.slice(mentionPickerState.caret);
+    setAssistantDraft(currentAssistantContext(), input.value);
+  }
+  const caret = mentionPickerState.tokenStart;
+  closeMentionPicker();
+  renderAIPanel();
+  const restored = $("assistantInput");
+  if (restored) {
+    restored.focus();
+    try {
+      restored.setSelectionRange(caret, caret);
+    } catch {
+      /* textarea 支持.setSelectionRange；防御性忽略 */
+    }
+  }
+}
+
+function bindMentionPicker() {
+  const picker = $("mentionPicker");
+  if (!picker) return;
+  picker.onclick = (e) => {
+    const option = e.target.closest("[data-mention-index]");
+    if (!option) return;
+    const item = mentionPickerState.items[Number(option.dataset.mentionIndex)];
+    if (item) chooseMention(item);
+  };
+}
+
 function renderAIPanel() {
   // 分析后助手上下文关联到具体录制项，分析前则关联到操作指南。
   // 是否显示由当前 Design 标签页和 aiOpen 状态共同决定。
@@ -1931,6 +2115,10 @@ function renderAIPanel() {
     item = currentAssistantContext(),
     testTab = recording?.resultTab === "Test",
     open = drawerView === "Design" && state.aiOpen;
+  // refine-options 是一次性模式：面板关闭或来源丢失时还原为普通面板。
+  if (state.aiMode === "refine-options" && (!open || !state.aiSourceIds?.length))
+    state.aiMode = undefined;
+  const refineOptions = state.aiMode === "refine-options";
   $("drawer").classList.toggle("ai-open", !!open);
   $("recordingAssistant").hidden = !open;
   $("aiToggle")?.setAttribute("aria-expanded", String(!!open));
@@ -1964,7 +2152,9 @@ function renderAIPanel() {
     !!selectedGroup && !testTab,
   );
   const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
-  $("assistantSteps").innerHTML = testTab
+  $("assistantSteps").innerHTML = refineOptions
+    ? refineOptionsMarkup(state)
+    : testTab
     ? `
     <div class="assistant-test-toolbar">
       <button class="btn" id="runRecordingTest" type="button" ${recording?.testRunning || !recording?.recordingId ? "disabled" : ""}>
@@ -1983,6 +2173,8 @@ function renderAIPanel() {
             `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
         )
         .join("");
+  const continueButton = $("refineContinue");
+  if (continueButton) continueButton.onclick = submitRefineOptions;
   const runButton = $("runRecordingTest");
   if (runButton)
     runButton.onclick = () => {
@@ -2027,12 +2219,24 @@ function renderAIPanel() {
   }
 
   $("assistantChat").innerHTML = item.chat
-    .map(
-      (message) =>
-        `<p class="assistant-message ${message.role}" aria-label="${message.role === "user" ? "User" : "AI"}">${escapeHTML(message.text)}</p>`,
-    )
+    .map((message) => {
+      // 聊天记录只存文本 + 附件 id/name 芯片；Flow JSON 永不进入 transcript。
+      const chips =
+        message.role === "user" && Array.isArray(message.attachments) && message.attachments.length
+          ? `<span class="message-attachments">${message.attachments
+              .map(
+                (attachment) =>
+                  `<span class="attachment-chip">@${escapeHTML(attachment.name)}</span>`,
+              )
+              .join("")}</span>`
+          : "";
+      return `<p class="assistant-message ${message.role}" aria-label="${message.role === "user" ? "User" : "AI"}">${escapeHTML(message.text)}${chips}</p>`;
+    })
     .join("");
   $("assistantContent").scrollTop = $("assistantContent").scrollHeight;
+  renderAttachmentChips();
+  closeMentionPicker();
+  bindMentionPicker();
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
   $("assistantSend").disabled = !item.chatDraft.trim();
@@ -2040,8 +2244,30 @@ function renderAIPanel() {
   $("assistantInput").oninput = (e) => {
     setAssistantDraft(item, e.target.value);
     $("assistantSend").disabled = !item.chatDraft.trim();
+    updateMentionPicker(e.target);
   };
   $("assistantInput").onkeydown = (e) => {
+    if (mentionPickerState.open && mentionPickerState.items.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const count = mentionPickerState.items.length;
+        mentionPickerState.active = (mentionPickerState.active + delta + count) % count;
+        $("mentionPicker").innerHTML = mentionPickerState.items.map(mentionOptionMarkup).join("");
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        chooseMention(mentionPickerState.items[mentionPickerState.active]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMentionPicker();
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submitAssistantMessage();
@@ -2120,46 +2346,25 @@ async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext
 async function generateRefinedMaterial(sourceItems, request, parentItem) {
   const sources = sourceItems?.length ? sourceItems : [parentItem].filter(Boolean);
   if (!sources.length) throw new Error("Select at least one material to refine.");
-  const loaded = [];
-  for (const source of sources) {
-    if (source.flowFile && window.flowlink?.flow?.load) {
-      try { loaded.push(await window.flowlink.flow.load(source.flowFile)); } catch (error) { console.warn("Could not load source Flow", error); }
-    }
-  }
-  if (!loaded.length) throw new Error("The selected material has no saved executable Flow. Advice is available, but a replayable refined material cannot be saved yet.");
-  const sourceSteps = loaded.flatMap((flow) => flow.steps || []);
   const bridge = window.flowlink?.pi;
-  const prompt = [
-    "Generate a refined FlowLink material from the supplied executable Flow JSON.",
-    "Return JSON only with {title, summary, steps, rationale, risks}. `steps` must be valid FlowLink step objects compatible with the source schema.",
-    "Preserve the original business intent and source evidence. Do not invent selectors, URLs, field values, credentials, or unobserved outcomes. Prefer small, evidence-backed changes. If uncertain, preserve the original step.",
-    `User refinement request: ${request}`,
-    `Prior AI-pane discussion and recommendations: ${JSON.stringify((parentItem?.chat || []).slice(-10).map((message) => ({ role: message.role, text: message.text }))).slice(0, 16000)}`,
-    `Source Flow metadata: ${JSON.stringify(loaded.map(({ id, title, meta, variables }) => ({ id, title, meta, variables })))}`,
-    `Source executable steps: ${JSON.stringify(sourceSteps).slice(0, 65000)}`,
-  ].join("\n\n");
-  const result = await bridge.prompt({ prompt, timeoutMs: 180000 });
-  let parsed;
-  try {
-    const raw = result.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    parsed = JSON.parse(raw);
-  } catch { throw new Error("Pi did not return valid JSON for the refined material. The source was left unchanged. Ask Pi to retry with valid JSON."); }
-  if (!parsed || !Array.isArray(parsed.steps) || !parsed.steps.length) throw new Error("Pi's refined material has no executable steps; the source was left unchanged.");
-  const base = loaded[0];
-  const flow = {
-    ...base,
-    id: `refined-${Date.now().toString(36)}`,
-    title: String(parsed.title || `Refined ${parentItem?.name || sources[0].name || "Material"}`),
-    version: 1,
-    createdAt: new Date().toISOString(),
-    steps: parsed.steps,
-  };
+  if (!bridge?.generateFlow)
+    throw new Error("FlowLink Pi generation bridge is unavailable. Run inside FlowLink with the preload API to generate refined materials.");
+  const recordingIds = sources.map((source) => source.recordingId).filter(Boolean);
+  if (!recordingIds.length || recordingIds.length !== sources.length)
+    throw new Error("The selected material has no saved executable Flow. Advice is available, but a replayable refined material cannot be saved yet.");
   const taskCode = currentFlow?.code || activeFlowKey;
-  const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: flow.title });
+  const conversation = (parentItem?.chat || [])
+    .slice(-8)
+    .map((message) => ({ role: message.role, text: message.text }));
+  // 投影、提示词组装、$ref 再水化与 schema 校验都在主进程完成；渲染层只传
+  // 录制 id 和纯文本对话，聊天与 Flow 载荷互不沾染。
+  const result = await bridge.generateFlow({ taskCode, recordingIds, instruction: request, conversation });
+  const flow = result.flow;
+  const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: result.title || flow.title });
   const refined = {
     ...sources[0],
     id: recording.id,
-    name: flow.title,
+    name: recording.name,
     recordingId: recording.id,
     flowFile: recording.flowFile,
     artifactsDir: recording.artifactsDir,
@@ -2174,8 +2379,8 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
     processGroups: undefined,
     references: [],
     resultTab: "Process",
-    aiRationale: Array.isArray(parsed.rationale) ? parsed.rationale : [],
-    aiRisks: Array.isArray(parsed.risks) ? parsed.risks : [],
+    aiRationale: Array.isArray(result.rationale) ? result.rationale : [],
+    aiRisks: Array.isArray(result.risks) ? result.risks : [],
   };
   const state = recordingSession();
   state.items.push(refined);
@@ -2191,7 +2396,7 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   return refined;
 }
 
-async function invokeAIMerge(option, prompt) {
+async function invokeAIMerge(option, prompt, extra = {}) {
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext();
@@ -2203,16 +2408,32 @@ async function invokeAIMerge(option, prompt) {
     input: prompt || "User request",
   };
   const userText = prompt || optionLabels[option] || option;
-  item.chat.push({ role: "user", text: userText });
+  // 附件只在本次消息里生效：聊天条目存 id/name 芯片，发送后即清空。
+  const attachmentItems = aiAttachmentItems(extra.attachments);
+  state.aiAttachments = [];
+  item.chat.push({
+    role: "user",
+    text: userText,
+    ...(attachmentItems.length
+      ? {
+          attachments: attachmentItems.map((entry) => ({
+            id: entry.recordingId || entry.id,
+            name: entry.name,
+          })),
+        }
+      : {}),
+  });
   setAssistantDraft(item, "");
   renderAIPanel();
 
-  const selected = (state.aiSourceIds?.length
-    ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
-    : state.items.filter((entry) => entry.checked && entry.analyzed));
+  const selected = attachmentItems.length
+    ? attachmentItems
+    : state.aiSourceIds?.length
+      ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
+      : state.items.filter((entry) => entry.checked && entry.analyzed);
   const sources = selected.length ? selected : (recording?.analyzed ? [recording] : []);
 
-  if (aiRequestNeedsMaterial(userText)) {
+  if (extra.forceMaterial || aiRequestNeedsMaterial(userText)) {
     try {
       item.chat.push({ role: "assistant", text: "Pi is preparing a separate refined material. The original recording will not be overwritten…" });
       renderAIPanel();
@@ -2276,6 +2497,32 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
 // Bridge integration points used after recorder stop and replay failures.
 window.startFlowLinkAIAdvice = startAIAdvice;
 
+// 应用级轻提示：普通信息 6 秒后自动消失，警告需手动关闭。
+function showFlowlinkNotice(message, kind = "info") {
+  let host = document.getElementById("flowlinkNotices");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "flowlinkNotices";
+    document.body.appendChild(host);
+  }
+  const notice = document.createElement("div");
+  notice.className = `flowlink-notice ${kind === "warn" ? "warn" : "info"}`;
+  notice.setAttribute("role", kind === "warn" ? "alert" : "status");
+  const text = document.createElement("span");
+  text.textContent = String(message ?? "");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "flowlink-notice-close";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "×";
+  close.onclick = () => notice.remove();
+  notice.append(text, close);
+  host.appendChild(notice);
+  if (kind !== "warn") setTimeout(() => notice.remove(), 6000);
+  return notice;
+}
+window.showFlowlinkNotice = showFlowlinkNotice;
+
 function requestedStep(text) {
   const m =
     text.match(
@@ -2314,7 +2561,8 @@ function submitAssistantMessage() {
   ensureAssistantData(item);
   const message = $("assistantInput").value.trim();
   if (!message) return;
-  invokeAIMerge("input", message);
+  const state = recordingSession();
+  invokeAIMerge("input", message, { attachments: state.aiAttachments });
 }
 
 function beginNodeRecording(item, index) {

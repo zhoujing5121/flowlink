@@ -17,6 +17,10 @@ if (!existsSync(exePath)) {
 if (!existsSync(ffmpegPath)) {
 	throw new Error(`Electron ffmpeg.dll is missing from the package: ${ffmpegPath}`)
 }
+const iconPath = join(appDir, 'resources', 'icon.ico')
+if (!existsSync(iconPath)) {
+	throw new Error(`App icon is missing from the package: ${iconPath}`)
+}
 
 rmSync(zipPath, { force: true })
 const result = spawnSync('tar.exe', [

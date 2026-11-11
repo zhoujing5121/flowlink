@@ -68,9 +68,9 @@
 		}
 	}
 
-	window.loadTaskDetails = async function (taskCode) {
+	window.loadTaskDetails = async function (taskCode, opts = {}) {
 		const state = recordingSession(taskCode)
-		if (state.detailsLoaded) return
+		if (state.detailsLoaded && !opts.force) return
 		state.detailsLoadPromise ||= (async () => {
 			const recordings = await F.tasks.getRecordings(taskCode)
 			const existing = new Map(state.items.map((item) => [item.recordingId, item]))
@@ -147,7 +147,7 @@
 		// 串行处理保存，并在提交草稿前征求确认。
 		// 只有 TaskStore 接受保存后，草稿才会成为 flowData 中的正式条目。
 		if (profileSaveInFlight || !validateProfileServices()) return
-		if (!(await confirmWorkspaceAction('Save this taskflow profile?'))) return
+		if (!(await confirmWorkspaceAction('Save this flow profile?'))) return
 		// 先复制表单值和数组内容构成独立 patch；等待 IPC 时，输入草稿不会被服务端调用改写。
 		const draft = profileDraft()
 		const code = currentFlow?.code || nextTaskflowCode()
@@ -185,7 +185,7 @@
 				profileDrafts.delete('new')
 				activeFlowKey = code
 			}
-			$('drawerTitle').textContent = code.replace('TASKFLOW', 'Taskflow')
+			$('drawerTitle').textContent = code.replace('TASKFLOW', 'FlowLink')
 			draft.name = patch.name
 			draft.description = patch.description
 			render()
@@ -1431,6 +1431,40 @@
 		console.log('[bridge] 录制完成事件：', recording)
 	})
 
+	/** 自动细化（录制停止后主进程火后即忘生成 REFINED 孪生录制） */
+	F.on('ai:autoRefine', (event) => {
+		if (!event || typeof event !== 'object') return
+		// Pi 未配置属于正常情况：静默跳过，不打扰用户。
+		if (event.state === 'skipped') return
+		const taskCode = event.taskCode || activeFlowKey
+		if (event.state === 'failed') {
+			if (typeof window.showFlowlinkNotice === 'function') {
+				window.showFlowlinkNotice(`Auto-refine failed: ${event.error || 'unknown error'}`, 'warn')
+			}
+			return
+		}
+		if (event.state !== 'done') return
+		void (async () => {
+			try {
+				// 强制重载该任务的录制列表：已存在的条目按 recordingId 保留，新条目追加。
+				const state = recordingSession(taskCode)
+				state.detailsLoaded = false
+				await window.loadTaskDetails(taskCode, { force: true })
+				if (currentFlow && currentFlow.code === taskCode) {
+					currentFlow.recordingCount = Math.max(
+						currentFlow.recordingCount || 0,
+						state.items.filter((entry) => entry.recordingId).length,
+					)
+				}
+			} catch (err) {
+				console.error('[bridge] 自动细化后刷新录制列表失败：', err)
+			}
+			if (typeof window.showFlowlinkNotice === 'function') {
+				window.showFlowlinkNotice(`${event.name || 'A refined material'} created from the recording`)
+			}
+		})()
+	})
+
 	/** 录制错误 */
 	F.on('recording:error', ({ message }) => {
 		console.error('[bridge] 录制错误：', message)
@@ -1541,7 +1575,7 @@
 			if (!(await confirmWorkspaceAction(message))) return
 			await finishBrowserRecording({ skipEmptyConfirmation: true })
 			if (session.stage === 'recording') return
-		} else if (!(await confirmWorkspaceAction('Close this taskflow?'))) {
+		} else if (!(await confirmWorkspaceAction('Close this flow?'))) {
 			return
 		}
 		if (!currentFlow && activeFlowKey) {
@@ -1553,7 +1587,7 @@
 				profileDrafts.delete(activeFlowKey)
 			} catch (err) {
 				console.error('[bridge] 未保存 Taskflow 清理失败：', err)
-				alert('Could not discard this unsaved taskflow: ' + err.message)
+				alert('Could not discard this unsaved flow: ' + err.message)
 				return
 			}
 		}
