@@ -40,9 +40,53 @@ export function pageIndexOf(action: CoalescedAction, fallback: number): number {
  *
  * @param state 会被就地更新（`state.page` 变成最后一个动作所在的页），跨批次调用要复用同一个对象
  */
-export function withTabSwitches(actions: CoalescedAction[], state: TabSwitchState): PlannedItem[] {
+export function withTabSwitches(
+	actions: CoalescedAction[],
+	state: TabSwitchState,
+	hostEvents: ReadonlyArray<{
+		action: string
+		ts: number
+		index: number
+		url?: string
+	}> = [],
+): PlannedItem[] {
 	const items: PlannedItem[] = []
-	for (const action of actions) {
+	const timeline = [
+		...actions.map((action) => ({ ts: action.ts, priority: 2, action })),
+		...hostEvents
+			.filter((event) => event.action === 'tabCreated' || event.action === 'tabActivated')
+			.map((event) => ({
+				ts: event.ts,
+				priority: event.action === 'tabCreated' ? 0 : 1,
+				hostEvent: event,
+			})),
+	].sort((a, b) => a.ts - b.ts || a.priority - b.priority)
+	for (const entry of timeline) {
+		if ('hostEvent' in entry) {
+			const { hostEvent } = entry
+			if (hostEvent.action === 'tabCreated') {
+				if (hostEvent.index > 0) {
+					items.push({
+						kind: 'openTab',
+						ts: hostEvent.ts,
+						index: hostEvent.index,
+						pageIndex: hostEvent.index,
+						...(hostEvent.url ? { url: hostEvent.url } : {}),
+					})
+					state.page = hostEvent.index
+				}
+			} else if (hostEvent.index !== state.page) {
+				items.push({
+					kind: 'switchTab',
+					ts: hostEvent.ts,
+					index: hostEvent.index,
+					pageIndex: hostEvent.index,
+				})
+				state.page = hostEvent.index
+			}
+			continue
+		}
+		const { action } = entry
 		const page = pageIndexOf(action, state.page)
 		if (page !== state.page) {
 			items.push({ kind: 'switchTab', ts: action.ts, index: page, pageIndex: page })

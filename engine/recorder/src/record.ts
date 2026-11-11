@@ -211,6 +211,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	let stepSeq = 0
 	/** 上传文件占位变量序号：file_1 / file_2 … */
 	let uploadSeq = 0
+	let inputSeq = 0
 	/** 每个标签页最近一次签名（expect 推断的兜底 before） */
 	const lastSigByPage = new Map<number, PageSignature>()
 	/** 页面签名时间线：多标签页各自打点，按 pageIndex 过滤使用 */
@@ -219,6 +220,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 	/** 当前动作所在标签页；openTab 本身也会切换当前页。 */
 	const tabState = { page: 0 }
+	const openedTabIndexes = new Set<number>()
 
 	/** 给 step 打标签页标记：index 0 可省略（回放默认从起点页开始） */
 	const markPage = (step: Step, index: number): Step =>
@@ -252,7 +254,14 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const recordOpenedTab = (target: Page, knownIndex?: number): void => {
 		if (!recordingActive) return
 		const index = knownIndex ?? ensurePageIndex(target)
-		if (index <= 0) return
+		if (index <= 0 || openedTabIndexes.has(index)) return
+		const hostOwnsOpenEvent = opts.hostEvents?.some(
+			(event) =>
+				event.action === 'tabCreated' &&
+				event.tabId === opts.tabIds?.[index],
+		)
+		if (hostOwnsOpenEvent) return
+		openedTabIndexes.add(index)
 		const openUrl = target.url()
 		pushStep(
 			{
@@ -435,7 +444,11 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				if (!url || url === previousUrl) return
 				lastNavigationUrlByPage.set(target, url)
 				const now = Date.now()
-				const recent = allEvents.filter((item) => item.pageIndex === ensurePageIndex(target) && item.kind === 'click' && now - item.ts >= 0 && now - item.ts < 2500).at(-1)
+				const pageIndex = ensurePageIndex(target)
+				const tabId = opts.tabIds?.[pageIndex]
+				const recent = allEvents
+					.filter((item) => item.pageIndex === pageIndex && item.kind === 'click' && now - item.ts >= 0 && now - item.ts < 2500)
+					.at(-1)
 				const clickedHref = recent?.facts?.attributes?.href
 				const authUrl = (value: string): boolean => {
 					try {
@@ -443,10 +456,22 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 						return /(^|\.)(login|logon|auth|sso|signin|identity|idp)(\.|$)/i.test(parsed.hostname) || /\/(login|logon|oauth|authorize|saml|signin|sso)([/?#]|$)/i.test(parsed.pathname)
 					} catch { return false }
 				}
+				const manualRequest = tabId
+					? [...(opts.hostEvents ?? [])].reverse().find((event) =>
+							event.action === 'userNavigateRequested' &&
+							event.tabId === tabId &&
+							event.url === url &&
+							now - event.ts >= 0 &&
+							now - event.ts <= 30_000,
+						)
+					: undefined
 				let navigationType: RawEvent['navigationType'] = 'unknown_navigation'
 				const evidence: string[] = []
 				if (!previousUrl) { navigationType = 'initial'; evidence.push('no-previous-url') }
-				else if (clickedHref) {
+				else if (manualRequest) {
+					navigationType = 'user_navigate'
+					evidence.push('explicit-browser-address-bar-request')
+				} else if (clickedHref) {
 					try {
 						const expected = new URL(clickedHref, previousUrl).href
 						if (expected === url || new URL(expected).origin === new URL(url).origin) { navigationType = 'user_link'; evidence.push('recent-click-href-match') }
@@ -454,13 +479,20 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					} catch {}
 				}
 				if (navigationType === 'unknown_navigation' && authUrl(url)) { navigationType = authUrl(previousUrl || '') ? 'login_redirect' : 'sso_redirect'; evidence.push('authentication-url-heuristic') }
-				if (navigationType === 'unknown_navigation' && previousUrl && new URLSafeHost(previousUrl) !== new URLSafeHost(url)) evidence.push('cross-host-navigation-without-matched-user-click')
+				if (navigationType === 'unknown_navigation' && previousUrl && URLSafeHost(previousUrl) !== URLSafeHost(url)) evidence.push('cross-host-navigation-without-matched-user-click')
 				if (navigationType === 'unknown_navigation') evidence.push('cause-not-observable-from-page-event')
-				enqueueRawEvent(target, frame, {
-					kind: 'navigation', ts: now, frameUrl: url, url, previousUrl,
-					directNavigation: navigationType === 'user_navigate' || navigationType === 'user_link' || navigationType === 'history_navigation' || navigationType === 'unknown_navigation',
-					navigationType, navigationEvidence: evidence,
-				})
+				if (!['sso_redirect', 'login_redirect', 'auto_redirect'].includes(navigationType)) {
+					enqueueRawEvent(target, frame, {
+						kind: 'navigation',
+						ts: now,
+						frameUrl: url,
+						url,
+						previousUrl,
+						directNavigation: !['initial', 'sso_redirect', 'login_redirect', 'auto_redirect'].includes(navigationType),
+						navigationType,
+						navigationEvidence: evidence,
+					})
+				}
 			})
 
 			target.on('dialog', (dialog) => {
@@ -820,7 +852,15 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 						})
 						return { kind: 'input', id, target, value: '{{password}}', clear: true }
 					}
-					return { kind: 'input', id, target, value: action.value ?? '', clear: true }
+					const name = `input_${++inputSeq}`
+					variables.set(name, {
+						name,
+						type: 'string',
+						defaultValue: action.value ?? '',
+						secret: false,
+						source: 'input',
+					})
+					return { kind: 'input', id, target, value: `{{${name}}}`, clear: true }
 				}
 				case 'select': {
 					if (!target) return undefined
@@ -999,17 +1039,21 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		/* ---------- buffer 冲洗 ---------- */
 
 		let flushChain: Promise<void> = Promise.resolve()
+		let hostEventCursor = 0
 		const flush = (force: boolean): Promise<void> => {
 			// 定时器与 Stop 可能同时触发冲洗。所有批次都接入同一条 Promise 链，
 			// 确保同一时刻只有一个消费者从 pending 拆批；最终强制冲洗会排在旧批次之后，
 			// 并等待它们处理完毕后再清理标记和写盘。
 			flushChain = flushChain.then(async () => {
-				if (!pending.length) return
+				const hostEvents = opts.hostEvents ?? []
+				if (!pending.length && hostEventCursor >= hostEvents.length) return
 				if (!force && Date.now() - lastEventTs < bufferMs) return
 				// splice 在处理前同步取走本批，使随后到达的事件留待下一轮，不与当前批混淆。
 				const batch = pending.splice(0, pending.length)
+				const hostBatch = hostEvents.slice(hostEventCursor)
+				hostEventCursor += hostBatch.length
 				try {
-					await processBatch(batch)
+					await processBatch(batch, hostBatch)
 				} catch (err) {
 					warnings.push(`批次处理失败（${batch.length} 个事件）：${(err as Error).message}`)
 				}
@@ -1026,13 +1070,70 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			return next.kind === 'action' ? next.action.ts : next.ts
 		}
 
-		const processBatch = async (batch: RawEvent[]): Promise<void> => {
-			const actions = coalesceEvents(batch, { bufferMs })
+		const processBatch = async (
+			batch: RawEvent[],
+			hostBatch: NonNullable<RecordOptions['hostEvents']>[number][],
+		): Promise<void> => {
+			const explicitNavigations = hostBatch.filter(
+				(event) => event.action === 'userNavigateRequested' && event.url,
+			)
+			const pageEvents = batch.filter((event) => {
+				if (event.kind !== 'navigation') return true
+				return !explicitNavigations.some((request) => {
+					const pageIndex = opts.tabIds?.indexOf(request.tabId) ?? -1
+					return (
+						pageIndex === event.pageIndex &&
+						Math.abs(event.ts - request.ts) <= 30_000 &&
+						request.url === event.url
+					)
+				})
+			})
+			const actions = coalesceEvents(pageEvents, { bufferMs })
+			const explicitNavigationActions: CoalescedAction[] = explicitNavigations.flatMap((event) => {
+				const pageIndex = opts.tabIds?.indexOf(event.tabId) ?? -1
+				if (pageIndex < 0 || !event.url) return []
+				const raw: RawEvent = {
+					kind: 'navigation',
+					ts: event.ts,
+					pageIndex,
+					tabId: event.tabId,
+					url: event.url,
+					previousUrl: event.previousUrl,
+					directNavigation: true,
+					navigationType: 'user_navigate',
+					navigationEvidence: ['explicit-browser-address-bar-request'],
+				}
+				return [{
+					kind: 'navigate',
+					ts: event.ts,
+					pageIndex,
+					url: event.url,
+					previousUrl: event.previousUrl,
+					navigationType: 'user_navigate',
+					navigationEvidence: raw.navigationEvidence,
+					merged: 1,
+					raw: [raw],
+				}]
+			})
+			const uniqueActions = actions.filter((action) => {
+				if (action.kind !== 'navigate') return true
+				return !explicitNavigations.some((event) => {
+					const pageIndex = opts.tabIds?.indexOf(event.tabId) ?? -1
+					return (
+						pageIndex === action.pageIndex &&
+						Math.abs(action.ts - event.ts) <= 30_000 &&
+						event.url === action.url
+					)
+				})
+			})
+			const orderedActions = [...uniqueActions, ...explicitNavigationActions].sort(
+				(a, b) => a.ts - b.ts,
+			)
 
 			/* ---- 1. hover 意义过滤（要跨批次：hover 的「后续 click」可能落在下一批） ---- */
 			const nonHover: CoalescedAction[] = []
 			const batchHovers: CoalescedAction[] = []
-			for (const action of actions) {
+			for (const action of orderedActions) {
 				if (action.kind === 'hover') batchHovers.push(action)
 				else nonHover.push(action)
 			}
@@ -1052,7 +1153,16 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			/* ---- 2. 纯函数规划：标签页切换 + 对话框插入 ---- */
 			const merged = [...keptHovers, ...nonHover].sort((a, b) => a.ts - b.ts)
 			const unconsumedDialogs = dialogs.filter((dialog) => !consumedDialogs.has(dialog))
-			const planned = insertDialogs(withTabSwitches(merged, tabState), unconsumedDialogs)
+			const hostTabEvents = hostBatch.flatMap((event) => {
+				if (event.action !== 'tabCreated' && event.action !== 'tabActivated') return []
+				const index = opts.tabIds?.indexOf(event.tabId) ?? -1
+				if (index < 0) return []
+				return [{ action: event.action, ts: event.ts, index, url: event.url }]
+			})
+			const planned = insertDialogs(
+				withTabSwitches(merged, tabState, hostTabEvents),
+				unconsumedDialogs,
+			)
 			for (const dialog of planned.consumed) consumedDialogs.add(dialog)
 			const items = planned.items
 
@@ -1064,6 +1174,21 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				if (item.kind === 'switchTab') {
 					// 合成步骤：用户点的是浏览器标签栏，页面事件流里没有这条
 					pushStep({ kind: 'switchTab', id, index: item.index }, item.pageIndex)
+					continue
+				}
+				if (item.kind === 'openTab') {
+					if (!openedTabIndexes.has(item.index)) {
+						openedTabIndexes.add(item.index)
+						pushStep(
+							{
+								kind: 'openTab',
+								id,
+								...(item.url && item.url !== 'about:blank' ? { url: item.url } : {}),
+							},
+							item.index,
+						)
+					}
+					tabState.page = item.index
 					continue
 				}
 				if (item.kind === 'dialog') {

@@ -327,6 +327,12 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 				await deps.page.waitForLoadState('networkidle', { timeout })
 				return { note: 'networkIdle' }
 			}
+			if (step.condition === 'userOperation') {
+				throw new StepFailure(
+					'NOT_ACTIONABLE',
+					'userOperation wait 应由 run.ts 的宿主确认逻辑处理',
+				)
+			}
 			if (!step.target) throw new StepFailure('NOT_ACTIONABLE', 'wait element 缺少 target')
 			const { hit } = await withTarget(deps, step.target, async (h) => {
 				await h.locator.waitFor({ state: 'visible', timeout })
@@ -366,6 +372,9 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 		case 'switchTab':
 			// 标签页切换由 run.ts 的 page 管理逻辑处理
 			throw new StepFailure('NOT_ACTIONABLE', 'switchTab 步骤应由 run.ts 的 page 管理逻辑处理')
+
+		case 'condition':
+			throw new StepFailure('NOT_ACTIONABLE', 'condition 步骤应由 run.ts 的流程分支逻辑处理')
 
 		case 'openTab':
 		case 'closeTab':

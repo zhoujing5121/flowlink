@@ -45,6 +45,8 @@ const api = {
 	playback: {
 		run: (opts: { taskCode: string; recordingId: string; variables?: Record<string, string> }) =>
 			ipcRenderer.invoke('playback:run', opts),
+		continueUserOperation: (token: string) =>
+			ipcRenderer.invoke('playback:continueUserOperation', token),
 		/** 仅回放已有录制的前 N 步，为节点重录准备浏览器状态 */
 		runPrefix: (opts: { taskCode: string; recordingId: string; stepCount: number }) =>
 			ipcRenderer.invoke('playback:runPrefix', opts),
@@ -61,6 +63,8 @@ const api = {
 		load: (flowFile: string) => ipcRenderer.invoke('flow:load', flowFile),
 		updateVariables: (opts: { taskCode: string; recordingId: string; variables: unknown[] }) =>
 			ipcRenderer.invoke('flow:updateVariables', opts),
+		updateSteps: (opts: { taskCode: string; recordingId: string; steps: unknown[] }) =>
+			ipcRenderer.invoke('flow:updateSteps', opts),
 	},
 
 	browser: {
@@ -84,6 +88,7 @@ const api = {
 			'playback:step',
 			'playback:done',
 			'playback:error',
+			'playback:userOperation',
 			'browser:urlChanged',
 			'browser:loading',
 			'recording:captureFrame',

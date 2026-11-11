@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **Pi:** Support a generic `custom` provider using `config/models.json` for private OpenAI-compatible endpoints.
+- **Pi:** Support `--pi-system-proxy` and `--pi-proxy=<URL>` launch options for provider requests.
+- **Recording:** Capture native tab opens, tab switches, and user-requested navigation while suppressing classified SSO/login redirects; save recorded text inputs as Reference variables, marking password values secret.
+- **Process:** Edit grouped flows with manual steps, waits, and assertion-based true/false branches; replay allows at most three visits per group.
 - **UI:** Restore saved recordings into the Design tab after app restart.
 - **UI:** Refine side pane with three mock options that dispatch to the existing merge flow.
 - **UI:** "Auto" badge on every step in Process, Instruction, and Test views.
@@ -19,6 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **Flow:** Migrate existing schema v1 recordings to schema v2 for condition branches without changing their ordered replay behavior.
 - **Storage:** Delete a recording's Flow and artifacts with the recording, remove all recordings' files when deleting a taskflow, and discard generated files when closing a new unsaved taskflow.
 
 ### Fixed

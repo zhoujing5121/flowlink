@@ -3050,6 +3050,16 @@ body {
   box-shadow: 0 8px 24px #0004;
 }
 
+.process-step-dialog {
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.process-step-error,
+.process-status.error {
+  color: #b00020;
+}
+
 .reference-dialog::backdrop {
   background: #0005;
 }
@@ -3173,6 +3183,30 @@ body {
 
 #captureControlHost:empty {
   display: none;
+}
+
+.playback-user-operation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #101416;
+}
+
+.playback-user-operation[hidden] {
+  display: none;
+}
+
+.playback-user-operation span {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playback-user-operation .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .browser-page-tabs {
@@ -3399,6 +3433,30 @@ body {
   background: #fff;
 }
 
+.process-graph-limit,
+.process-status {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  left: 8px;
+  max-width: min(440px, calc(100% - 16px));
+  margin: 0;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #c5cdd4;
+  color: #49525a;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.process-status {
+  top: 36px;
+}
+
+.process-status.error {
+  color: #b00020;
+}
+
 .process-canvas.panning {
   cursor: grabbing;
 }
@@ -3412,7 +3470,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 40px;
-  padding: 0 16px 0 0;
+  padding: 48px 16px 0 0;
 }
 
 .canvas-group {

@@ -541,7 +541,7 @@
 						pending.recordedFlowSteps = []
 						pending.media = mediaResult
 						if (typeof finishGroupRecording === 'function') {
-							finishGroupRecording(state, pending, target)
+							await finishGroupRecording(state, pending, target)
 							return
 						}
 					}
@@ -655,7 +655,7 @@
 					pending.recordedFlowSteps = flowSteps
 					if (typeof finishGroupRecording === 'function') {
 						pending.media = item.media
-						finishGroupRecording(state, pending, target)
+						await finishGroupRecording(state, pending, target)
 						return
 					}
 				}
@@ -1463,11 +1463,36 @@
 		if (item.resultTab === 'Test') renderSummaryWorkspace()
 	})
 
+	F.on('playback:userOperation', ({ token, stepId, prompt }) => {
+		const host = $('playbackUserOperation')
+		const label = $('playbackUserOperationPrompt')
+		const button = $('playbackUserOperationContinue')
+		if (!host || !label || !button || typeof token !== 'string') return
+		host.dataset.token = token
+		label.textContent = `${stepId}: ${prompt}`
+		host.title = `${stepId}: ${prompt}`
+		host.hidden = false
+		button.onclick = async () => {
+			button.disabled = true
+			try {
+				const resumed = await F.playback.continueUserOperation(token)
+				if (!resumed) throw new Error('This user-operation wait is no longer active.')
+				host.hidden = true
+				delete host.dataset.token
+			} catch (error) {
+				label.textContent = error?.message || String(error)
+			} finally {
+				button.disabled = false
+			}
+		}
+	})
+
 	/** 回放完成 */
 	F.on('playback:done', (result) => {
 		// 最终结果是所有步骤状态的权威来源；先将界面状态与最终结果对齐，
 		// 再清除运行标记。
 		console.log('[bridge] 回放完成：', result.ok ? '成功' : '失败', result.metrics)
+		$('playbackUserOperation')?.setAttribute('hidden', '')
 		const item = findTestItem()
 		if (!item) return
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
@@ -1491,6 +1516,7 @@
 	/** 回放错误 */
 	F.on('playback:error', ({ message }) => {
 		console.error('[bridge] 回放错误：', message)
+		$('playbackUserOperation')?.setAttribute('hidden', '')
 		const item = findTestItem()
 		if (item?.testRunning) {
 			item.testRunning = false

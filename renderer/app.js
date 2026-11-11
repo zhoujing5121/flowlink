@@ -1485,7 +1485,7 @@ async function buildMergedFlow(chosen, combined) {
     let steps = [];
     if (item.flowFile) {
       try {
-        const flow = await F.flow.load(item.flowFile);
+        const flow = await window.flowlink.flow.load(item.flowFile);
         steps = flow?.steps || [];
         for (const variable of flow?.variables || []) {
           if (!mergedVariables.has(variable.name))
@@ -1599,7 +1599,7 @@ async function confirmRecordingSummary() {
   };
   try {
     const flow = await buildMergedFlow(chosen, combined);
-    const recording = await F.recording.persistMerged({
+    const recording = await window.flowlink.recording.persistMerged({
       taskCode: currentFlow?.code || activeFlowKey,
       flow,
       name: combined.name,
@@ -1689,6 +1689,18 @@ function renderSummaryWorkspace() {
   renderAIPanel();
   bindStepEditor();
   bindProcessMap();
+  if (
+    active === "Process" &&
+    item?.recordingId &&
+    !item.processFlowLoaded &&
+    !item.processFlowLoading &&
+    !item.processFlowError
+  ) {
+    void hydrateProcessFlow(item).then((loaded) => {
+      if (loaded && currentAssistantItem() === item && item.resultTab === "Process")
+        renderSummaryWorkspace();
+    });
+  }
   bindReferenceFiles();
   bindMetricPreferences();
   bindScreenshotZoom();
@@ -2434,7 +2446,66 @@ function ensureStepDetails(item) {
 }
 
 let processGroupSequence = 0;
+function executableFlowSteps(steps) {
+  const result = [];
+  for (const step of steps || []) {
+    if (step.kind === "group") result.push(...executableFlowSteps(step.steps));
+    else result.push(step);
+  }
+  return result;
+}
+
+function processStepLabel(step, index, groups = []) {
+  const target =
+    step.target?.description ||
+    step.target?.candidates?.[0]?.value?.name ||
+    step.target?.candidates?.[0]?.value ||
+    "";
+  if (step.kind === "input") return `Input · ${target || "field"}`;
+  if (step.kind === "click" || step.kind === "hover")
+    return `${step.kind === "click" ? "Click" : "Hover"} · ${target || `Step ${index + 1}`}`;
+  if (step.kind === "navigate") return `Navigate · ${step.url}`;
+  if (step.kind === "openTab") return `Open tab${step.url ? ` · ${step.url}` : ""}`;
+  if (step.kind === "switchTab") return `Switch to tab ${step.index + 1}`;
+  if (step.kind === "wait") {
+    if (step.condition === "timeout") return `Wait · ${step.ms ?? 1000} ms`;
+    if (step.condition === "userOperation") return "Wait · user operation";
+    if (step.condition === "networkIdle") return "Wait · network idle";
+    return `Wait · element present${target ? ` · ${target}` : ""}`;
+  }
+  if (step.kind === "condition") {
+    const name = (id) => groups.find((group) => group.id === id)?.label || id || "End";
+    return `Condition · ${step.assertion.kind} · true → ${name(step.trueGroupId)} · false → ${name(step.falseGroupId)}`;
+  }
+  return `${step.kind}${target ? ` · ${target}` : ""}`;
+}
+
 function ensureProcessGroups(item) {
+  if (Array.isArray(item?.processFlow?.steps)) {
+    let start = 0;
+    return item.processFlow.steps
+      .filter((step) => step.kind === "group")
+      .map((group, index, all) => {
+        const flowSteps = group.steps || [];
+        const view = {
+          id: group.id,
+          name: group.label,
+          label: group.label,
+          index,
+          start,
+          count: flowSteps.length,
+          number: String(index + 1).padStart(2, "0"),
+          tab: flowSteps.find((step) => step.page?.index !== undefined)?.page?.index + 1 || 1,
+          url: flowSteps.find((step) => step.pageUrl)?.pageUrl || item.url || "",
+          flowSteps,
+          steps: flowSteps.map((step, stepIndex) =>
+            processStepLabel(step, stepIndex, all),
+          ),
+        };
+        start += flowSteps.length;
+        return view;
+      });
+  }
   // 根据演示种子数据按需创建分组，再生成派生视图；分组 ID 保持稳定，
   // start 偏移则反映其在当前扁平步骤列表中的位置。
   ensureAssistantData(item);
@@ -2476,6 +2547,82 @@ function ensureProcessGroups(item) {
   });
 }
 
+async function hydrateProcessFlow(item) {
+      if (!item || item.processFlowLoaded || item.processFlowLoading) return false;
+      if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.load) return false;
+      item.processFlowLoading = true;
+      try {
+        const flow = await window.flowlink.flow.load(item.flowFile);
+        if (!flow?.steps?.length) throw new Error("Saved Flow has no executable steps.");
+        let steps = flow.steps;
+        if (!steps.every((step) => step.kind === "group")) {
+          const groups = ensureProcessGroups(item);
+          const total = executableFlowSteps(steps).length;
+          const definitions =
+            groups.reduce((sum, group) => sum + group.count, 0) === total && groups.length
+              ? groups
+              : [{ id: "group-recorded", name: "Recorded flow", count: total }];
+          let offset = 0;
+          steps = definitions.map((group, index) => {
+            const count =
+              index === definitions.length - 1
+                ? steps.length - offset
+                : Math.min(group.count, steps.length - offset);
+            const value = {
+              kind: "group",
+              id: group.id || `group-recorded-${index + 1}`,
+              label: group.name || `Group ${index + 1}`,
+              steps: steps.slice(offset, offset + count),
+            };
+            offset += count;
+            return value;
+          });
+          if (offset < flow.steps.length) {
+            steps[steps.length - 1].steps.push(...flow.steps.slice(offset));
+          }
+        }
+        item.processFlow = { ...flow, steps };
+        item.processFlowLoaded = true;
+        item.processFlowError = "";
+        syncProcessFlowPresentation(item);
+        return true;
+      } catch (error) {
+        item.processFlowError = error instanceof Error ? error.message : String(error);
+        console.error("[process] Unable to load saved Flow:", error);
+        return false;
+      } finally {
+        item.processFlowLoading = false;
+      }
+  }
+
+  function syncProcessFlowPresentation(item) {
+      const steps = executableFlowSteps(item.processFlow?.steps || []);
+      item.steps = steps.map((step, index) => processStepLabel(step, index));
+      item.stepDetails = steps.map((step) => ({
+        type: step.kind,
+        target: step.target?.description || "",
+        value: step.kind === "input" ? step.value : "",
+        url: step.url || "",
+        tab: (step.page?.index ?? 0) + 1,
+      }));
+      item.processGroups = ensureProcessGroups(item);
+  }
+
+  async function persistProcessFlow(item) {
+      if (!item?.processFlow || !item.recordingId || !item.flowFile)
+        throw new Error("Save this recording before editing its Process flow.");
+      const flow = await window.flowlink.flow.updateSteps({
+        taskCode: currentFlow?.code || activeFlowKey,
+        recordingId: item.recordingId,
+        steps: item.processFlow.steps,
+      });
+      item.processFlow = { ...item.processFlow, version: flow.version, steps: flow.steps };
+      item.processFlowError = "";
+      item.nodeUpdates = true;
+      item.referenceVariablesLoaded = false;
+      syncProcessFlowPresentation(item);
+      rebuildItemTestFlow(item);
+  }
 const genericGroupIcon =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%2214%22 height=%2214%22 rx=%222%22 fill=%22none%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3Cpath d=%22M4 8h8M8 4v8%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3C/svg%3E";
 function groupFaviconUrl(url) {
@@ -2657,10 +2804,15 @@ function rebuildTestFlowFromItem(item) {
 
 async function rebuildItemTestFlow(item) {
   if (!item) return;
+  if (item.processFlow?.steps) {
+    item.testFlowSteps = executableFlowSteps(item.processFlow.steps);
+    item.testResults = item.testFlowSteps.map(() => ({ status: "pending" }));
+    return;
+  }
   // 界面草稿尚未发生变化时，优先使用已持久化的 Flow 文件。
   if (item.flowFile && !item.nodeUpdates) {
     try {
-      const flow = await F.flow.load(item.flowFile);
+      const flow = await window.flowlink.flow.load(item.flowFile);
       if (flow) {
         item.testFlowSteps = (flow.steps || []).map((step) => step);
         item.testResults = item.testFlowSteps.map(() => ({
@@ -3188,11 +3340,14 @@ function processMapMarkup(item) {
   const groups = ensureProcessGroups(item);
   return `
   <div class="process-canvas" tabindex="0" aria-label="Process canvas">
+    <p class="process-graph-limit">Conditions route between groups. Each group can run at most 3 times per replay.</p>
+    ${item.processFlowLoading ? `<div class="process-status" role="status">Loading saved Flow…</div>` : ""}
+    ${item.processFlowError ? `<div class="process-status error" role="alert">${escapeHTML(item.processFlowError)}</div>` : ""}
     <div class="process-canvas-world">
       ${groups.map((group) => `
-      <section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}">
+      <section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${escapeHTML(group.id)}">
         <img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null">
-        <button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">
+        <button class="canvas-group-heading" data-group-select="${escapeHTML(group.id)}" aria-pressed="${item.selectedGroup === group.id}">
           ${group.number} · ${escapeHTML(group.name)}
         </button>
         <div class="canvas-group-nodes">
@@ -3219,6 +3374,7 @@ function processMapMarkup(item) {
             </span>
           </div>`).join("")
           }
+          ${group.steps.length ? "" : `<div class="canvas-step empty">No steps yet</div>`}
         </div>
       </section>`).join("")
       }
@@ -3226,7 +3382,9 @@ function processMapMarkup(item) {
     ${groups
       .map(
         (group) => `
-    <div class="canvas-group-actions" data-group-actions="${group.id}" ${item.selectedGroup === group.id ? "" : "hidden"}>
+    <div class="canvas-group-actions" data-group-actions="${escapeHTML(group.id)}" ${item.selectedGroup === group.id ? "" : "hidden"}>
+      <button data-group-add-step="${escapeHTML(group.id)}" ${item.processFlow ? "" : "disabled"}>Add step</button>
+      <button data-group-add-after="${escapeHTML(group.id)}" ${item.processFlow ? "" : "disabled"}>Add group after</button>
       <button data-group-record="${group.id}">Re-record</button>
       <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
       <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
@@ -3246,6 +3404,251 @@ function processMapMarkup(item) {
     </div>
   </div>`;
 }
+
+function nextFlowVariableName(flow, prefix) {
+  const names = new Set((flow.variables || []).map((variable) => variable.name));
+  let index = 1;
+  while (names.has(`${prefix}_${index}`)) index++;
+  return `${prefix}_${index}`;
+}
+
+async function addProcessGroupAfter(item, groupId) {
+  const groups = item.processFlow?.steps || [];
+  const index = groups.findIndex((group) => group.kind === "group" && group.id === groupId);
+  if (index < 0) return;
+  const name = window.prompt("New group name", `Group ${groups.length + 1}`);
+  if (name === null) return;
+  const label = name.trim();
+  if (!label) {
+    window.alert("Group name cannot be empty.");
+    return;
+  }
+  const group = {
+    kind: "group",
+    id: `group_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    label,
+    steps: [],
+  };
+  groups.splice(index + 1, 0, group);
+  item.selectedGroup = group.id;
+  try {
+    await persistProcessFlow(item);
+    renderSummaryWorkspace();
+  } catch (error) {
+    item.processFlowError = error instanceof Error ? error.message : String(error);
+    renderSummaryWorkspace();
+  }
+}
+
+function showManualStepEditor(item, groupId) {
+  const group = item.processFlow?.steps.find(
+    (step) => step.kind === "group" && step.id === groupId,
+  );
+  if (!group) return;
+  if (group.steps.at(-1)?.kind === "condition") {
+    window.alert("A condition must remain the final step in its group.");
+    return;
+  }
+  const dialog = document.createElement("dialog");
+  dialog.className = "reference-dialog process-step-dialog";
+  const groups = item.processFlow.steps.filter((step) => step.kind === "group");
+  const groupOptions = groups
+    .map((candidate) => `<option value="${escapeHTML(candidate.id)}">${escapeHTML(candidate.label)}</option>`)
+    .join("");
+  const targetReferences = executableFlowSteps(item.processFlow.steps)
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.target)
+    .map(({ step, index }) => ({
+      index,
+      label: `${step.kind} · ${step.target.description || step.id}`,
+    }));
+  const types = [
+    "navigate", "click", "input", "select", "key", "hover", "scroll",
+    "upload", "wait", "assert", "condition", "openTab", "switchTab",
+    "closeTab", "dialog", "extract", "script",
+  ];
+  dialog.innerHTML = `<form class="reference-editor process-step-editor">
+    <h2>Add step to ${escapeHTML(group.label)}</h2>
+    <label>Step type<select name="kind">${types.map((kind) => `<option value="${kind}">${kind}</option>`).join("")}</select></label>
+    <label>Label<input name="label" maxlength="255"></label>
+    <label>Observed target<select name="targetRef"><option value="">Select an observed element</option>${targetReferences.map((target) => `<option value="${target.index}">${escapeHTML(target.label)}</option>`).join("")}</select></label>
+    <label>URL<input name="url" type="url"></label>
+    <label>Value<input name="value"></label>
+    <label>Mark input as secret<input name="secret" type="checkbox"></label>
+    <label>Key<input name="key"></label>
+    <label>Wait type<select name="waitCondition"><option value="timeout">timeout</option><option value="userOperation">user operation</option><option value="element">element present</option><option value="networkIdle">network idle</option></select></label>
+    <label>Wait time (ms)<input name="ms" type="number" min="0" value="1000"></label>
+    <label>User operation prompt<input name="prompt" value="Complete the operation, then continue."></label>
+    <label>Condition check<select name="assertionKind"><option value="visible">visible</option><option value="hidden">hidden</option><option value="text">text</option><option value="value">value</option><option value="count">count</option></select></label>
+    <label>Expected value<input name="expected"></label>
+    <label>True group<select name="trueGroupId"><option value="">End branch</option>${groupOptions}</select></label>
+    <label>False group<select name="falseGroupId"><option value="">End branch</option>${groupOptions}</select></label>
+    <label>Tab index<input name="tabIndex" type="number" min="0" value="0"></label>
+    <label>Dialog action<select name="dialogAction"><option value="accept">accept</option><option value="dismiss">dismiss</option></select></label>
+    <label>Variable name<input name="variableName" placeholder="generated automatically"></label>
+    <label>Script / extraction name<input name="extra"></label>
+    <p class="process-step-error" role="alert"></p>
+    <div class="reference-dialog-actions"><button type="submit" class="btn">Add step</button><button type="button" class="btn secondary" data-step-cancel>Cancel</button></div>
+  </form>`;
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  const form = dialog.querySelector("form");
+  const errorLabel = dialog.querySelector(".process-step-error");
+  const secretField = form.elements.secret;
+  form.elements.targetRef.onchange = () => {
+    const choice = form.elements.targetRef.value;
+    const selected = choice ? targetReferences[Number(choice)]?.step.target : undefined;
+    const isPassword = selected?.observed?.attributes?.type?.toLowerCase() === "password";
+    if (isPassword) secretField.checked = true;
+    secretField.disabled = isPassword;
+  };
+  const close = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  dialog.querySelector("[data-step-cancel]").onclick = close;
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const values = form.elements;
+    const kind = values.kind.value;
+    const page = group.steps.at(-1)?.page;
+    const step = {
+      id: `manual_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      ...(values.label.value.trim() ? { label: values.label.value.trim() } : {}),
+      ...(page ? { page: structuredClone(page) } : {}),
+      kind,
+    };
+    const targetChoice = values.targetRef.value;
+    const selectedTarget = targetChoice
+      ? targetReferences[Number(targetChoice)]?.step.target
+      : undefined;
+    const target = selectedTarget ? structuredClone(selectedTarget) : undefined;
+    const secretInput =
+      values.secret.checked ||
+      target?.observed?.attributes?.type?.toLowerCase() === "password";
+    const requiredTarget = ["click", "input", "select", "hover", "upload", "extract", "assert", "condition"].includes(kind) ||
+      (kind === "wait" && values.waitCondition.value === "element");
+    if (requiredTarget && !target) {
+      errorLabel.textContent = "Select an element observed in a recorded step.";
+      return;
+    }
+    if (target) step.target = target;
+    if (kind === "navigate" || kind === "openTab") {
+      const url = values.url.value.trim();
+      if (kind === "navigate" && !url) {
+        errorLabel.textContent = "A URL is required for navigation.";
+        return;
+      }
+      if (url) step.url = url;
+    }
+    if (kind === "input" || kind === "select") {
+      if (!values.value.value && kind === "input") {
+        errorLabel.textContent = "Enter the value to parameterize.";
+        return;
+      }
+      if (kind === "input") {
+        const name = values.variableName.value.trim() || nextFlowVariableName(item.processFlow, "input");
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+            (item.processFlow.variables || []).some((variable) => variable.name === name)) {
+          errorLabel.textContent = "Use an unused variable identifier.";
+          return;
+        }
+        const secret = secretInput;
+        item.processFlow.variables ||= [];
+        item.processFlow.variables.push({
+          name,
+          type: secret ? "secret" : "string",
+          ...(secret ? {} : { defaultValue: values.value.value }),
+          secret,
+          source: "input",
+        });
+        step.value = `{{${name}}}`;
+        step.clear = true;
+      } else {
+        step.value = values.value.value;
+      }
+    }
+    if (kind === "key") {
+      if (!values.key.value) {
+        errorLabel.textContent = "Enter a key to press.";
+        return;
+      }
+      step.key = values.key.value;
+    }
+    if (kind === "wait") {
+      step.condition = values.waitCondition.value;
+      if (step.condition === "timeout") step.ms = Number(values.ms.value);
+      if (step.condition === "userOperation") step.prompt = values.prompt.value;
+    }
+    if (kind === "assert" || kind === "condition") {
+      const assertionKind = values.assertionKind.value;
+      const expected = values.expected.value;
+      if (assertionKind === "text") {
+        step.assertion = expected ? { kind: "text", equals: expected } : { kind: "text", contains: "" };
+        if (!expected) {
+          errorLabel.textContent = "Enter expected text.";
+          return;
+        }
+      } else if (assertionKind === "value") {
+        if (!expected) {
+          errorLabel.textContent = "Enter the expected value.";
+          return;
+        }
+        step.assertion = { kind: "value", equals: expected };
+      } else if (assertionKind === "count") {
+        const count = Number(expected);
+        if (!Number.isInteger(count) || count < 0) {
+          errorLabel.textContent = "Enter a non-negative integer count.";
+          return;
+        }
+        step.assertion = { kind: "count", equals: count };
+      } else {
+        step.assertion = { kind: assertionKind };
+      }
+      if (kind === "condition") {
+        if (values.trueGroupId.value) step.trueGroupId = values.trueGroupId.value;
+        if (values.falseGroupId.value) step.falseGroupId = values.falseGroupId.value;
+      }
+    }
+    if (kind === "switchTab") step.index = Number(values.tabIndex.value);
+    if (kind === "closeTab" && values.tabIndex.value !== "") step.index = Number(values.tabIndex.value);
+    if (kind === "dialog") step.action = values.dialogAction.value;
+    if (kind === "scroll") step.delta = { x: 0, y: Number(values.ms.value) };
+    if (kind === "upload") {
+      const name = nextFlowVariableName(item.processFlow, "file");
+      item.processFlow.variables ||= [];
+      item.processFlow.variables.push({ name, type: "file", secret: false, source: "input" });
+      step.files = [`{{${name}}}`];
+    }
+    if (kind === "extract") {
+      const name = values.extra.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        errorLabel.textContent = "Enter a valid extraction variable name.";
+        return;
+      }
+      step.into = name;
+      step.prop = "text";
+    }
+    if (kind === "script") {
+      if (!values.extra.value.trim()) {
+        errorLabel.textContent = "Enter script code.";
+        return;
+      }
+      step.code = values.extra.value;
+    }
+    group.steps.push(step);
+    try {
+      await persistProcessFlow(item);
+      close();
+      renderSummaryWorkspace();
+    } catch (error) {
+      errorLabel.textContent = error instanceof Error ? error.message : String(error);
+      item.processFlowError = errorLabel.textContent;
+    }
+  };
+  form.elements.kind.focus();
+}
+
 let processCanvasObserver;
 function bindProcessMap() {
   // Canvas 平移/缩放及分组操作仅属于当前视图；被选中的分组保存在录制项中，
@@ -3354,7 +3757,19 @@ function bindProcessMap() {
     }
     const record = e.target.closest("[data-group-record]"),
       remove = e.target.closest("[data-group-delete]"),
-      insert = e.target.closest("[data-group-insert]");
+      insert = e.target.closest("[data-group-insert]"),
+      addStep = e.target.closest("[data-group-add-step]"),
+      addAfter = e.target.closest("[data-group-add-after]");
+    if (addStep) {
+      e.preventDefault();
+      e.stopPropagation();
+      showManualStepEditor(item, addStep.dataset.groupAddStep);
+    }
+    if (addAfter) {
+      e.preventDefault();
+      e.stopPropagation();
+      void addProcessGroupAfter(item, addAfter.dataset.groupAddAfter);
+    }
     if (record) {
       e.preventDefault();
       e.stopPropagation();
@@ -3527,16 +3942,16 @@ async function beginGroupRecording(item, groupId, mode) {
   state.view = "browser";
   while (state.browserTabs.length > 1) {
     const extra = state.browserTabs[state.browserTabs.length - 1];
-    await F.browser.closeTab(extra.nativeId || extra.id);
+    await window.flowlink.browser.closeTab(extra.nativeId || extra.id);
     state.browserTabs.pop();
   }
   state.activeBrowserTab = state.browserTabs[0].id;
-  await F.browser.switchTab("browser");
+  await window.flowlink.browser.switchTab("browser");
   const page = activeBrowserPage();
   let targetUrl = item.url || "";
   if (item.flowFile) {
     try {
-      const flow = await F.flow.load(item.flowFile);
+      const flow = await window.flowlink.flow.load(item.flowFile);
       targetUrl = flow?.meta?.env?.startUrl || targetUrl;
     } catch {}
   }
@@ -3565,7 +3980,7 @@ async function beginGroupRecording(item, groupId, mode) {
   renderRecordingWorkspace();
   await startBrowserRecording();
 }
-function finishGroupRecording(state, pending, item) {
+async function finishGroupRecording(state, pending, item) {
   // 同步替换或插入步骤、详情和截图范围，再根据更新后的扁平步骤序列重建分组及测试 Flow 状态。
   const group = ensureProcessGroups(item).find((g) => g.id === pending.groupId);
   if (!group) return;
@@ -3583,6 +3998,65 @@ function finishGroupRecording(state, pending, item) {
                   : "",
           )
           .filter(Boolean);
+  if (item.processFlow) {
+    const groupIndex = item.processFlow.steps.findIndex(
+      (step) => step.kind === "group" && step.id === pending.groupId,
+    );
+    if (groupIndex >= 0 && steps.length) {
+      const recordedFlowSteps = Array.isArray(pending.recordedFlowSteps)
+        ? pending.recordedFlowSteps
+        : (pending.recordedDetails || []).map((detail, index) =>
+            stepDetailToFlowStep(
+              detail,
+              `rerecorded-${Date.now()}-${index}`,
+              (Number(detail.tab) || 1) - 1,
+            ),
+          );
+      const oldGroup = item.processFlow.steps[groupIndex];
+      let position = group.start;
+      if (pending.groupMode === "replace") {
+        oldGroup.steps = recordedFlowSteps;
+      } else {
+        const after = pending.groupMode === "after";
+        const newGroup = {
+          kind: "group",
+          id: `group_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+          label: `${after ? "After" : "Before"} ${oldGroup.label}`,
+          steps: recordedFlowSteps,
+        };
+        item.processFlow.steps.splice(groupIndex + (after ? 1 : 0), 0, newGroup);
+        if (after) position += group.count;
+      }
+      if (pending.media) {
+        const screenshots = item.media?.screenshots || [];
+        const inserted = pending.media.screenshots || [];
+        const replacedCount = pending.groupMode === "replace" ? group.count : 0;
+        const updated = [
+          ...screenshots.slice(0, position),
+          ...inserted,
+          ...screenshots.slice(position + replacedCount),
+        ];
+        item.media = { ...(item.media || {}), screenshots: updated };
+      }
+      try {
+        await persistProcessFlow(item);
+      } catch (error) {
+        item.processFlowError = error instanceof Error ? error.message : String(error);
+        console.error("[process] Unable to save re-recorded group:", error);
+      }
+      const currentGroups = ensureProcessGroups(item);
+      const selected = currentGroups.find((candidate) => candidate.start <= position && position < candidate.start + candidate.count);
+      item.selectedGroup = selected?.id || item.processFlow.steps[0]?.id || null;
+    }
+    item.resultTab = "Process";
+    state.focused = item.id;
+    state.view = "analysis";
+    state.stage = "done";
+    state.pending = null;
+    renderRecordingWorkspace();
+    if (window.flowlink?.browser?.hide) window.flowlink.browser.hide();
+    return;
+  }
   if (steps.length) {
     ensureStepDetails(item);
     let position;
@@ -3652,6 +4126,40 @@ function finishGroupRecording(state, pending, item) {
 }
 
 async function deleteProcessGroup(item, groupId) {
+  if (item.processFlow) {
+    const groups = item.processFlow.steps.filter((step) => step.kind === "group");
+    const groupIndex = item.processFlow.steps.findIndex(
+      (step) => step.kind === "group" && step.id === groupId,
+    );
+    if (groupIndex < 0) return;
+    if (groups.length <= 1) {
+      window.alert("A Flow must keep at least one group.");
+      return;
+    }
+    if (
+      !(await confirmWorkspaceAction(
+        `Delete group “${groups.find((group) => group.id === groupId)?.label}” and its steps? Branches pointing to it will end at that branch.`,
+      ))
+    )
+      return;
+    item.processFlow.steps.splice(groupIndex, 1);
+    for (const group of item.processFlow.steps) {
+      if (group.kind !== "group") continue;
+      const last = group.steps.at(-1);
+      if (last?.kind !== "condition") continue;
+      if (last.trueGroupId === groupId) delete last.trueGroupId;
+      if (last.falseGroupId === groupId) delete last.falseGroupId;
+    }
+    item.selectedGroup = null;
+    try {
+      await persistProcessFlow(item);
+      renderSummaryWorkspace();
+    } catch (error) {
+      item.processFlowError = error instanceof Error ? error.message : String(error);
+      renderSummaryWorkspace();
+    }
+    return;
+  }
   const group = ensureProcessGroups(item).find((g) => g.id === groupId);
   if (!group) return;
   if (

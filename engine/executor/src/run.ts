@@ -30,7 +30,7 @@ import {
 import { PageManager, resolveStepPageIndex } from './tabs.js'
 import { defaultVariables, renderStep } from './template.js'
 import { NAME_KEEPALIVE_SOURCE, rebaseUrl } from './url.js'
-import { runAssertion, sleep, verifyExpect, type VerifyDeps } from './verify.js'
+import { evaluateAssertion, runAssertion, sleep, verifyExpect, type VerifyDeps } from './verify.js'
 import type {
 	PlayOptions,
 	RunReport,
@@ -492,6 +492,17 @@ export async function runFlowInBrowserContext(
 		}
 
 		const flat = flattenSteps(flow.steps)
+		const groupStartIndices = new Map<string, number>()
+		let nextGroupStart = 0
+		for (const step of flow.steps) {
+			if (step.kind === 'group') {
+				groupStartIndices.set(step.id, nextGroupStart)
+				nextGroupStart += flattenSteps([step]).length
+			} else {
+				nextGroupStart += 1
+			}
+		}
+		const groupVisitCounts = new Map<string, number>()
 
 		// 仅当首个可执行步骤不是 navigate 时才导航到 startUrl，避免覆盖显式导航目标。
 		// flow 第一步不是 navigate 时，先按 env.startUrl 打开页面（同样吃 baseUrl 重定基）
@@ -546,7 +557,15 @@ export async function runFlowInBrowserContext(
 
 		// 每个展开后的动作都对应一条结果和详情；group 仅用于组织 IR，
 		// 本身不单独作为步骤写入报告。
-		for (const item of flat) {
+		for (let flatCursor = 0; flatCursor < flat.length; flatCursor++) {
+			const item = flat[flatCursor]!
+			const groupVisitCount =
+				item.groupId && groupStartIndices.get(item.groupId) === flatCursor
+					? (groupVisitCounts.get(item.groupId) ?? 0) + 1
+					: undefined
+			if (item.groupId && groupVisitCount !== undefined) {
+				groupVisitCounts.set(item.groupId, groupVisitCount)
+			}
 			// 中止只影响尚未执行的步骤；崩溃后也逐项报告 skip，维持结果与剩余步骤一一对应。
 			if (opts.abortSignal?.aborted) {
 				const stepResult: StepResult = {
@@ -590,8 +609,15 @@ export async function runFlowInBrowserContext(
 			let phase: FailurePhase = 'framework'
 			let beforeShot: Buffer | undefined
 			let expectNote: string | undefined
+			let branchCursor: number | undefined
 
 			try {
+				if (groupVisitCount !== undefined && groupVisitCount > 3) {
+					throw new StepFailure(
+						'FLOW_LOOP_LIMIT',
+						`group "${item.groupId}" 已访问超过每次运行允许的 3 次`,
+					)
+				}
 				stepIndexRef.current = item.index
 
 				// ---- 目标标签页：step.page 优先；switchTab 用自己的 index；都没写则沿用当前 ----
@@ -706,6 +732,42 @@ export async function runFlowInBrowserContext(
 						timeoutMs,
 					)
 					stepLogPush(`dialog ${rendered.action} ✓ ${handled.info}`)
+				} else if (rendered.kind === 'condition') {
+					phase = 'expect'
+					const outcome = await evaluateAssertion(
+						verifyDeps,
+						rendered.assertion,
+						rendered.target,
+					)
+					const targetGroupId = outcome.matches
+						? rendered.trueGroupId
+						: rendered.falseGroupId
+					stepLogPush(`condition ${outcome.matches ? 'true' : 'false'}: ${outcome.note}`)
+					branchCursor =
+						targetGroupId === undefined
+							? flat.length
+							: groupStartIndices.get(targetGroupId)
+					if (branchCursor === undefined) {
+						throw new StepFailure(
+							'NOT_ACTIONABLE',
+							`condition 引用了不存在的 group "${targetGroupId}"`,
+						)
+					}
+					expectNote = `condition=${outcome.matches}`
+				} else if (rendered.kind === 'wait' && rendered.condition === 'userOperation') {
+					phase = 'action'
+					if (!opts.waitForUserOperation) {
+						throw new StepFailure(
+							'NOT_ACTIONABLE',
+							'userOperation wait 需要宿主提供用户确认回调',
+						)
+					}
+					await opts.waitForUserOperation({
+						stepId: item.stepId,
+						prompt: rendered.prompt ?? rendered.label ?? '请完成当前操作，然后继续回放。',
+						signal: opts.abortSignal,
+					})
+					stepLogPush('用户已确认操作完成')
 				} else if (rendered.kind === 'assert') {
 					phase = 'expect'
 					stepLogPush(`assert ${rendered.assertion.kind}`)
@@ -863,7 +925,14 @@ export async function runFlowInBrowserContext(
 			steps.push(stepResult)
 			details.push(detail)
 			opts.onStep?.(stepResult)
-			if (opts.stopOnFailure && detail.status === 'fail') break
+			if (
+				detail.status === 'fail' &&
+				(opts.stopOnFailure || detail.error?.code === 'FLOW_LOOP_LIMIT')
+			) break
+			if (branchCursor !== undefined) {
+				if (branchCursor >= flat.length) break
+				flatCursor = branchCursor - 1
+			}
 		}
 		observedPageCount = pages.count
 		observedCurrentPageIndex = pages.currentIndex

@@ -1,6 +1,6 @@
 {
-  "provider": "opencode-go",
-  "model": "deepseek-v4.1-flash",
+  "provider": "custom",
+  "model": "gpt-5.4",
   "thinkingLevel": "medium",
   "timeoutMs": 120000
 }

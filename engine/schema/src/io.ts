@@ -34,27 +34,31 @@ export function parseFlow(input: unknown, source = '<memory>'): Flow {
 }
 
 /**
- * 版本迁移。v0（无 schemaVersion）→ v1：补默认字段。
- * 未来加版本时在这里逐级升级，保证老 flow 能继续跑。
+ * 版本迁移。v0（无 schemaVersion）→ v1：补默认字段；v1 → v2：保留原有顺序 flow，
+ * 新的条件分支字段仅由新建/编辑的 flow 使用。
  */
 export function migrateFlow(raw: unknown): unknown {
 	if (typeof raw !== 'object' || raw === null) return raw
 	// 复制顶层对象，迁移只补充新版本所需字段，不改调用方持有的原对象。
 	const doc = { ...(raw as Record<string, unknown>) }
-	const version = typeof doc.schemaVersion === 'number' ? doc.schemaVersion : 0
-	// 当前版本直接通过；旧版只做已定义的逐级升级，未知或未来版本不得静默降级。
-	if (version === SCHEMA_VERSION) return doc
-	if (version === 0) {
-		return {
-			...doc,
-			schemaVersion: SCHEMA_VERSION,
-			version: typeof doc.version === 'number' ? doc.version : 1,
-			selfHealed: Array.isArray(doc.selfHealed) ? doc.selfHealed : [],
-		}
-	}
+	let version = typeof doc.schemaVersion === 'number' ? doc.schemaVersion : 0
+	// 只做明确支持的逐级升级；未知或未来版本不得静默降级。
 	if (version > SCHEMA_VERSION) {
 		throw new Error(`flow 版本 ${version} 高于当前支持的 ${SCHEMA_VERSION}，请升级 rr`)
 	}
+	if (version === 0) {
+		Object.assign(doc, {
+			schemaVersion: 1,
+			version: typeof doc.version === 'number' ? doc.version : 1,
+			selfHealed: Array.isArray(doc.selfHealed) ? doc.selfHealed : [],
+		})
+		version = 1
+	}
+	if (version === 1) {
+		doc.schemaVersion = 2
+		version = 2
+	}
+	if (version === SCHEMA_VERSION) return doc
 	throw new Error(`未知的 flow 版本 ${version}`)
 }
 

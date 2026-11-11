@@ -284,6 +284,14 @@ export interface RecordOptions {
 	pages?: Page[]
 	/** Stable Electron tab IDs in the same order as page + pages. */
 	tabIds?: string[]
+	/** Mutable host event buffer used to capture native tab switches and address-bar navigation. */
+	hostEvents?: ReadonlyArray<{
+		action: string
+		ts: number
+		tabId: string
+		url?: string
+		previousUrl?: string
+	}>
 	/**
 	 * 只往指定 page 注入采集脚本，不在 context 上 addInitScript。
 	 * Electron 的 CDP context 会同时包含产品 UI 和内嵌页，必须开这个，否则会录到壳层点击。
@@ -356,6 +364,7 @@ export interface RecordedDownload {
 export type PlannedItem =
 	| { kind: 'action'; action: CoalescedAction }
 	| { kind: 'switchTab'; ts: number; index: number; pageIndex: number }
+	| { kind: 'openTab'; ts: number; index: number; pageIndex: number; url?: string }
 	| {
 			kind: 'dialog'
 			ts: number

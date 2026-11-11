@@ -19,7 +19,7 @@ import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js
 import { EngineBridge } from './engine-bridge.js'
 import { disposePiWorker, piStatus, runPiPrompt } from './pi-agent.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
-import { flattenSteps, playOnPage, type RunResult } from '../engine/executor/src/index.js'
+import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
@@ -67,6 +67,7 @@ let recordingHostEvents: HostCaptureEvent[] = []
 /* ---------------- 回放会话状态 ---------------- */
 let playPromise: Promise<RunResult> | null = null
 let playAbortController: AbortController | null = null
+const pendingUserOperationWaits = new Map<string, () => void>()
 
 /* ================================================================ */
 /* 启动                                                              */
@@ -851,7 +852,7 @@ function registerIpc(): void {
 		const normalized = normalizeHttpUrl(url)
 		const resolvedTabId = tabId || activeBrowserTabId
 		const view = browserViews.get(resolvedTabId) ?? browserView
-		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'userNavigateRequested', ts: Date.now(), tabId: resolvedTabId, url: normalized, title: view.webContents.getTitle() })
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'userNavigateRequested', ts: Date.now(), tabId: resolvedTabId, url: normalized, previousUrl: view.webContents.getURL(), title: view.webContents.getTitle() })
 		await view.webContents.loadURL(normalized)
 		return view.webContents.getURL()
 	})
@@ -939,6 +940,7 @@ function registerIpc(): void {
 				skipNavigate: true,
 				outPath: recOutPath,
 				artifactsRoot,
+				hostEvents: recordingHostEvents,
 				stopSignal: controller.signal,
 				title: generatedRecordingName(),
 				onStep: (step) => {
@@ -1006,7 +1008,7 @@ function registerIpc(): void {
 			// 只构造并验证临时前缀 Flow；节点重录不得改写原 Flow 或其最近
 			// 一次运行记录。
 			const prefixFlow = parseFlow(
-				{ ...flow, steps: flattened.slice(0, stepCount).map((item) => item.step) },
+				{ ...flow, steps: prefixSteps(flow.steps, stepCount) },
 				`${recording.flowFile}#prefix-${stepCount}`,
 			)
 			// 前缀回放需要从 Flow 的起始 URL 重建环境；之后保持页面不刷新，
@@ -1100,6 +1102,33 @@ function registerIpc(): void {
 			stopOnFailure: true,
 			variables: opts.variables,
 			abortSignal: playAbortController.signal,
+			waitForUserOperation: ({ stepId, prompt, signal }) =>
+				new Promise<void>((resolve, reject) => {
+					const token = makeId('user-operation')
+					const cleanup = (): void => {
+						pendingUserOperationWaits.delete(token)
+						signal?.removeEventListener('abort', onAbort)
+					}
+					const onAbort = (): void => {
+						cleanup()
+						reject(new Error('用户操作等待已取消'))
+					}
+					if (signal?.aborted) {
+						onAbort()
+						return
+					}
+					pendingUserOperationWaits.set(token, () => {
+						cleanup()
+						resolve()
+					})
+					signal?.addEventListener('abort', onAbort, { once: true })
+					if (mainWindow.isDestroyed()) {
+						cleanup()
+						reject(new Error('应用窗口已关闭，无法继续用户操作等待'))
+						return
+					}
+					mainWindow.webContents.send('playback:userOperation', { token, stepId, prompt })
+				}),
 			openPage: createNativePlaybackPage(true, (msg) => console.log(`[playback:${flow.id}] ${msg}`)),
 			onStep: (r) => {
 				if (!mainWindow.isDestroyed())
@@ -1139,13 +1168,19 @@ function registerIpc(): void {
 		}
 	})
 
+	ipcMain.handle('playback:continueUserOperation', (_event, token: string) => {
+		const resume = pendingUserOperationWaits.get(token)
+		if (!resume) return false
+		resume()
+		return true
+	})
+
 	ipcMain.handle('playback:stop', async () => {
 		if (!playAbortController) return false
 		playAbortController.abort()
 		if (playPromise) {
 			const current = playPromise
-			playPromise = current.catch(() => ({ ok: false, error: 'Stopped' } as RunResult))
-			await playPromise.catch(() => undefined)
+			await current.catch(() => undefined)
 		}
 		return true
 	})
@@ -1189,6 +1224,29 @@ function registerIpc(): void {
 			}, recording.flowFile)
 			await saveFlow(updated, recording.flowFile)
 			return updated.variables
+		},
+	)
+	ipcMain.handle(
+		'flow:updateSteps',
+		async (_event, opts: { taskCode: string; recordingId: string; steps: unknown[] }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				!Array.isArray(opts.steps)
+			) {
+				throw new Error('Flow steps 更新请求无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const flow = await loadFlow(recording.flowFile)
+			const updated = parseFlow({
+				...flow,
+				version: flow.version + 1,
+				steps: opts.steps,
+			}, recording.flowFile)
+			await saveFlow(updated, recording.flowFile, { backup: true })
+			return updated
 		},
 	)
 }
