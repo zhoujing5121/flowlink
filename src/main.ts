@@ -77,10 +77,11 @@ const pendingUserOperationWaits = new Map<string, () => void>()
 /** 生成便于用户识别的每日名称；Flow 持久化 ID 仍负责保证唯一性。 */
 function generatedRecordingName(): string {
 	const now = new Date()
-	const yyyy = String(now.getFullYear())
 	const mm = String(now.getMonth() + 1).padStart(2, '0')
 	const dd = String(now.getDate()).padStart(2, '0')
-	return `RECORD-${yyyy}-${mm}-${dd}`
+	const hh = String(now.getHours()).padStart(2, '0')
+	const min = String(now.getMinutes()).padStart(2, '0')
+	return `RECORD-${mm}${dd}-${hh}${min}`
 }
 
 function isEmptyRecordingError(error: unknown): boolean {
@@ -604,11 +605,14 @@ async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Pr
 	return recording
 }
 
-/** RECORD-YYYY-MM-DD → REFINED-YYYY-MM-DD；其余名称加 REFINED 前缀；重名追加 (2)/(3)。 */
-function refinedRecordingName(sourceName: string, existingNames: Set<string>): string {
-	const base = /^RECORD-/i.test(sourceName)
-		? sourceName.replace(/^RECORD-/i, 'REFINED-')
-		: `REFINED ${sourceName}`
+/** REFINED-MMDD-HHmm 使用细化生成时刻的时间；重名追加 (2)/(3)。 */
+function refinedRecordingName(_sourceName: string, existingNames: Set<string>): string {
+	const now = new Date()
+	const mm = String(now.getMonth() + 1).padStart(2, '0')
+	const dd = String(now.getDate()).padStart(2, '0')
+	const hh = String(now.getHours()).padStart(2, '0')
+	const min = String(now.getMinutes()).padStart(2, '0')
+	const base = `REFINED-${mm}${dd}-${hh}${min}`
 	if (!existingNames.has(base)) return base
 	let suffix = 2
 	while (existingNames.has(`${base} (${suffix})`)) suffix++

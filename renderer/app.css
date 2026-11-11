@@ -1582,7 +1582,7 @@ h1 {
   z-index: 8;
   display: flex;
   flex-direction: column;
-  min-width: 248px;
+  min-width: 252px;
   border: 1px solid #a4aeb7;
   background: #fff;
   box-shadow: 0 4px 12px rgba(16, 20, 22, 0.16);
@@ -1602,9 +1602,14 @@ h1 {
   border-bottom: 0;
 }
 
-.recording-import-menu button:hover {
+.recording-import-menu button:hover:not(:disabled) {
   background: #edf8f1;
   color: #00884a;
+}
+
+.recording-import-menu button:disabled {
+  color: #bfc0c2;
+  cursor: default;
 }
 
 .recording-browser {
@@ -1883,12 +1888,12 @@ h1 {
 .recording-badge {
   display: inline-flex;
   align-items: center;
-  height: 24px;
-  padding: 0 8px;
+  height: 18px;
+  padding: 0 6px;
   border: 1px solid;
   border-radius: 2px;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 10px;
+  line-height: 14px;
   margin-left: auto;
   margin-right: 8px;
 }

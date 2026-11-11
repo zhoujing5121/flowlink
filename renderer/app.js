@@ -512,8 +512,12 @@ $("versionManagementRows").onchange = (e) => {
   if (e.target.matches("[data-version-index]"))
     commitVersionStatus(Number(e.target.dataset.versionIndex), e.target.value);
 };
+// 原生文件选择器取消时会向模态 <dialog> 派发 cancel 事件；抑制期内忽略抽屉关闭，
+// 避免取消上传直接弹出 Close 确认框。
+let suppressDrawerCancel = false;
 $("drawer").addEventListener("cancel", (e) => {
   e.preventDefault();
+  if (suppressDrawerCancel) return;
   closeDrawer();
 });
 $("category").onclick = () => togglePopup("category");
@@ -973,10 +977,11 @@ let activeFlowKey = "TASKFLOW-001",
 
 function generatedRecordingName() {
   const now = new Date(),
-    yyyy = String(now.getFullYear()),
     mm = String(now.getMonth() + 1).padStart(2, "0"),
-    dd = String(now.getDate()).padStart(2, "0");
-  return `RECORD-${yyyy}-${mm}-${dd}`;
+    dd = String(now.getDate()).padStart(2, "0"),
+    hh = String(now.getHours()).padStart(2, "0"),
+    min = String(now.getMinutes()).padStart(2, "0");
+  return `RECORD-${mm}${dd}-${hh}${min}`;
 }
 
 function createBrowserPage(url = "", showGuide = false) {
@@ -3811,7 +3816,9 @@ function bindReferenceFiles() {
     }
     if (upload) {
       dialog.close();
+      suppressDrawerCancel = true;
       input.click();
+      setTimeout(() => (suppressDrawerCancel = false), 0);
       return;
     }
     if (closeDialog) {
