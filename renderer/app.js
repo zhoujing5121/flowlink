@@ -1341,22 +1341,6 @@ function bindRecordingList() {
       const option = e.target.closest("[data-import-action]");
       if (option) runImportAction(option.dataset.importAction);
     };
-  const automationInput = $("automationFileInput");
-  if (automationInput)
-    automationInput.onchange = (e) => {
-      const file = e.target.files?.[0];
-      e.target.value = "";
-      if (!file) return;
-      const sessionState = recordingSession();
-      sessionState.aiOpen = true;
-      renderRecordingWorkspace();
-      const input = $("assistantInput");
-      if (input) {
-        input.value = "Reverse analyze automation file: " + file.name;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.focus();
-      }
-    };
 }
 
 function closeImportMenu() {
@@ -1382,24 +1366,7 @@ function runImportAction(action) {
       input.placeholder = "Describe the goal to capture…";
       input.focus();
     }
-    return;
   }
-  if (action === "material") {
-    state.aiOpen = true;
-    const selected = state.items.filter(
-      (item) => item.checked && (item.recordingId || item.id),
-    );
-    const materials = selected.length
-      ? selected
-      : state.items.filter((item) => item.recordingId || item.id);
-    state.aiAttachments = materials.map(
-      (item) => item.recordingId || item.id,
-    );
-    renderRecordingWorkspace();
-    $("assistantInput")?.focus();
-    return;
-  }
-  if (action === "automation") $("automationFileInput")?.click();
 }
 
 function renderRecordingWorkspace() {
