@@ -199,7 +199,7 @@
 				profileDrafts.delete('new')
 				activeFlowKey = code
 			}
-			$('drawerTitle').textContent = code.replace('TASKFLOW', 'FlowLink')
+			$('drawerTitle').textContent = code
 			draft.name = patch.name
 			draft.description = patch.description
 			render()

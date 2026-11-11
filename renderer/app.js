@@ -51,9 +51,6 @@ const escapeHTML = (s) =>
       ],
   );
 
-// 列表与抽屉标题共用同一展示码，保证两处编号完全一致（存储前缀保持不变）。
-const displayCode = (code) => String(code || "").replace("TASKFLOW", "FlowLink");
-
 // 版本号统一为 vX.Y.Z；无法解析的旧值（r1/V1）在下次保存时归一为 v1.0.0。
 function nextTaskVersion(current) {
   const match = /v(\d+)\.(\d+)\.(\d+)/i.exec(String(current || ""));
@@ -213,7 +210,7 @@ function saveProfile() {
     profileDrafts.delete("new");
     activeFlowKey = code;
   }
-  $("drawerTitle").textContent = code.replace("TASKFLOW", "FlowLink");
+  $("drawerTitle").textContent = code;
   draft.name = snapshot.name;
   draft.description = snapshot.description;
   render();
@@ -294,7 +291,7 @@ function render() {
           const codeLink = row.querySelector(".code-link");
           codeLink.href = "#" + f.code;
           codeLink.dataset.open = f.code;
-          codeLink.textContent = displayCode(f.code);
+          codeLink.textContent = f.code;
           row.querySelector('[data-slot="name"]').textContent = f.name;
           const description = row.querySelector(".flow-description");
           description.title = f.description;
@@ -339,9 +336,7 @@ function openDrawer(code, source) {
   currentFlow = code ? flowData.find((f) => f.code === code) : null;
   trigger = source;
   savedScroll = window.scrollY;
-  $("drawerTitle").textContent = code
-    ? code.replace("TASKFLOW", "FlowLink")
-    : nextTaskflowCode().replace("TASKFLOW", "FlowLink");
+  $("drawerTitle").textContent = code || nextTaskflowCode();
   $("profileSaveStatus").textContent = "";
   if (processLandscapeError) {
     $("profileSaveStatus").textContent =
