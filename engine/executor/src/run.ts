@@ -4,7 +4,7 @@
  * 失败一律走 classifyError 落语义错误码，绝不把裸 timeout 抛给上层；
  * artifact 只在失败（或 screenshotMode='all'）时落盘，避免每步都写磁盘。
  */
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright-core'
+import type { Browser, BrowserContext, Locator, Page } from 'playwright-core'
 
 import type { ElementRef, Flow } from '../../schema/src/index.js'
 import { makeId } from '../../schema/src/index.js'
@@ -1091,6 +1091,9 @@ export async function executeRun(
 		opts.onLog?.(`[${flow.id}] ${msg}`)
 	}
 
+	// Chromium 只在独立（非 Electron）启动时才需要；动态导入避免把
+	// playwright-core 挂到使用方的启动路径上。
+	const { chromium } = await import('playwright-core')
 	const browser = await chromium.launch({ headless: opts.headless ?? true })
 	let outcome: FlowContextRunOutcome | undefined
 	try {

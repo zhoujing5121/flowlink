@@ -34,7 +34,6 @@ import type {
 	Step,
 	Variable,
 } from '../../schema/src/index.js'
-import { chromium } from 'playwright-core'
 import type { BrowserContext, CDPSession, Frame, Locator, Page } from 'playwright-core'
 
 import {
@@ -295,8 +294,11 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const additionalPages = opts.pages ?? []
 	const attachOnly = opts.attachOnly === true || Boolean(existingPage)
 	const ownsBrowser = !existingPage
-	/** CDP 附着时 browser() 可能为 null，后续只能走 existingPage 路径 */
-	const browser = existingPage ? existingPage.context().browser() : await chromium.launch({ headless })
+	/** CDP 附着时 browser() 可能为 null，后续只能走 existingPage 路径；
+	    独立录制才需要启动 Chromium，动态导入避免拖慢 Electron 使用方启动。 */
+	const browser = existingPage
+		? existingPage.context().browser()
+		: await (await import('playwright-core')).chromium.launch({ headless })
 	/**
 	 * context 的「外层引用」：try/finally 里要做「兜底保存登录态」
 	 * （drive 抛错 / goto 失败 / 任何异常路径都要存一次）。

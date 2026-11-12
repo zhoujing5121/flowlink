@@ -11,12 +11,14 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { WebContents } from 'electron'
-import { chromium, type Browser, type Page } from 'playwright-core'
+import type { Browser, Page } from 'playwright-core'
 
 import { perf } from './perf.js'
 
 export class EngineBridge {
 	private browser: Browser | null = null
+	/** playwright-core 延迟到首次附着才加载，避免拖慢主进程冷启动。 */
+	private chromiumModule: Promise<typeof import('playwright-core')> | null = null
 	private readonly pages = new Map<string, Page>()
 	private readonly tabIdsByPage = new WeakMap<Page, string>()
 
@@ -37,6 +39,8 @@ export class EngineBridge {
 		// 不必依赖 Playwright 立即附着成功。
 		if (this.browser?.isConnected()) return this.browser
 		const timing = perf('ensureBrowser')
+		this.chromiumModule ??= import('playwright-core')
+		const { chromium } = await this.chromiumModule
 		const port = await this.cdpPort()
 		this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
 		timing.mark(`connect(port=${port})`)
