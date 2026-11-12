@@ -60,6 +60,8 @@ const api = {
 
 	pi: {
 		status: () => ipcRenderer.invoke('pi:status'),
+		/** 空闲预热 Pi worker（SDK 导入 + 运行时缓存），不发起 provider 请求 */
+		prewarm: () => ipcRenderer.invoke('pi:prewarm'),
 		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
 		/** 从已保存录制生成细化的新 Flow：主进程负责投影、提示词、校验；返回已校验的提案（不落盘） */
 		generateFlow: (opts: {

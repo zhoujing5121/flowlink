@@ -2488,6 +2488,15 @@ function bindMentionPicker() {
   };
 }
 
+let aiPrewarmFired = false;
+// AI 面板一打开就请求主进程预热 Pi（SDK 导入 + 运行时缓存）；只发一次，
+// 之后的首条消息只剩会话创建与网络往返。
+function prewarmPiOnce() {
+  if (aiPrewarmFired) return;
+  aiPrewarmFired = true;
+  window.flowlink?.pi?.prewarm?.().catch(() => {});
+}
+
 function renderAIPanel() {
   // 分析后助手上下文关联到具体录制项，分析前则关联到操作指南。
   // 是否显示由当前 Design 标签页和 aiOpen 状态共同决定。
@@ -2510,6 +2519,7 @@ function renderAIPanel() {
   );
   testShell?.classList.toggle("has-visible-ai-dock", testTab && !open);
   if (!open) return;
+  prewarmPiOnce();
   ensureAssistantData(item);
   bindAssistantResize();
   $("assistantFileName").textContent = "AI 助手";

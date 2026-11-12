@@ -58,7 +58,7 @@ type PiProxyOptions =
 interface PendingPiRequest {
   resolve: (response: PiWorkerResponse) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 let piWorker: Worker | undefined;
@@ -292,6 +292,54 @@ function sendPiWorkerRequest(
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+function sendPiWorkerPrewarm(
+  settings: Required<PiSettings>,
+): Promise<PiWorkerResponse> {
+  const worker = getPiWorker();
+  const id = ++nextPiRequestId;
+  worker.ref();
+
+  // 预热没有面向用户的超时：worker 崩溃时由 error/exit 回调统一收尾。
+  return new Promise((resolve, reject) => {
+    pendingPiRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({
+        type: "prewarm",
+        id,
+        authPath: getAuthPath(),
+        configDir: getConfigDirectory(),
+        provider: settings.provider,
+        model: settings.model,
+      });
+    } catch (error) {
+      pendingPiRequests.delete(id);
+      if (pendingPiRequests.size === 0) worker.unref();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+let piPrewarmDone = false;
+
+/**
+ * Idle prewarm: load the Pi SDK and fill the runtime cache (keyed by
+ * authPath/provider/model) so the first real prompt only pays session
+ * creation plus the provider round trip. Never contacts the provider;
+ * Pi being unconfigured or invalid is a normal state and stays silent.
+ */
+export async function prewarmPi(): Promise<void> {
+  if (piPrewarmDone) return;
+  try {
+    const settings = readSettings();
+    validateAuthFile(settings.provider);
+    const response = await sendPiWorkerPrewarm(settings);
+    if (response.ok) piPrewarmDone = true;
+  } catch {
+    // Settings changes between prewarm and first prompt naturally miss the
+    // runtime cache (different key) and re-create; no invalidation needed.
+  }
 }
 
 export function disposePiWorker(): void {

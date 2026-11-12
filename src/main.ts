@@ -17,7 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { disposePiWorker, piStatus, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { disposePiWorker, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
 import { perf, perfSinceAppStart } from './perf.js'
 import { generateRefinedFlow } from './ai-refine.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
@@ -585,6 +585,9 @@ async function createWindow(): Promise<void> {
 	perfSinceAppStart('startup:loadFile-done')
 	mainWindow.show()
 	perfSinceAppStart('startup:shown')
+	// 窗口出现后约 1.5s 的空闲里预热 Pi（SDK 导入 + 运行时缓存）；
+	// AI 面板打开时渲染层也会经 pi:prewarm 触发，先到先得，重复调用是无害空转。
+	setTimeout(() => void prewarmPi().catch(() => {}), 1500)
 
 	// Don't make the first browser page's network response block the app window.
 	try {
@@ -1361,6 +1364,7 @@ function registerIpc(): void {
 
 	/* ---------- Pi Coding Agent: AI bedrock ---------- */
 	ipcMain.handle('pi:status', async () => piStatus())
+	ipcMain.handle('pi:prewarm', () => prewarmPi())
 	ipcMain.handle('pi:prompt', async (_event, opts: { prompt: string; timeoutMs?: number }) => {
 		if (!opts || typeof opts.prompt !== 'string') throw new Error('Pi request is invalid')
 		// Keep the agent's workspace inside FlowLink's own workflow/artifact directory.

@@ -3,21 +3,32 @@ import { join } from "node:path";
 
 import { perf } from "./perf.js";
 
-interface PiWorkerRequest {
-  type: "prompt";
-  id: number;
-  prompt: string;
-  cwd: string;
+interface PiRuntimeConfig {
   authPath: string;
   configDir: string;
   provider: string;
   model: string;
+}
+
+interface PiWorkerPromptRequest extends PiRuntimeConfig {
+  type: "prompt";
+  id: number;
+  prompt: string;
+  cwd: string;
   thinkingLevel: "off" | "low" | "medium" | "high";
   proxy:
     | { mode: "environment" }
     | { mode: "system" }
     | { mode: "explicit"; url: string };
 }
+
+/** 预热请求：只加载 SDK 并按 key 填充运行时缓存，不发起 provider 请求。 */
+interface PiWorkerPrewarmRequest extends PiRuntimeConfig {
+  type: "prewarm";
+  id: number;
+}
+
+type PiWorkerRequest = PiWorkerPromptRequest | PiWorkerPrewarmRequest;
 
 interface PiProxyResolutionResult {
   type: "proxy-resolution-result";
@@ -129,7 +140,7 @@ function requestSystemProxy(url: string): Promise<string> {
 }
 
 async function createProxyDispatcher(
-  proxy: PiWorkerRequest["proxy"],
+  proxy: PiWorkerPromptRequest["proxy"],
   baseUrl: string,
 ) {
   const { Agent, EnvHttpProxyAgent, ProxyAgent, Socks5ProxyAgent, setGlobalDispatcher } =
@@ -193,7 +204,7 @@ async function createProxyDispatcher(
   throw new Error(`Windows returned an unsupported system proxy type: ${type}.`);
 }
 
-async function createRuntime(request: PiWorkerRequest) {
+async function createRuntime(request: PiRuntimeConfig) {
   const key = `${request.authPath}\0${request.provider}\0${request.model}`;
   if (runtimePromise && runtimeKey === key) return runtimePromise;
 
@@ -246,7 +257,7 @@ async function createResourceLoader(pi: PiSdk, request: PiWorkerRequest) {
   return resourceLoader;
 }
 
-async function runPrompt(request: PiWorkerRequest): Promise<string> {
+async function runPrompt(request: PiWorkerPromptRequest): Promise<string> {
   const timing = perf("pi:prompt");
   const { pi, modelRuntime, model } = await createRuntime(request);
   await createProxyDispatcher(request.proxy, model.baseUrl);
@@ -297,6 +308,25 @@ parentPort.on("message", (message: PiWorkerRequest | PiProxyResolutionResult) =>
   }
 
   const request = message;
+  if (request.type === "prewarm") {
+    void createRuntime(request).then(
+      () =>
+        workerPort.postMessage({
+          type: "prompt-result",
+          id: request.id,
+          ok: true,
+          text: "",
+        }),
+      (error: unknown) =>
+        workerPort.postMessage({
+          type: "prompt-result",
+          id: request.id,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    );
+    return;
+  }
   void runPrompt(request).then(
     (text) => workerPort.postMessage({ type: "prompt-result", id: request.id, ok: true, text }),
     (error: unknown) =>
