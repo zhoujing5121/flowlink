@@ -241,7 +241,10 @@ async function createRuntime(request: PiRuntimeConfig) {
   }
 }
 
-async function createResourceLoader(pi: PiSdk, request: PiWorkerRequest) {
+async function createResourceLoader(
+  pi: PiSdk,
+  request: PiWorkerPromptRequest,
+) {
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: request.cwd,
     agentDir: request.configDir,
