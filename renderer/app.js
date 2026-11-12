@@ -2290,15 +2290,23 @@ function syncFloatingAIDock(target) {
 function ensureAssistantData(item) {
   const state = recordingSession();
   state.aiConversations ??= new Map();
+  // Replay（Test）标签页使用独立对话：录制项的聊天按标签页拆分，
+  // Replay 中的消息（如回放诊断）不与其他标签页的对话互通。
+  const replay = item !== state.guideAssistant && item?.resultTab === "Test";
   const key =
-    item === state.guideAssistant
+    (item === state.guideAssistant
       ? "guide"
-      : String(item.recordingId || item.id || "current");
+      : String(item.recordingId || item.id || "current")) +
+    (replay ? "-replay" : "");
   let conversation = state.aiConversations.get(key);
   if (!conversation) {
+    // 仅首个对话继承 item 上已有的聊天；其余标签页从空白开始，避免共享同一数组。
+    const inherit = !replay && !item.chatScopeClaimed;
+    item.chatScopeClaimed = true;
     conversation = {
-      messages: Array.isArray(item.chat) ? item.chat : [],
-      draft: typeof item.chatDraft === "string" ? item.chatDraft : "",
+      messages: inherit && Array.isArray(item.chat) ? item.chat : [],
+      draft:
+        inherit && typeof item.chatDraft === "string" ? item.chatDraft : "",
     };
     state.aiConversations.set(key, conversation);
   }
