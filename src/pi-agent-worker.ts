@@ -1,6 +1,8 @@
 import { parentPort } from "node:worker_threads";
 import { join } from "node:path";
 
+import { perf } from "./perf.js";
+
 interface PiWorkerRequest {
   type: "prompt";
   id: number;
@@ -197,7 +199,9 @@ async function createRuntime(request: PiWorkerRequest) {
 
   runtimeKey = key;
   runtimePromise = (async () => {
+    const timing = perf("pi:runtime");
     const pi = await loadPiSdk();
+    timing.mark("sdk-imported");
     const modelsPath =
       request.provider === "custom"
         ? join(request.configDir, "models.json")
@@ -206,6 +210,7 @@ async function createRuntime(request: PiWorkerRequest) {
       authPath: request.authPath,
       modelsPath,
     });
+    timing.mark("model-runtime-created");
     const model = modelRuntime.getModel(request.provider, request.model);
     if (!model) {
       throw new Error(
@@ -242,6 +247,7 @@ async function createResourceLoader(pi: PiSdk, request: PiWorkerRequest) {
 }
 
 async function runPrompt(request: PiWorkerRequest): Promise<string> {
+  const timing = perf("pi:prompt");
   const { pi, modelRuntime, model } = await createRuntime(request);
   await createProxyDispatcher(request.proxy, model.baseUrl);
   const resourceLoader = await createResourceLoader(pi, request);
@@ -254,10 +260,12 @@ async function runPrompt(request: PiWorkerRequest): Promise<string> {
     noTools: "all",
     thinkingLevel: request.thinkingLevel,
   });
+  timing.mark("session-created");
   const session = created.session as PiSessionLike;
 
   try {
     await session.prompt(request.prompt);
+    timing.mark("provider-response");
     const text = session.getLastAssistantText() || "";
     if (text.trim()) return text;
 

@@ -18,6 +18,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
 import { disposePiWorker, piStatus, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { perf, perfSinceAppStart } from './perf.js'
 import { generateRefinedFlow } from './ai-refine.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
@@ -453,6 +454,7 @@ async function waitForCdpPort(userDataDir: string): Promise<number> {
 }
 
 app.whenReady().then(async () => {
+	perfSinceAppStart('startup:whenReady')
 	// 先创建持久化目录，再注册可能写入这些目录的操作；随后等待 Electron
 	// 分配并写入随机 CDP 端口，以便引擎桥接建立连接。
 	const userData = app.getPath('userData')
@@ -556,7 +558,9 @@ async function createWindow(): Promise<void> {
 	})
 
 	await mainWindow.loadFile(join(app.getAppPath(), 'renderer', 'index.html'))
+	perfSinceAppStart('startup:loadFile-done')
 	mainWindow.show()
+	perfSinceAppStart('startup:shown')
 
 	// Don't make the first browser page's network response block the app window.
 	try {
@@ -1020,6 +1024,8 @@ function registerIpc(): void {
 		// 拒绝重入，避免共享的录制状态和输出路径被两个会话覆盖。
 		if (recStartPromise || recStopPromise || recPromise) throw new Error('已有录制正在进行')
 		if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
+		const timing = perf('recording:start')
+		timing.mark('enter')
 
 		const controller = new AbortController()
 		recController = controller
@@ -1032,6 +1038,7 @@ function registerIpc(): void {
 			   必须保留当前文档及其状态，不能再次刷新。 */
 			if (!opts.preservePage) {
 				await resetBrowserTabs(opts.startUrl)
+				timing.mark('resetBrowserTabs')
 			}
 
 			/* 附着 Playwright 到内嵌浏览器的 webContents */
@@ -1039,6 +1046,7 @@ function registerIpc(): void {
 				engine.pageFor(activeBrowserTabId, browserView.webContents),
 				controller.signal,
 			)
+			timing.mark('pageFor-primary')
 			// 先附着当前页，再附着其他已打开页；标签页顺序必须与主进程
 			// browserViews 保持一致，供跨页录制和回放映射复用。
 			const additionalPages: Page[] = []
@@ -1059,9 +1067,11 @@ function registerIpc(): void {
 					console.warn(`[flowlink] 标签页 ${tabId} 未能附着：`, (err as Error).message)
 				}
 			}
+			timing.mark('pages-attached')
 
 			// mkdir 很快完成；不要在 capture timer 尚未建立时让取消流程越过它。
 			await startRecordingCapture(`recording-${Date.now()}`)
+			timing.mark('capture-installed')
 			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
@@ -1094,7 +1104,9 @@ function registerIpc(): void {
 		})()
 		recStartPromise = start
 		try {
-			return await start
+			const result = await start
+			timing.mark('exit')
+			return result
 		} catch (err) {
 			// Stop 引发的错误转换为取消结果；真正的启动错误仍原样抛给 IPC 调用方。
 			if (recStopRequested || controller.signal.aborted) {

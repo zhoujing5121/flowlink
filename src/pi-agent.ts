@@ -9,6 +9,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
+import { perfSinceAppStart } from "./perf.js";
+
 export interface PiPromptOptions {
   prompt: string;
   cwd: string;
@@ -197,6 +199,7 @@ function rejectPiWorkerRequests(worker: Worker, error: Error): void {
 function getPiWorker(): Worker {
   if (piWorker) return piWorker;
 
+  perfSinceAppStart("pi:worker-spawned");
   const worker = new Worker(new URL("./pi-agent-worker.js", import.meta.url));
   piWorker = worker;
   worker.unref();
