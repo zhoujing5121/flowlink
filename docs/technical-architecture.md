@@ -236,7 +236,26 @@ Pi configuration lives outside the artifact tree: `<appPath>/config/pi-settings.
 holds provider/model/thinking/timeout defaults, and credentials live in
 `<appPath>/config/pi-auth.json` during development or `<userData>/pi-auth.json`
 in packaged builds. The credential file is a secret; it must never be
-committed, logged, or packaged.
+committed, logged, or packaged. All Pi prompt templates (session system
+prompt, auto/refine generation, AI-pane advice, browser-takeover) are
+maintained in `<appPath>/config/prompts.json`; the file is loaded and
+validated by the main process, and a missing or invalid file fails Pi
+requests with an explicit error instead of silently degrading prompts.
+
+AI takeover (`src/ai-takeover.ts`) embeds `@browser_use/pi`, whose agent
+model is configured from the same Pi settings (provider/model from
+`pi-settings.json`, base URL from `models.json`, key from `pi-auth.json`)
+and whose REPL worker prefers a system Node ≥22.19 (`BROWSER_USE_NODE`),
+falling back to the Electron binary. The agent attaches to the embedded
+Chromium via its CDP endpoint and never owns it. Secret replay variables
+flow only through the SDK's redacting `sensitiveData` channel, navigation
+is bounded by a domain allowlist derived from the flow's recorded URLs,
+anonymous SDK telemetry is disabled (`telemetry: false`, `DO_NOT_TRACK=1`),
+and runs are bounded by per-step retries, a 10-minute budget, and the
+shared playback stop control. The SDK's JavaScript worker is explicitly
+not a sandbox: takeover runs only on explicit user action, and its
+artifacts (`ai-takeover.json`) record notes, evidence, and usage — never
+secret values.
 
 Task persistence writes a temporary sibling file and renames it into place,
 avoiding partial JSON at the destination. On first load, missing or invalid

@@ -16,6 +16,7 @@ let coalesce
 let archive
 let aiRefine
 let actions
+let promptGenerationTemplates
 
 async function bundle(entry, name) {
 	const outfile = join(tempDir, `${name}.mjs`)
@@ -31,6 +32,9 @@ async function bundle(entry, name) {
 
 before(async () => {
 	tempDir = await mkdtemp(join(tmpdir(), 'flowlink-flow-authoring-'))
+	promptGenerationTemplates = JSON.parse(
+		await readFile(join(process.cwd(), 'config', 'prompts.json'), 'utf8'),
+	).generation
 	;[flowIO, planner, steps, classify, systems, coalesce, archive, aiRefine, actions] = await Promise.all([
 		bundle('engine/schema/src/io.ts', 'flow-io'),
 		bundle('engine/recorder/src/plan.ts', 'plan'),
@@ -530,6 +534,7 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 
 	const ok = await aiRefine.generateRefinedFlow({
 		flowFiles: [file],
+		templates: promptGenerationTemplates,
 		runPrompt: respond({ title: 'REFINED test flow', summary: 's', steps: modelSteps, rationale: ['r'], risks: ['k'] }),
 	})
 	assert.equal(ok.ok, true)
@@ -542,6 +547,7 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 
 	const failed = await aiRefine.generateRefinedFlow({
 		flowFiles: [file],
+		templates: promptGenerationTemplates,
 		runPrompt: respond({ title: 'x', steps: [{ kind: 'click', id: 'c1', target: { observed: {} } }] }),
 	})
 	assert.equal(failed.ok, false)
@@ -549,6 +555,7 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 
 	const providerError = await aiRefine.generateRefinedFlow({
 		flowFiles: [file],
+		templates: promptGenerationTemplates,
 		runPrompt: async () => ({ ok: false, text: '', error: 'provider down' }),
 	})
 	assert.equal(providerError.ok, false)

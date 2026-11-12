@@ -14,3 +14,20 @@ For a straightforward setup, users should only need to provide **provider, model
 | **Temperature / max output tokens** | Optional | Expose only if supported for the selected provider/model and actually passed through to the SDK; don’t show settings that have no effect. |
 
 For a better setup flow, offer a **Test connection** button that makes a small provider request and distinguishes invalid credentials, unknown model, and network/proxy failures.
+
+## Prompt templates
+
+All Pi prompts live in `config/prompts.json` as `{{placeholder}}` templates and are loaded at request time (no restart needed after edits):
+
+| Section | Used by | Notes |
+|---|---|---|
+| `systemPrompt` | Every Pi session (worker system prompt) | Safety rules, JSON output contract, element `$ref` rules. |
+| `generation.autoSanitize` | Auto-refine after recording Stop | Sanitize + business-stage grouping + plain-language labels. |
+| `generation.refine` | Refine button / `@`-mention generation | Same goals, driven by the user instruction. |
+| `advice.prompt` | AI-pane advice requests | Assembled in the renderer via the `pi:promptTemplates` IPC. |
+| `advice.defaults` | Post-recording / replay-failure / manual review entry points | Default request texts. |
+| `takeover.systemInstructions` / `takeover.stepTask` / `takeover.retryTask` | AI takeover after a failed Test run (`src/ai-takeover.ts`) | Capability list (browser-use primitives, `mark_step_done`, `get_step_detail`, `fillSecret`), evidence rules, per-step task and retry texts. |
+
+Generation prompts require the model to group steps into a small number (typically 2–6) of labeled top-level groups by business stage and to write step labels a non-technical user understands (no selectors or jargon). Unknown placeholders or missing values fail loudly instead of silently producing a broken prompt.
+
+The takeover agent uses the same provider/model as the rest of Pi (`pi-settings.json`; `custom` providers additionally need a `baseUrl` in `config/models.json`). Its JS worker prefers a system Node ≥22.19 on PATH and falls back to the Electron binary; anonymous SDK telemetry is disabled by default.

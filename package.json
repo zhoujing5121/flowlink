@@ -13,6 +13,7 @@
     "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --icon=resources/icon.ico --out=release --overwrite && node package.mjs"
   },
   "dependencies": {
+    "@browser_use/pi": "0.1.0",
     "@earendil-works/pi-coding-agent": "^1.5.1",
     "playwright-core": "1.64.1",
     "undici": "8.12.3",

@@ -28,7 +28,7 @@ await build({
 	target: 'node20',
 	sourcemap: true,
 	logLevel: 'info',
-	external: ['electron', 'playwright-core', 'zod', 'undici', '@earendil-works/pi-coding-agent'],
+	external: ['electron', 'playwright-core', 'zod', 'undici', '@earendil-works/pi-coding-agent', '@browser_use/pi', '../node_modules/@browser_use/pi/node_modules/@earendil-works/pi-ai/dist/index.js', '../node_modules/@browser_use/pi/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.lazy.js'],
 	mainFields: ['module', 'main'],
 	conditions: ['node', 'import'],
 	banner: {

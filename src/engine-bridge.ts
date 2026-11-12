@@ -34,6 +34,11 @@ export class EngineBridge {
 		return port
 	}
 
+	/** CDP HTTP 端点（AI 接管 agent 附着内嵌浏览器用） */
+	async cdpHttpEndpoint(): Promise<string> {
+		return `http://127.0.0.1:${await this.cdpPort()}`
+	}
+
 	private async ensureBrowser(): Promise<Browser> {
 		// CDP 连接断开后不能继续复用；在实际需要页面时再重连，使应用启动
 		// 不必依赖 Playwright 立即附着成功。

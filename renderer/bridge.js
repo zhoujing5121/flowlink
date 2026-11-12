@@ -1256,6 +1256,7 @@
 		// 错误则关联到当前执行的步骤。
 		if (!item?.recordingId || item.testRunning) return
 		const state = recordingSession()
+		state.playbackInFlight = true
 		const code = currentFlow?.code || activeFlowKey
 		try {
 			const flow = await F.flow.load(item.flowFile)
@@ -1269,6 +1270,7 @@
 			await F.playback.run({ taskCode: code, recordingId: item.recordingId, variables })
 		} catch (err) {
 			item.testRunning = false
+			state.playbackInFlight = false
 			const message = err instanceof Error ? err.message : String(err)
 			const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
 			if (runningIndex >= 0) item.testResults[runningIndex] = { status: 'fail', error: { message } }
@@ -1284,9 +1286,44 @@
 			console.error('[bridge] 停止测试失败：', err)
 		}
 		item.testRunning = false
+		recordingSession().playbackInFlight = false
 		const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
 		if (runningIndex >= 0) item.testResults[runningIndex] = { status: 'fail', error: { message: 'Stopped by user' } }
 		if (item.resultTab === 'Test') renderSummaryWorkspace()
+	}
+
+	/** AI 接管续跑：Test 失败后从第一个失败步骤起，把剩余步骤交给 browser-use agent。 */
+	window.aiContinueFlowlinkTest = async function (item) {
+		if (!item?.recordingId || item.testRunning) return
+		const state = recordingSession()
+		const code = currentFlow?.code || activeFlowKey
+		const results = item.testResults || []
+		const failedIndex = results.findIndex((result) => result && result.status === 'fail')
+		const fromStepIndex = failedIndex >= 0 ? failedIndex : 0
+		try {
+			item.testRunning = true
+			state.playbackInFlight = true
+			renderSummaryWorkspace()
+			const variables = await window.referenceVariablesForReplay(item)
+			const failureSummary = results[fromStepIndex]?.error?.message || ''
+			await F.playback.aiContinue({
+				taskCode: code,
+				recordingId: item.recordingId,
+				fromStepIndex,
+				variables,
+				...(failureSummary ? { failureSummary } : {}),
+			})
+		} catch (err) {
+			item.testRunning = false
+			state.playbackInFlight = false
+			const message = err?.message || String(err)
+			renderSummaryWorkspace()
+			if (typeof appendAIMessage === 'function') {
+				appendAIMessage(item, 'assistant', `AI takeover could not start: ${message}`)
+			} else {
+				console.error('[bridge] AI 接管启动失败：', message)
+			}
+		}
 	}
 
 	async function runFlow(code) {
@@ -1537,6 +1574,7 @@
 		// 最终结果是所有步骤状态的权威来源；先将界面状态与最终结果对齐，
 		// 再清除运行标记。
 		console.log('[bridge] 回放完成：', result.ok ? '成功' : '失败', result.metrics)
+		recordingSession().playbackInFlight = false
 		$('playbackUserOperation')?.setAttribute('hidden', '')
 		const item = findTestItem()
 		if (!item) return
@@ -1558,9 +1596,61 @@
 		}
 	})
 
+	/** AI 接管进度：单步完成（带 AI 徽标）或单步失败 */
+	F.on('playback:aiStep', (event) => {
+		const state = recordingSession()
+		const item =
+			state.items.find((entry) => entry.recordingId === event.recordingId) || findTestItem()
+		if (!item) return
+		const results = item.testResults || []
+		if (event.ok && Number.isInteger(event.stepIndex) && results[event.stepIndex]) {
+			results[event.stepIndex] = { status: 'pass', ai: true }
+			const nextIndex = results.findIndex(
+				(result, index) => index > event.stepIndex && (!result || result.status === 'pending'),
+			)
+			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
+		} else if (!event.ok && Number.isInteger(event.stepIndex) && results[event.stepIndex]) {
+			results[event.stepIndex] = {
+				status: 'fail',
+				ai: true,
+				error: { message: event.error || 'AI could not complete this step' },
+			}
+			item.testRunning = false
+		}
+		if (event.note && typeof appendAIMessage === 'function') {
+			appendAIMessage(item, 'assistant', `AI: ${event.note}`)
+		}
+		if (item.resultTab === 'Test') renderSummaryWorkspace()
+	})
+
+	/** AI 接管结束：清运行标记并把总结写入聊天 */
+	F.on('playback:aiDone', (event) => {
+		console.log('[bridge] AI 接管结束：', event.ok ? '完成' : '中止', event.summary)
+		const state = recordingSession()
+		state.playbackInFlight = false
+		const item =
+			state.items.find((entry) => entry.recordingId === event.recordingId) || findTestItem()
+		if (item) {
+			item.testRunning = false
+			const results = item.testResults || []
+			for (let index = 0; index < results.length; index++) {
+				if (results[index]?.status === 'running') results[index] = { status: 'pending' }
+			}
+			if (typeof appendAIMessage === 'function') {
+				appendAIMessage(
+					item,
+					'assistant',
+					`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
+				)
+			}
+			if (item.resultTab === 'Test') renderSummaryWorkspace()
+		}
+	})
+
 	/** 回放错误 */
 	F.on('playback:error', ({ message }) => {
 		console.error('[bridge] 回放错误：', message)
+		recordingSession().playbackInFlight = false
 		$('playbackUserOperation')?.setAttribute('hidden', '')
 		const item = findTestItem()
 		if (item?.testRunning) {

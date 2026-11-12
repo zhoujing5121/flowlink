@@ -75,7 +75,8 @@
       </aside>
       <div class="content-column">
         <header class="header">
-          <img class="web-brand" src="assets/logo.svg" alt="FlowLink" />
+          <span class="web-brand">Taskflow</span>
+          <img class="bosch-logo" src="assets/bosch-logo.svg" alt="Bosch" />
         </header>
         <main class="main" id="main" tabindex="-1">
           <h1>Taskflow</h1>
@@ -423,80 +424,202 @@
             </div>
             <div class="field full profile-service-field">
               <div class="service-line-grid">
-                <label class="service-line-control"
-                  ><span
+                <div class="service-line-control">
+                  <label for="serviceLine"
                     >Service Level 1
                     <span class="required-marker" aria-hidden="true"
                       >*</span
-                    ></span
+                    ></label
                   >
                   <div class="service-line-select">
-                    <select
+                    <button
+                      class="service-picker-trigger"
                       id="serviceLine"
+                      type="button"
                       data-service-index="0"
                       aria-label="Service Level 1"
-                      required
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="serviceLinePopup"
                       disabled
                     >
-                      <option value="">Please select</option></select
+                      <span>Please select</span></button
                     ><svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m5 9 7 7 7-7" />
-                    </svg></div></label
-                ><label class="service-line-control"
-                  ><span
+                    </svg>
+                    <div
+                      class="popup service-picker-popup"
+                      id="serviceLinePopup"
+                      hidden
+                    >
+                      <div class="service-picker-toolbar">
+                        <input
+                          type="search"
+                          placeholder="Search"
+                          aria-label="Search Service Level 1 options"
+                          autocomplete="off"
+                        />
+                        <button type="button" aria-label="Clear search">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="m6 6 12 12M18 6 6 18" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div
+                        class="service-picker-options"
+                        role="listbox"
+                        aria-label="Service Level 1 options"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="service-line-control">
+                  <label for="serviceLine2"
                     >Service Level 2
                     <span class="required-marker" aria-hidden="true"
                       >*</span
-                    ></span
+                    ></label
                   >
                   <div class="service-line-select">
-                    <select
+                    <button
+                      class="service-picker-trigger"
                       id="serviceLine2"
+                      type="button"
                       data-service-index="1"
                       aria-label="Service Level 2"
-                      required
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="serviceLine2Popup"
                       disabled
-                    ></select
+                    >
+                      <span>Please select</span></button
                     ><svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m5 9 7 7 7-7" />
-                    </svg></div></label
-                ><label class="service-line-control"
-                  ><span
+                    </svg>
+                    <div
+                      class="popup service-picker-popup"
+                      id="serviceLine2Popup"
+                      hidden
+                    >
+                      <div class="service-picker-toolbar">
+                        <input
+                          type="search"
+                          placeholder="Search"
+                          aria-label="Search Service Level 2 options"
+                          autocomplete="off"
+                        />
+                        <button type="button" aria-label="Clear search">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="m6 6 12 12M18 6 6 18" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div
+                        class="service-picker-options"
+                        role="listbox"
+                        aria-label="Service Level 2 options"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="service-line-control">
+                  <label for="serviceLine3"
                     >Service Level 3
                     <span class="required-marker" aria-hidden="true"
                       >*</span
-                    ></span
+                    ></label
                   >
                   <div class="service-line-select">
-                    <select
+                    <button
+                      class="service-picker-trigger"
                       id="serviceLine3"
+                      type="button"
                       data-service-index="2"
                       aria-label="Service Level 3"
-                      required
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="serviceLine3Popup"
                       disabled
-                    ></select
+                    >
+                      <span>Please select</span></button
                     ><svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m5 9 7 7 7-7" />
-                    </svg></div></label
-                ><label class="service-line-control"
-                  ><span
+                    </svg>
+                    <div
+                      class="popup service-picker-popup"
+                      id="serviceLine3Popup"
+                      hidden
+                    >
+                      <div class="service-picker-toolbar">
+                        <input
+                          type="search"
+                          placeholder="Search"
+                          aria-label="Search Service Level 3 options"
+                          autocomplete="off"
+                        />
+                        <button type="button" aria-label="Clear search">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="m6 6 12 12M18 6 6 18" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div
+                        class="service-picker-options"
+                        role="listbox"
+                        aria-label="Service Level 3 options"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="service-line-control">
+                  <label for="serviceLine4"
                     >Service Level 4
                     <span class="required-marker" aria-hidden="true"
                       >*</span
-                    ></span
+                    ></label
                   >
                   <div class="service-line-select">
-                    <select
+                    <button
+                      class="service-picker-trigger"
                       id="serviceLine4"
+                      type="button"
                       data-service-index="3"
                       aria-label="Service Level 4"
-                      required
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="serviceLine4Popup"
                       disabled
-                    ></select
+                    >
+                      <span>Please select</span></button
                     ><svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="m5 9 7 7 7-7" />
-                    </svg></div
-                ></label>
+                    </svg>
+                    <div
+                      class="popup service-picker-popup"
+                      id="serviceLine4Popup"
+                      hidden
+                    >
+                      <div class="service-picker-toolbar">
+                        <input
+                          type="search"
+                          placeholder="Search"
+                          aria-label="Search Service Level 4 options"
+                          autocomplete="off"
+                        />
+                        <button type="button" aria-label="Clear search">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="m6 6 12 12M18 6 6 18" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div
+                        class="service-picker-options"
+                        role="listbox"
+                        aria-label="Service Level 4 options"
+                      ></div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -531,7 +654,7 @@
             tabindex="0"
           ></div>
           <header class="assistant-header">
-            <span id="assistantFileName">AI 助手</span
+            <span id="assistantFileName">AI Assistant</span
             ><button
               type="button"
               class="assistant-close"
@@ -593,21 +716,17 @@
                 </div>
               </div>
               <div data-ai-block="test" hidden>
-                <div class="assistant-test-toolbar">
-                  <button class="btn" id="runRecordingTest" type="button">
-                    Run
-                  </button>
-                  <button
-                    class="btn secondary"
-                    id="stopRecordingTest"
-                    type="button"
-                  >
-                    Stop
-                  </button>
-                </div>
                 <div class="test-progress-heading">
                   <strong>Progress</strong><span></span>
                 </div>
+                <button
+                  type="button"
+                  id="aiContinueTest"
+                  class="ai-continue-test"
+                  hidden
+                >
+                  Run remaining steps with AI
+                </button>
                 <div class="assistant-test-steps" aria-live="polite"></div>
                 <div class="test-empty" data-test-empty hidden>
                   No executable steps in this recording.
@@ -686,8 +805,11 @@
                   aria-label="发送"
                   title="发送"
                 >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <svg data-send-icon viewBox="0 0 24 24" aria-hidden="true">
                     <path d="m3 3 18 9-18 9 3-9-3-9ZM6 12h15" />
+                  </svg>
+                  <svg data-stop-icon viewBox="0 0 24 24" aria-hidden="true" hidden>
+                    <path d="M7 7h10v10H7Z" />
                   </svg>
                 </button>
               </div>
@@ -1276,8 +1398,6 @@
           aria-label=""
         />
         <button class="recording-row-name" data-recording-open=""></button>
-        <span class="recording-badge merged" hidden>Refined</span>
-        <span class="recording-badge recorded" hidden>Record</span>
         <button
           class="icon-button recording-delete"
           data-recording-delete=""
@@ -1358,18 +1478,21 @@
       <div class="canvas-step">
         <span data-step-code></span>
         <span data-step-text></span>
-        <!-- TODO：按条件显示手动操作图标 -->
         <span
           class="execution-mode-icon"
           role="img"
           aria-label="Automated"
           title="Automated"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
+          <svg data-mode-icon="automated" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="4" y="7" width="16" height="13" rx="2"></rect>
             <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
             <circle cx="9" cy="12" r=".5"></circle>
             <circle cx="15" cy="12" r=".5"></circle>
+          </svg>
+          <svg data-mode-icon="manual" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="7" r="4"></circle>
+            <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
           </svg>
         </span>
       </div>
@@ -1430,6 +1553,12 @@
           <label data-field="kind"
             >Step type<select name="kind"></select
           ></label>
+          <label data-field="execution"
+            >Execution<select name="execution">
+              <option value="automated">Automated</option>
+              <option value="manual">Manual (user completes it)</option>
+            </select></label
+          >
           <label data-field="label"
             >Label<input name="label" maxlength="255" /></label>
           <label data-field="targetRef"
@@ -1658,6 +1787,7 @@
           </svg>
         </span>
         <span class="test-step-name"></span>
+        <span class="test-step-ai" hidden>AI</span>
         <span class="test-step-status"></span>
         <div class="test-step-error" hidden></div>
       </div>

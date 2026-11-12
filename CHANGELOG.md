@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **Pi:** AI takeover after a failed Test run: a one-click "Run remaining steps with AI" action hands the failed step and all remaining steps to a `@browser_use/pi` agent attached to the embedded browser (failure scene preserved); steps complete with an AI badge, progress lands in the AI pane chat, secrets flow through the SDK's redacting `sensitiveData` channel, and guardrails (domain allowlist from the flow, per-step retry, 10-minute budget, Stop) bound the run. The source Flow is never modified.
+- **Pi:** Maintain every Pi prompt (session system prompt, auto-refine and refine generation, AI-pane advice) in `config/prompts.json` with `{{placeholder}}` templates; generation prompts now require business-stage grouping (2–6 labeled top-level groups) and plain-language step labels a non-technical user understands.
 - **UI:** Make Service Levels 1–4 required cascading dropdowns backed by the process landscape.
 - **Pi:** Auto-refine recordings after Stop: the main process generates a sanitized, stage-grouped `REFINED…` twin through the shared pipeline and reports it via toast; disable with `autoRefine: false` in `config/pi-settings.json`.
 - **AI:** `@` mentions in the AI pane attach saved recordings of the current task to a message (autocomplete picker, removable chips); attachments flow into advice and refinement without ever putting flow JSON into the chat transcript.

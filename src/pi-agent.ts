@@ -10,6 +10,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 import { perfSinceAppStart } from "./perf.js";
+import { loadPromptTemplates, type PromptTemplates } from "./prompts.js";
 
 export interface PiPromptOptions {
   prompt: string;
@@ -50,11 +51,6 @@ interface PiWorkerProxyRequest {
 
 type PiWorkerMessage = PiWorkerResponse | PiWorkerProxyRequest;
 
-type PiProxyOptions =
-  | { mode: "environment" }
-  | { mode: "system" }
-  | { mode: "explicit"; url: string };
-
 interface PendingPiRequest {
   resolve: (response: PiWorkerResponse) => void;
   reject: (error: Error) => void;
@@ -67,6 +63,11 @@ const pendingPiRequests = new Map<number, PendingPiRequest>();
 
 function getConfigDirectory(): string {
   return path.join(app.getAppPath(), "config");
+}
+
+/** Pi 提示词模板（config/prompts.json）：主进程生成管线与渲染层建议共用。 */
+export function getPromptTemplates(): PromptTemplates {
+  return loadPromptTemplates(getConfigDirectory());
 }
 
 function getAuthPath(): string {
@@ -136,6 +137,55 @@ export function isAutoRefineEnabled(): boolean {
   }
 }
 
+export interface TakeoverModelConfig {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  apiKey: string;
+}
+
+/** AI 接管（browser-use）的模型配置：provider/model 走 pi-settings，密钥走 pi-auth。 */
+export function getTakeoverModelConfig(): TakeoverModelConfig {
+  const settings = readSettings();
+  const authPath = getAuthPath();
+  if (!existsSync(authPath)) {
+    throw new Error(`Pi credentials file not found: ${authPath}.`);
+  }
+  let auth: Record<string, unknown>;
+  try {
+    auth = JSON.parse(readFileSync(authPath, "utf8"));
+  } catch {
+    throw new Error(`Pi credentials file is not valid JSON: ${authPath}`);
+  }
+  const credential = auth[settings.provider] as { type?: string; key?: string } | undefined;
+  if (
+    !credential ||
+    typeof credential.key !== "string" ||
+    !credential.key.trim() ||
+    credential.key.includes("PASTE_YOUR_")
+  ) {
+    throw new Error(
+      `No usable API key was found for provider "${settings.provider}" in ${authPath}.`,
+    );
+  }
+  let baseUrl: string | undefined;
+  if (settings.provider === "custom") {
+    const modelsPath = path.join(getConfigDirectory(), "models.json");
+    try {
+      const parsed = JSON.parse(readFileSync(modelsPath, "utf8")) as {
+        providers?: Record<string, { baseUrl?: string }>;
+      };
+      baseUrl = parsed.providers?.custom?.baseUrl;
+    } catch {
+      /* falls through to the explicit error below */
+    }
+    if (!baseUrl) {
+      throw new Error(`Provider "custom" needs a baseUrl in ${modelsPath}.`);
+    }
+  }
+  return { provider: settings.provider, model: settings.model, baseUrl, apiKey: credential.key };
+}
+
 function validateAuthFile(provider: string): void {
   const authPath = getAuthPath();
 
@@ -172,7 +222,15 @@ function validateAuthFile(provider: string): void {
   }
 }
 
-function getPiProxyOptions(): PiProxyOptions {
+type PiProxyOptions =
+  | { mode: "environment" }
+  | { mode: "system" }
+  | { mode: "explicit"; url: string };
+
+export type { PiProxyOptions };
+
+/** 解析启动参数里的 Pi 代理模式（--pi-proxy=<URL> / --pi-system-proxy / 环境变量默认）。 */
+export function getPiProxyOptions(): PiProxyOptions {
   const explicitArg = process.argv.find((arg) => arg.startsWith("--pi-proxy="));
   if (explicitArg !== undefined) {
     const url = explicitArg.slice("--pi-proxy=".length).trim();
@@ -263,6 +321,7 @@ function sendPiWorkerRequest(
 ): Promise<PiWorkerResponse> {
   const worker = getPiWorker();
   const id = ++nextPiRequestId;
+  const systemPrompt = loadPromptTemplates(getConfigDirectory()).systemPrompt;
   worker.ref();
 
   return new Promise((resolve, reject) => {
@@ -277,6 +336,7 @@ function sendPiWorkerRequest(
         type: "prompt",
         id,
         prompt,
+        systemPrompt,
         cwd,
         authPath: getAuthPath(),
         configDir: getConfigDirectory(),

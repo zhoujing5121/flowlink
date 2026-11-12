@@ -9,7 +9,7 @@
  *
  * esbuild 直接打包本地 TS 源码；capture.js 作为 engine 下的静态资源随包分发。
  */
-import { app, BrowserWindow, ipcMain, WebContentsView } from 'electron'
+import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,8 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { disposePiWorker, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { disposePiWorker, getPromptTemplates, getPiProxyOptions, getTakeoverModelConfig, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { aiTakeoverInProgress, abortAiTakeover, startAiTakeover } from './ai-takeover.js'
 import { perf, perfSinceAppStart } from './perf.js'
 import { generateRefinedFlow } from './ai-refine.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
@@ -30,6 +31,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /* Electron CDP：Playwright connectOverCDP 的前提 */
 app.commandLine.appendSwitch('remote-debugging-port', '0')
+
+/* browser-use SDK 默认开启匿名遥测；企业环境一律关闭（SDK 侧另有 telemetry:false 双保险）。 */
+process.env.DO_NOT_TRACK ||= '1'
 
 /**
  * 主进程协调状态：Electron 持有原生浏览器视图及其显隐状态；渲染进程只
@@ -159,7 +163,9 @@ async function removeRecordingFiles(recording: RecordingMeta): Promise<void> {
 	directories.add(artifactDir)
 
 	const flowFile = managedDirectChild(flowsRoot, recording.flowFile, 'Flow file')
-	if (!/^(?:\d+-[\w-]+|recording-[\w-]+)\.json$/i.test(basename(flowFile))) {
+	// makeId 生成 recording_<ts>_<rand>（下划线），普通录制为 <ts>-<taskCode>；
+	// 两种都由本应用生成，删除守卫都要放行。
+	if (!/^(?:\d+-[\w-]+|recording[-_][\w-]+)\.json$/i.test(basename(flowFile))) {
 		throw new Error('Refusing to remove a Flow file with an invalid generated name')
 	}
 	files.add(flowFile)
@@ -694,6 +700,7 @@ async function autoRefineRecording(taskCode: string, recording: RecordingMeta): 
 		const result = await generateRefinedFlow({
 			flowFiles: [recording.flowFile],
 			mode: 'auto',
+			templates: getPromptTemplates().generation,
 			runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
 		})
 		if (!result.ok) {
@@ -1023,6 +1030,7 @@ function registerIpc(): void {
 								!!turn && typeof turn === 'object' && typeof (turn as { text?: unknown }).text === 'string',
 						)
 					: undefined,
+				templates: getPromptTemplates().generation,
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
 			})
 			if (!result.ok) throw new Error(result.error)
@@ -1373,6 +1381,10 @@ function registerIpc(): void {
 	})
 
 	ipcMain.handle('playback:stop', async () => {
+		if (aiTakeoverInProgress()) {
+			await abortAiTakeover()
+			return true
+		}
 		if (!playAbortController) return false
 		playAbortController.abort()
 		if (playPromise) {
@@ -1381,6 +1393,110 @@ function registerIpc(): void {
 		}
 		return true
 	})
+
+	/* ---------- AI 接管续跑：Test 失败后由用户触发，browser-use 附着内嵌浏览器 ---------- */
+	ipcMain.handle(
+		'playback:aiContinue',
+		async (
+			_e,
+			opts: {
+				taskCode: string
+				recordingId: string
+				fromStepIndex: number
+				variables?: Record<string, string>
+				failureSummary?: string
+			},
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				!Number.isInteger(opts.fromStepIndex) ||
+				opts.fromStepIndex < 0
+			) {
+				throw new Error('AI takeover request is invalid')
+			}
+			if (
+				opts.variables !== undefined &&
+				(!opts.variables ||
+					typeof opts.variables !== 'object' ||
+					Array.isArray(opts.variables) ||
+					Object.entries(opts.variables).some(
+						([name, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string',
+					))
+			) {
+				throw new Error('AI 接管变量无效')
+			}
+			if (playPromise) throw new Error('已有回放正在进行')
+			if (recPromise || recStartPromise) throw new Error('录制会话进行中，无法接管')
+			if (aiTakeoverInProgress()) throw new Error('AI 接管已在进行')
+			if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
+			await taskStore.list()
+			const task = taskStore.get(opts.taskCode)
+			const recording = task?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error(`Recording not found: ${opts.recordingId}`)
+			const flow = await loadFlow(recording.flowFile)
+			// fire-and-forget：进度经 playback:aiStep / playback:aiDone 事件推送。
+			void startAiTakeover({
+				flow,
+				fromStepIndex: opts.fromStepIndex,
+				variables: opts.variables ?? {},
+				failureSummary:
+					typeof opts.failureSummary === 'string'
+						? opts.failureSummary.slice(0, 2_000)
+						: undefined,
+				deps: {
+					cdpUrl: await engine.cdpHttpEndpoint(),
+					artifactsRoot,
+					modelConfig: getTakeoverModelConfig(),
+					templates: getPromptTemplates().takeover,
+					proxy: getPiProxyOptions(),
+					resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
+					onStep: (event) => {
+						if (!mainWindow.isDestroyed())
+							mainWindow.webContents.send('playback:aiStep', {
+								...event,
+								taskCode: opts.taskCode,
+								recordingId: opts.recordingId,
+							})
+					},
+					onDone: (result) => {
+						if (!mainWindow.isDestroyed())
+							mainWindow.webContents.send('playback:aiDone', {
+								...result,
+								taskCode: opts.taskCode,
+								recordingId: opts.recordingId,
+							})
+						void taskStore
+							.patchRecording(opts.taskCode, opts.recordingId, {
+								lastRun: {
+									ok: result.ok,
+									at: new Date().toISOString(),
+									aiAssisted: true,
+									summary: result.summary,
+								},
+							})
+							.catch((error) => {
+								console.error(`[ai-takeover] lastRun 更新失败: ${(error as Error).message}`)
+							})
+					},
+				},
+			}).catch((error) => {
+				const message = (error as Error).message
+				if (!mainWindow.isDestroyed())
+					mainWindow.webContents.send('playback:aiDone', {
+						ok: false,
+						completed: [],
+						remaining: [],
+						summary: `AI takeover failed to start: ${message}`,
+						artifactDir: '',
+						taskCode: opts.taskCode,
+						recordingId: opts.recordingId,
+					})
+			})
+			return { started: true }
+		},
+	)
 
 
 	/* ---------- Pi Coding Agent: AI bedrock ---------- */
@@ -1395,6 +1511,8 @@ function registerIpc(): void {
 		if (!result.ok) throw new Error(result.error || 'Pi agent request failed')
 		return { text: result.text }
 	})
+	/** 提示词模板下发：渲染层 AI 面板组装建议请求时使用（config/prompts.json）。 */
+	ipcMain.handle('pi:promptTemplates', () => getPromptTemplates())
 
 	/* ---------- Flow 读取（分析页用） ---------- */
 	ipcMain.handle('flow:load', async (_e, flowFile: string) => {

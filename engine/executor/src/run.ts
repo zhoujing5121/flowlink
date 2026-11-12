@@ -790,6 +790,21 @@ export async function runFlowInBrowserContext(
 						signal: opts.abortSignal,
 					})
 					stepLogPush('用户已确认操作完成')
+				} else if (rendered.execution === 'manual') {
+					// 人工步骤：不由引擎代执行，暂停等待用户确认完成后继续。
+					phase = 'action'
+					if (!opts.waitForUserOperation) {
+						throw new StepFailure(
+							'NOT_ACTIONABLE',
+							'manual 步骤需要宿主提供用户确认回调',
+						)
+					}
+					await opts.waitForUserOperation({
+						stepId: item.stepId,
+						prompt: rendered.label ?? '请人工完成该步骤，然后继续回放。',
+						signal: opts.abortSignal,
+					})
+					stepLogPush('人工步骤已确认完成')
 				} else if (rendered.kind === 'assert') {
 					phase = 'expect'
 					stepLogPush(`assert ${rendered.assertion.kind}`)

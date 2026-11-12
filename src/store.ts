@@ -14,8 +14,11 @@ export interface TaskVersion {
 export interface RecordingLastRun {
 	ok: boolean
 	at: string
-	pass: number
-	fail: number
+	pass?: number
+	fail?: number
+	/** AI 接管（browser-use）完成时标记，附一句结果摘要。 */
+	aiAssisted?: boolean
+	summary?: string
 }
 
 export interface RecordingMeta {

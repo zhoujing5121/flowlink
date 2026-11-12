@@ -51,6 +51,13 @@ const escapeHTML = (s) =>
       ],
   );
 
+// SVG 元素没有 reflected 的 hidden IDL 属性：直接赋值只挂一个 expando 属性，
+// CSS [hidden] 选择器匹配不到，图标显隐必须走 attribute。
+function setIconHidden(element, hidden) {
+  if (hidden) element.setAttribute("hidden", "");
+  else element.removeAttribute("hidden");
+}
+
 // 版本号统一为 vX.Y.Z；无法解析的旧值（r1/V1）在下次保存时归一为 v1.0.0。
 function nextTaskVersion(current) {
   const match = /v(\d+)\.(\d+)\.(\d+)/i.exec(String(current || ""));
@@ -76,6 +83,7 @@ document.addEventListener("keydown", (e) => {
 let appliedName = "";
 let  appliedVersion = "";
 let appliedSearch = "";
+let appliedCategory = "";
 let activeStatus = "All";
 let currentFlow = null;
 let trigger = null;
@@ -92,6 +100,46 @@ function completeProcessNodes(nodes, level) {
   );
 }
 
+function servicePickerPopup(trigger) {
+  return document.getElementById(trigger.getAttribute("aria-controls") || "");
+}
+
+function updateServiceTrigger(trigger, value) {
+  trigger.dataset.value = value;
+  trigger.querySelector("span").textContent = value || "Please select";
+  trigger.classList.toggle("is-empty", !value);
+  trigger.removeAttribute("aria-invalid");
+}
+
+function renderServicePickerOptions(trigger, options) {
+  const list = servicePickerPopup(trigger)?.querySelector(
+    ".service-picker-options",
+  );
+  if (!list) return;
+  list.replaceChildren(
+    ...options.map((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "service-picker-option";
+      button.dataset.serviceValue = option.label;
+      button.setAttribute("role", "option");
+      button.setAttribute(
+        "aria-selected",
+        String(option.label === trigger.dataset.value),
+      );
+      const label = document.createElement("span");
+      label.textContent = option.label;
+      const check = document.createElement("span");
+      check.className = "service-picker-check";
+      check.setAttribute("aria-hidden", "true");
+      check.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>';
+      button.append(label, check);
+      return button;
+    }),
+  );
+}
+
 function populateServiceLevels(values = profileDraft().serviceLines) {
   if (!processLandscape) {
     for (const id of serviceLevelIds) {
@@ -105,27 +153,24 @@ function populateServiceLevels(values = profileDraft().serviceLines) {
   const resolvedValues = [];
 
   serviceLevelIds.forEach((id, index) => {
-    const select = document.getElementById(id);
+    const trigger = document.getElementById(id);
     const options =
       index === 0
         ? completeProcessNodes(processLandscape, 1)
         : parent
           ? completeProcessNodes(parent.children, index + 1)
           : [];
-    select.replaceChildren(new Option("Please select", ""));
-    for (const option of options) {
-      select.add(new Option(option.label, option.label));
-    }
 
     const requestedValue = invalidSelection ? "" : values[index] || "";
     const hasRequestedValue = options.some(
       (option) => option.label === requestedValue,
     );
-    select.value = hasRequestedValue ? requestedValue : "";
-    select.disabled = options.length === 0;
-    select.setCustomValidity("");
-    resolvedValues[index] = select.value;
-    parent = options.find((option) => option.label === select.value) || null;
+    updateServiceTrigger(trigger, hasRequestedValue ? requestedValue : "");
+    renderServicePickerOptions(trigger, options);
+    trigger.disabled = options.length === 0;
+    resolvedValues[index] = trigger.dataset.value;
+    parent =
+      options.find((option) => option.label === trigger.dataset.value) || null;
 
     if (requestedValue && !hasRequestedValue) invalidSelection = true;
   });
@@ -210,7 +255,8 @@ function saveProfile() {
     profileDrafts.delete("new");
     activeFlowKey = code;
   }
-  $("drawerTitle").textContent = code;
+  // 编号仅展示为 Taskflow-001 形式；存储中的 code 保持 TASKFLOW-001 不变。
+  $("drawerTitle").textContent = code.replace("TASKFLOW", "Taskflow");
   draft.name = snapshot.name;
   draft.description = snapshot.description;
   render();
@@ -280,6 +326,7 @@ function render() {
           .includes(appliedSearch)) &&
       (!appliedName || f.name.toLowerCase().includes(appliedName)) &&
       (!appliedVersion || f.version.toLowerCase().includes(appliedVersion)) &&
+      (!appliedCategory || f.category === appliedCategory) &&
       (activeStatus === "All" ||
         (activeStatus === "Active" ? f.enabled : !f.enabled)),
   );
@@ -336,7 +383,10 @@ function openDrawer(code, source) {
   currentFlow = code ? flowData.find((f) => f.code === code) : null;
   trigger = source;
   savedScroll = window.scrollY;
-  $("drawerTitle").textContent = code || nextTaskflowCode();
+  $("drawerTitle").textContent = (code || nextTaskflowCode()).replace(
+    "TASKFLOW",
+    "Taskflow",
+  );
   $("profileSaveStatus").textContent = "";
   if (processLandscapeError) {
     $("profileSaveStatus").textContent =
@@ -363,6 +413,7 @@ function openDrawer(code, source) {
   populateServiceLevels(draft.serviceLines);
   closePopup("category");
   closePopup("service");
+  closeServicePickers();
   initializeDrawerRecording(code);
   $("drawer").showModal();
   document.body.style.overflow = "hidden";
@@ -386,6 +437,7 @@ async function closeDrawer() {
   draft.name = $("flowName").value;
   draft.description = $("flowDescription").value;
   closePopup("service");
+  closeServicePickers();
   recordingSession().aiOpen = false;
   renderAIPanel();
   $("drawer").close();
@@ -407,8 +459,51 @@ function togglePopup(type) {
   const willOpen = popup.hidden;
   popup.hidden = !willOpen;
   button.setAttribute("aria-expanded", String(willOpen));
-  if (willOpen)
+  if (willOpen) {
+    if (type === "category") {
+      $("categorySearch").value = "";
+      renderCategoryOptions();
+    }
     $(type === "category" ? "categorySearch" : "serviceSearch").focus();
+  }
+}
+
+// Category 仍为演示态：选项 = 演示种子 + 已保存任务里出现过的类别，保证下拉不为空。
+const demoCategoryOptions = ["采购", "信息检索"];
+function categoryOptionValues() {
+  return [
+    ...new Set([
+      ...demoCategoryOptions,
+      ...flowData.map((flow) => flow.category),
+    ]),
+  ].filter(Boolean);
+}
+
+function renderCategoryOptions() {
+  const list = $("categoryOptions");
+  if (!list) return;
+  const query = ($("categorySearch").value || "").trim().toLowerCase();
+  const options = categoryOptionValues().filter((option) =>
+    option.toLowerCase().includes(query),
+  );
+  list.replaceChildren(
+    ...options.map((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "popup-option";
+      button.dataset.categoryOption = option;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(option === appliedCategory));
+      button.textContent = option;
+      return button;
+    }),
+  );
+  if (!options.length) {
+    const empty = document.createElement("p");
+    empty.className = "popup-option-empty";
+    empty.textContent = "No matching options";
+    list.append(empty);
+  }
 }
 
 $("toggleNav").onclick = () => {
@@ -458,7 +553,9 @@ $("reset").onclick = () => {
   appliedSearch = "";
   appliedName = "";
   appliedVersion = "";
+  appliedCategory = "";
   activeStatus = "All";
+  $("categoryValue").textContent = "Please select";
   $("categorySearch").value = "";
   closePopup("category");
   render();
@@ -523,36 +620,134 @@ $("drawer").addEventListener("cancel", (e) => {
   closeDrawer();
 });
 $("category").onclick = () => togglePopup("category");
+$("categorySearch").oninput = () => renderCategoryOptions();
+$("categoryOptions").onclick = (e) => {
+  const option = e.target.closest("[data-category-option]");
+  if (!option) return;
+  const value = option.dataset.categoryOption;
+  // 再次点击已选中的类别 = 取消筛选。
+  appliedCategory = appliedCategory === value ? "" : value;
+  $("categoryValue").textContent = appliedCategory || "Please select";
+  closePopup("category");
+  render();
+  updateFilterExpansion();
+};
 
-document.querySelectorAll("[data-service-index]").forEach((control) => {
-  control.onchange = () => {
-    control.setCustomValidity("");
-    const index = Number(control.dataset.serviceIndex);
-    const values = serviceLevelIds.map(
-      (id) => document.getElementById(id).value,
-    );
-    values.fill("", index + 1);
-    populateServiceLevels(values);
-    $("profileSaveStatus").textContent = "";
+$("categorySearch").onkeydown = (e) => {
+  if (e.key !== "Escape") return;
+  e.preventDefault();
+  e.stopPropagation();
+  closePopup("category");
+  $("category").focus();
+};
+
+function closeServicePicker(trigger) {
+  const popup = servicePickerPopup(trigger);
+  if (popup) popup.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+}
+
+function closeServicePickers() {
+  document
+    .querySelectorAll(".service-picker-trigger[aria-expanded='true']")
+    .forEach(closeServicePicker);
+}
+
+function filterServicePickerOptions(trigger) {
+  const popup = servicePickerPopup(trigger);
+  if (!popup) return;
+  const query = popup
+    .querySelector("input[type=search]")
+    .value.trim()
+    .toLowerCase();
+  let visible = 0;
+  popup.querySelectorAll(".service-picker-option").forEach((option) => {
+    const match = option.dataset.serviceValue.toLowerCase().includes(query);
+    option.hidden = !match;
+    if (match) visible++;
+  });
+  const list = popup.querySelector(".service-picker-options");
+  const total = list.querySelectorAll(".service-picker-option").length;
+  let empty = list.querySelector(".service-picker-empty");
+  if (visible) {
+    empty?.remove();
+    return;
+  }
+  if (!empty) {
+    empty = document.createElement("p");
+    empty.className = "service-picker-empty";
+    list.append(empty);
+  }
+  empty.textContent = total ? "No matching options" : "No options available";
+}
+
+document.querySelectorAll(".service-picker-trigger").forEach((trigger) => {
+  const popup = servicePickerPopup(trigger);
+  if (!popup) return;
+  const search = popup.querySelector("input[type=search]");
+  const clearButton = popup.querySelector("button");
+  const list = popup.querySelector(".service-picker-options");
+
+  trigger.onclick = () => {
+    if (trigger.disabled) return;
+    const opening = popup.hidden;
+    closeServicePickers();
+    if (!opening) return;
+    search.value = "";
+    filterServicePickerOptions(trigger);
+    popup.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    search.focus();
   };
-});
-
-for (const type of ["category"]) {
-  $(type === "category" ? "categorySearch" : "serviceSearch").onkeydown = (
-    e,
-  ) => {
-    if (e.key === "Escape") {
+  search.oninput = () => filterServicePickerOptions(trigger);
+  search.onkeydown = (e) => {
+    if (e.key === "Enter") {
       e.preventDefault();
-      e.stopPropagation();
-      closePopup(type);
-      $(type === "category" ? "category" : "serviceLine").focus();
+      return;
+    }
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (search.value) {
+      search.value = "";
+      filterServicePickerOptions(trigger);
+    } else {
+      closeServicePicker(trigger);
+      trigger.focus();
     }
   };
-}
+  popup.onkeydown = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeServicePicker(trigger);
+    trigger.focus();
+  };
+  clearButton.onclick = () => {
+    search.value = "";
+    filterServicePickerOptions(trigger);
+    search.focus();
+  };
+  list.onclick = (e) => {
+    const option = e.target.closest("[data-service-value]");
+    if (!option) return;
+    const index = Number(trigger.dataset.serviceIndex);
+    const values = serviceLevelIds.map(
+      (id) => document.getElementById(id).dataset.value || "",
+    );
+    values[index] = option.dataset.serviceValue;
+    values.fill("", index + 1);
+    closeServicePickers();
+    populateServiceLevels(values);
+    $("profileSaveStatus").textContent = "";
+    trigger.focus();
+  };
+});
 
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#categoryField")) closePopup("category");
   if (!e.target.closest(".form-select")) closePopup("service");
+  if (!e.target.closest(".service-line-control")) closeServicePickers();
 });
 
 function validateProfileServices() {
@@ -563,6 +758,16 @@ function validateProfileServices() {
       control.value.trim() ? "" : "Please complete this field.",
     );
     if (!control.reportValidity()) return false;
+  }
+  let missing = false;
+  for (const trigger of document.querySelectorAll(".service-picker-trigger")) {
+    const empty = !trigger.disabled && !trigger.dataset.value;
+    trigger.setAttribute("aria-invalid", String(empty));
+    if (empty) missing = true;
+  }
+  if (missing) {
+    $("profileSaveStatus").textContent = "Please complete all service levels.";
+    return false;
   }
   return true;
 }
@@ -714,10 +919,12 @@ function testStepNode(step, index, result) {
   icon.classList.add("status-" + status);
   icon.setAttribute("aria-label", label);
   icon.querySelectorAll("[data-status-icon]").forEach((svg) => {
-    svg.hidden = svg.dataset.statusIcon !== status;
+    setIconHidden(svg, svg.dataset.statusIcon !== status);
   });
   node.querySelector(".test-step-name").textContent =
     typeof step === "string" ? step : testStepLabel(step, index);
+  const aiBadge = node.querySelector(".test-step-ai");
+  if (aiBadge) aiBadge.hidden = !result?.ai;
   node.querySelector(".test-step-status").textContent = label;
   const error = node.querySelector(".test-step-error");
   error.hidden = !result?.error?.message;
@@ -752,6 +959,12 @@ function canvasStepNode(group, text, index) {
   step.querySelector("[data-step-code]").textContent =
     group.number + "-" + String(index + 1).padStart(3, "0");
   step.querySelector("[data-step-text]").textContent = text;
+  const manual = group.flowSteps?.[index]?.execution === "manual";
+  const icon = step.querySelector(".execution-mode-icon");
+  icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
+  icon.title = manual ? "Manual" : "Automated";
+  setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
+  setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
   return step;
 }
 
@@ -1452,9 +1665,6 @@ function renderRecordingItems() {
       const name = row.querySelector(".recording-row-name");
       name.dataset.recordingOpen = item.id;
       name.textContent = item.name;
-      row.querySelector(".recording-badge.merged").hidden = !item.summary;
-      row.querySelector(".recording-badge.recorded").hidden =
-        !!item.summary || !item.recorded;
       const remove = row.querySelector(".recording-delete");
       remove.dataset.recordingDelete = item.id;
       remove.setAttribute("aria-label", "Delete " + item.name);
@@ -2124,6 +2334,21 @@ function renderSummaryWorkspace() {
   bindMetricPreferences();
   bindScreenshotZoom();
   const tabButtons = tabs.querySelectorAll("[data-summary-tab]");
+  // 进入 Test 后自动执行：等浏览器重置完成，且仅在没有进行中的回放时发起一次。
+  const autoRunTest = (target) => {
+    if (!target.recordingId || typeof window.runFlowlinkTest !== "function")
+      return;
+    void (async () => {
+      if (state.testResetPromise) await state.testResetPromise;
+      if (
+        target.resultTab !== "Test" ||
+        target.testRunning ||
+        state.playbackInFlight
+      )
+        return;
+      window.runFlowlinkTest(target);
+    })();
+  };
   tabButtons.forEach((button) => {
     button.onclick = () => {
       const nextTab = button.dataset.summaryTab;
@@ -2133,6 +2358,7 @@ function renderSummaryWorkspace() {
       item.resultTab = nextTab;
       renderSummaryWorkspace();
       $(summaryTabId(item.resultTab)).focus();
+      if (nextTab === "Test") autoRunTest(item);
     };
     button.onkeydown = (e) => {
       let index = summaryTabs.indexOf(button.dataset.summaryTab);
@@ -2150,6 +2376,7 @@ function renderSummaryWorkspace() {
       item.resultTab = nextTab;
       renderSummaryWorkspace();
       $(summaryTabId(item.resultTab)).focus();
+      if (nextTab === "Test") autoRunTest(item);
     };
   });
 }
@@ -2550,7 +2777,7 @@ function renderAIPanel() {
   prewarmPiOnce();
   ensureAssistantData(item);
   bindAssistantResize();
-  $("assistantFileName").textContent = "AI 助手";
+  $("assistantFileName").textContent = "AI Assistant";
   $("assistantClose").onclick = () => {
     state.aiOpen = false;
     renderAIPanel();
@@ -2595,11 +2822,6 @@ function renderAIPanel() {
     stepsHost.querySelector("#refineFreeText").value = "";
   }
   if (testTab) {
-    const running = !!recording?.testRunning;
-    const runButton = stepsHost.querySelector("#runRecordingTest");
-    runButton.disabled = running || !recording?.recordingId;
-    runButton.textContent = running ? "Running…" : "Run";
-    stepsHost.querySelector("#stopRecordingTest").disabled = !running;
     const testSteps = recording?.testFlowSteps?.length
       ? recording.testFlowSteps
       : recording?.steps || [];
@@ -2615,6 +2837,25 @@ function renderAIPanel() {
         testStepNode(step, index, results[index]),
       ),
     );
+    // 失败后的 AI 接管入口：有失败步骤、无运行中的回放/接管时显示。
+    const aiContinue = stepsHost.querySelector("#aiContinueTest");
+    if (aiContinue) {
+      const hasFail = results.some((result) => result?.status === "fail");
+      const canContinue = !!(
+        recording?.recordingId &&
+        hasFail &&
+        !recording.testRunning &&
+        !state.playbackInFlight
+      );
+      aiContinue.hidden = !canContinue;
+      aiContinue.onclick = canContinue
+        ? () => {
+            if (typeof window.aiContinueFlowlinkTest === "function") {
+              void window.aiContinueFlowlinkTest(recording);
+            }
+          }
+        : null;
+    }
   }
   if (selectedGroup && !testTab)
     stepsHost.querySelector(".assistant-group-name").textContent =
@@ -2631,18 +2872,6 @@ function renderAIPanel() {
     );
   const continueButton = $("refineContinue");
   if (continueButton) continueButton.onclick = submitRefineOptions;
-  const runButton = $("runRecordingTest");
-  if (runButton)
-    runButton.onclick = () => {
-      if (recording && window.runFlowlinkTest)
-        window.runFlowlinkTest(recording);
-    };
-  const stopButton = $("stopRecordingTest");
-  if (stopButton)
-    stopButton.onclick = () => {
-      if (recording && window.stopFlowlinkTest)
-        window.stopFlowlinkTest(recording);
-    };
   $("assistantSteps").onclick = (e) => {
     if (testTab) return;
     const option = e.target.closest("[data-ai-option]");
@@ -2711,11 +2940,23 @@ function renderAIPanel() {
   $("assistantInput").placeholder = "Ask anything...";
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
-  $("assistantSend").disabled = !item.chatDraft.trim();
-  $("assistantSend").onclick = submitAssistantMessage;
+  // Test 运行中 composer 发送键兼作 Stop（Run/Stop 工具栏已移除，对齐原型）。
+  const testRunning = testTab && !!recording?.testRunning;
+  const sendButton = $("assistantSend");
+  sendButton.disabled = testRunning ? false : !item.chatDraft.trim();
+  sendButton.onclick = testRunning
+    ? () => {
+        if (recording && window.stopFlowlinkTest)
+          window.stopFlowlinkTest(recording);
+      }
+    : submitAssistantMessage;
+  sendButton.setAttribute("aria-label", testRunning ? "Stop" : "发送");
+  sendButton.title = testRunning ? "Stop" : "发送";
+  setIconHidden(sendButton.querySelector("[data-send-icon]"), testRunning);
+  setIconHidden(sendButton.querySelector("[data-stop-icon]"), !testRunning);
   $("assistantInput").oninput = (e) => {
     setAssistantDraft(item, e.target.value);
-    $("assistantSend").disabled = !item.chatDraft.trim();
+    if (!testRunning) $("assistantSend").disabled = !item.chatDraft.trim();
     updateMentionPicker(e.target);
   };
   $("assistantInput").onkeydown = (e) => {
@@ -2802,19 +3043,41 @@ function appendAIMessage(item, role, text) {
   renderAIPanel();
 }
 
+let piPromptTemplatesCache = null;
+async function piPromptTemplates() {
+  if (piPromptTemplatesCache) return piPromptTemplatesCache;
+  const bridge = window.flowlink?.pi;
+  if (!bridge?.promptTemplates) throw new Error("FlowLink Pi prompt templates are unavailable.");
+  const templates = await bridge.promptTemplates();
+  if (!templates?.advice?.prompt || !templates.advice.defaults) {
+    throw new Error("FlowLink Pi prompt templates are incomplete; check config/prompts.json.");
+  }
+  piPromptTemplatesCache = templates;
+  return templates;
+}
+
+function formatPiTemplate(template, values) {
+  return String(template || "").replace(/\{\{(\w+)\}\}/g, (match, key) => {
+    const value = values[key];
+    if (typeof value !== "string") {
+      throw new Error(`Pi prompt template references {{${key}}}, but no value was provided.`);
+    }
+    return value;
+  });
+}
+
 async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext = {}) {
   const bridge = window.flowlink?.pi;
   if (!bridge?.prompt) throw new Error("FlowLink Pi SDK bridge is unavailable.");
+  const templates = await piPromptTemplates();
   const context = await aiMaterialContext(sourceItems?.length ? sourceItems : [item]);
-  const prompt = [
-    `FlowLink task: ${mode}.`,
-    "Give the user practical advice only. Do not generate or save a replacement material unless explicitly asked in a later request.",
-    "Focus on replay reliability: navigation causes, authentication redirects, target evidence, waits, state assertions, tab/system context, and data dependencies.",
-    `Recent AI-pane conversation:\n${JSON.stringify((item.chat || []).slice(-8).map((message) => ({ role: message.role, text: message.text })).slice(0, 8)).slice(0, 12000)}`,
-    `User request: ${userRequest || "Review this material and suggest improvements."}`,
-    `Material context JSON:\n${JSON.stringify(context).slice(0, 65000)}`,
-    Object.keys(extraContext).length ? `Execution context JSON:\n${JSON.stringify(extraContext).slice(0, 25000)}` : "",
-  ].filter(Boolean).join("\n\n");
+  const prompt = formatPiTemplate(templates.advice.prompt, {
+    mode,
+    conversation: JSON.stringify((item.chat || []).slice(-8).map((message) => ({ role: message.role, text: message.text })).slice(0, 8)).slice(0, 12000),
+    userRequest: userRequest || "Review this material and suggest improvements.",
+    materialContext: JSON.stringify(context).slice(0, 65000),
+    executionContext: Object.keys(extraContext).length ? `Execution context JSON:\n${JSON.stringify(extraContext).slice(0, 25000)}` : "",
+  }).trim();
   const result = await bridge.prompt({ prompt, timeoutMs: 120000 });
   return result.text;
 }
@@ -2948,11 +3211,13 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
   ensureAssistantData(item);
   renderRecordingWorkspace();
   renderAIPanel();
+  const templates = await piPromptTemplates();
+  const adviceDefaults = templates.advice.defaults;
   const prompt = reason || (mode === "recording-complete"
-    ? "Review this newly generated recording and advise how to improve replay reliability. Do not create a new material yet."
+    ? adviceDefaults.recordingComplete
     : mode === "replay-failure"
-      ? "Analyze the failed replay step and the procedure as a whole. Recommend evidence-backed fixes; do not modify the source yet."
-      : "Review the selected material(s) and recommend concrete improvements. Do not create a new material yet.");
+      ? adviceDefaults.replayFailure
+      : adviceDefaults.materialRefinement);
   item.chat.push({ role: "assistant", text: "Pi is analyzing the recording evidence…" });
   renderAIPanel();
   try {
@@ -3320,6 +3585,7 @@ async function hydrateProcessFlow(item) {
       item.steps = steps.map((step, index) => processStepLabel(step, index));
       item.stepDetails = steps.map((step) => ({
         type: step.kind,
+        execution: step.execution === "manual" ? "manual" : "automated",
         target: step.target?.description || "",
         value: step.kind === "input" ? step.value : "",
         url: step.url || "",
@@ -4211,7 +4477,9 @@ function showManualStepEditor(item, groupId) {
   };
   const updateFields = () => {
     const kind = form.elements.kind.value;
-    const visible = new Set(["kind", "label", ...(fieldsByKind[kind] || [])]);
+    const visible = new Set(["kind", "label", "execution", ...(fieldsByKind[kind] || [])]);
+    // wait/assert/condition 有各自的执行语义，manual 标记对它们无意义。
+    if (["wait", "assert", "condition"].includes(kind)) visible.delete("execution");
     if (kind === "wait") {
       const condition = form.elements.waitCondition.value;
       if (condition !== "timeout") visible.delete("ms");
@@ -4244,9 +4512,13 @@ function showManualStepEditor(item, groupId) {
     const values = form.elements;
     const kind = values.kind.value;
     const page = group.steps.at(-1)?.page;
+    const manualExecution =
+      values.execution.value === "manual" &&
+      !["wait", "assert", "condition"].includes(kind);
     const step = {
       id: `manual_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       ...(values.label.value.trim() ? { label: values.label.value.trim() } : {}),
+      ...(manualExecution ? { execution: "manual" } : {}),
       ...(page ? { page: structuredClone(page) } : {}),
       kind,
     };
@@ -5434,9 +5706,21 @@ function setAssistantWidth(value) {
 }
 function bindAssistantResize() {
   // 助手面板宽度按录制会话保存，切换视图时不会丢失用户调整；
-  // 指针和键盘输入共用同一限幅规则。
+  // 指针和键盘输入共用同一限幅规则。默认宽度为 Material 列表宽度的 1.7 倍。
   const separator = $("assistantResize");
-  setAssistantWidth(recordingSession().aiWidth || 320);
+  const session = recordingSession();
+  if (!session.aiWidth) {
+    const listWidth =
+      session.listWidth ||
+      document
+        .querySelector(
+          "#designPanel .recording-layout:not([hidden]) .recording-list",
+        )
+        ?.getBoundingClientRect().width ||
+      298;
+    session.aiWidth = listWidth * 1.7;
+  }
+  setAssistantWidth(session.aiWidth);
   separator.onpointerdown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();

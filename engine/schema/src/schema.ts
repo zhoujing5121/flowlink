@@ -138,6 +138,12 @@ const PointRefSchema = z.object({
 const BaseStepSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().optional(),
+	/**
+	 * 执行方式：automated（默认，回放时自动执行）或 manual（人工执行——
+	 * 回放到该步骤时暂停，等待用户在内嵌浏览器或外部系统完成后确认再继续，
+	 * 复用 userOperation 的宿主确认回调）。省略 = automated，旧 Flow 无需迁移。
+	 */
+	execution: z.enum(['automated', 'manual']).optional(),
 	timeout: z.number().int().positive().optional(),
 	/**
 	 * 回放自适应步骤：效果已自行发生时可以跳过（报告为 skip，不算失败）。

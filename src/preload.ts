@@ -54,6 +54,14 @@ const api = {
 		/** 仅回放已有录制的前 N 步，为节点重录准备浏览器状态 */
 		runPrefix: (opts: { taskCode: string; recordingId: string; stepCount: number }) =>
 			ipcRenderer.invoke('playback:runPrefix', opts),
+		/** AI 接管续跑：Test 失败后让 browser-use agent 在内嵌浏览器上完成剩余步骤（进度走 playback:aiStep/aiDone 事件） */
+		aiContinue: (opts: {
+			taskCode: string
+			recordingId: string
+			fromStepIndex: number
+			variables?: Record<string, string>
+			failureSummary?: string
+		}) => ipcRenderer.invoke('playback:aiContinue', opts),
 		/** 中止当前正在运行的回放/测试 */
 		stop: () => ipcRenderer.invoke('playback:stop'),
 	},
@@ -63,6 +71,8 @@ const api = {
 		/** 空闲预热 Pi worker（SDK 导入 + 运行时缓存），不发起 provider 请求 */
 		prewarm: () => ipcRenderer.invoke('pi:prewarm'),
 		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
+		/** 提示词模板（config/prompts.json），渲染层 AI 面板组装建议请求用 */
+		promptTemplates: () => ipcRenderer.invoke('pi:promptTemplates'),
 		/** 从已保存录制生成细化的新 Flow：主进程负责投影、提示词、校验；返回已校验的提案（不落盘） */
 		generateFlow: (opts: {
 			taskCode: string
@@ -102,6 +112,8 @@ const api = {
 			'playback:done',
 			'playback:error',
 			'playback:userOperation',
+			'playback:aiStep',
+			'playback:aiDone',
 			'browser:urlChanged',
 			'browser:loading',
 			'recording:captureFrame',
