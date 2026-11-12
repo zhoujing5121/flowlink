@@ -332,7 +332,9 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	}
 	browserViews.clear()
 	recordingAdditionalPages = []
-	engine?.forgetAll()
+	// 上面的销毁循环已逐个 forget；主标签页未被销毁，其缓存的 Playwright
+	// Page 在 loadURL 导航后依然有效（CDP target 不变），保留它让 Record 点击
+	// 时 pageFor 直接命中缓存。完整重置（browser:restart）单独调用 forgetAll。
 
 	activeBrowserTabId = 'browser'
 	if (!browserView || browserView.webContents.isDestroyed()) {
@@ -491,6 +493,9 @@ app.whenReady().then(async () => {
 	try {
 		await waitForCdpPort(userData)
 		engine = new EngineBridge(userData)
+		// 预热 CDP 附着与页面标记发现：后台进行，失败绝不阻塞或搞挂启动；
+		// recording:start 的「引擎未就绪」守卫保持不变。
+		void engine.pageFor(activeBrowserTabId, browserView.webContents).catch(() => {})
 	} catch (err) {
 		console.error('[flowlink] EngineBridge 初始化失败：', (err as Error).message)
 	}
@@ -881,6 +886,9 @@ function registerIpc(): void {
 		}
 
 		await resetBrowserTabs(startUrl)
+		// 完整重置路径：主标签页的附着缓存也一并放弃，随后后台重新预热。
+		engine?.forgetAll()
+		void engine?.pageFor(activeBrowserTabId, browserView.webContents).catch(() => {})
 		return browserView.webContents.getURL() || startUrl
 	})
 	ipcMain.handle('browser:createTab', async () => {
