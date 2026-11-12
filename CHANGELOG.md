@@ -29,6 +29,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **Startup:** The app prewarms the recording engine (CDP/Playwright attach) and the Pi runtime in the background after launch or when the AI pane opens, and no longer loads Playwright during cold start, cutting Record-click and first-AI-message latency; `[perf]` log lines now quantify cold start, Record start, and Pi prompt timings.
+- **Recording:** Clicking Record no longer reloads the start URL when the embedded browser is already on it (hash differences ignored); the recording baseline is the current page, so use the browser toolbar reload first if a freshly loaded page is required.
 - **UI:** Rebranded to the FlowLink green identity end to end: theme colors, header wordmark, navigation labels, and app title replace the previous blue/Taskflow look.
 - **Packaging:** The window, taskbar, and packaged `FlowLink.exe` now show the FlowLink icon (multi-size `.ico` under `resources/`, verified by `package.mjs`); the renderer also ships an SVG favicon and logo under `renderer/assets/`.
 - **UI:** Static page and panel structure (flow list rows, version rows, recording rows, analysis tabs, AI pane blocks) now lives in `renderer/index.html` templates that JavaScript fills, instead of being assembled from JS strings.

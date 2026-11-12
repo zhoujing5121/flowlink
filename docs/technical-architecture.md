@@ -125,10 +125,22 @@ the tab set is reset.
 2. The `TaskStore` is created for `tasks.json`; IPC handlers are registered.
 3. The main window and initial embedded browser view are created.
 4. The main process waits for `DevToolsActivePort` and initializes
-   `EngineBridge`.
+   `EngineBridge`, then prewarms the CDP attach for the active tab in the
+   background. Prewarm failures never block startup; the recording start
+   handler keeps its own engine guard. `playwright-core` is loaded by dynamic
+   import on first attach, not during startup.
 5. The renderer loads task and recording metadata through `window.flowlink`.
-6. The Pi agent worker is not part of startup; it is spawned lazily on the
-   first `pi:prompt` request and terminated after idle use or app quit.
+6. The Pi agent worker is spawned lazily but prewarmed: roughly 1.5 s after
+   the window is shown, or as soon as the AI pane opens (`pi:prewarm`), the
+   worker imports the SDK and fills the runtime cache without contacting the
+   provider, so the first real prompt only pays session creation and the
+   provider round trip. The worker is still terminated after idle use or app
+   quit.
+7. Starting a recording no longer reloads the start URL when the embedded
+   browser is already on it (origin/path/query equal, hash ignored): the
+   recording baseline is the current DOM, matching `preservePage` semantics.
+   `browser:restart` remains a full reset — it clears the attach cache and
+   re-prewarms in the background.
 
 The build command produces `dist/main.js` and `dist/preload.cjs` with source
 maps. The ESM main bundle retains native `import.meta.url` behavior; the preload
