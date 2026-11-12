@@ -304,6 +304,17 @@ function normalizeHttpUrl(value: string): string {
 	return parsed.href
 }
 
+/** origin+path+query 相同（忽略 hash）即视为同一页面，无需重新导航。 */
+function samePageUrl(a: string, b: string): boolean {
+	try {
+		const ua = new URL(a)
+		const ub = new URL(b)
+		return ua.origin === ub.origin && ua.pathname === ub.pathname && ua.search === ub.search
+	} catch {
+		return false
+	}
+}
+
 /** 模式切换前把内嵌浏览器还原到单一 start-URL 标签页；cookie/storage/cache 保留。 */
 async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
@@ -337,7 +348,15 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	syncBrowserVisibility()
 
 	const startUrl = initialUrl || 'https://bosch.com.cn'
-	await browserView.webContents.loadURL(startUrl).catch(() => {})
+	// 跳过重载意味着录制基线是当前 DOM 而非新加载页面（与 preservePage 同
+	// 一取舍）。若将来需要保证干净基线，应做成显式的「录制前强制刷新」选项，
+	// 而不是恢复这里的无条件 loadURL；recorder 本就把已存在的页面当作种子
+	// 上下文（无初始导航事件）。
+	if (samePageUrl(browserView.webContents.getURL(), startUrl)) return
+	// 导航后台进行，不再二次等待整页加载：recorder 的 waitForLoadState('load')
+	// 是唯一加载闸门，回放路径的执行器 goto 同理；Stop 仍经 webContents.stop()
+	// 与 withAbort 立即中止。
+	void browserView.webContents.loadURL(startUrl).catch(() => {})
 }
 
 /** Electron 回放专用开页工厂：禁止走 Playwright Target.createTarget。 */
