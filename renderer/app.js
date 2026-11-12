@@ -789,16 +789,44 @@ function fillProcessPanel(panel, item) {
   );
   canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
   const menu = canvas.querySelector(".canvas-step-menu");
-  for (const group of groups) {
+  // 按钮永不「无解释地变灰」：Flow 未加载 / 录制进行中都给出原因 tooltip。
+  const flowReady = Boolean(item.processFlow);
+  const recordingNow = recordingSession().stage === "recording";
+  const editBlockedReason = !flowReady
+    ? item.processFlowError
+      ? "The recorded Flow could not be loaded for this item."
+      : "Loading the recorded Flow…"
+    : recordingNow
+      ? "Stop the recording to edit steps and groups."
+      : "";
+  for (const [groupIndex, group] of groups.entries()) {
     const actions = rowTemplate("processGroupActionsTemplate").cloneNode(true);
     actions.dataset.groupActions = group.id;
     actions.hidden = item.selectedGroup !== group.id;
+    const setEditState = (button, extraReason = "") => {
+      const reason = editBlockedReason || extraReason;
+      button.disabled = Boolean(reason);
+      button.title = reason;
+    };
     const addStep = actions.querySelector("[data-group-add-step]");
     addStep.dataset.groupAddStep = group.id;
-    addStep.disabled = !item.processFlow;
+    setEditState(addStep);
     const addAfter = actions.querySelector("[data-group-add-after]");
     addAfter.dataset.groupAddAfter = group.id;
-    addAfter.disabled = !item.processFlow;
+    setEditState(addAfter);
+    setEditState(actions.querySelector("[data-group-rename]"));
+    setEditState(
+      actions.querySelector('[data-group-move="up"]'),
+      groupIndex === 0 ? "This is already the first group." : "",
+    );
+    setEditState(
+      actions.querySelector('[data-group-move="down"]'),
+      groupIndex === groups.length - 1 ? "This is already the last group." : "",
+    );
+    setEditState(
+      actions.querySelector("[data-group-merge]"),
+      groupIndex === groups.length - 1 ? "There is no group below to merge into." : "",
+    );
     actions.querySelector("[data-group-record]").dataset.groupRecord = group.id;
     actions
       .querySelector('[data-group-insert="before"]')
@@ -4011,17 +4039,74 @@ function nextFlowVariableName(flow, prefix) {
   return `${prefix}_${index}`;
 }
 
+// 分组命名 / 通用提示统一走模板化 <dialog>：原生 prompt/alert 与新 UI 不一致，
+// 且无法做内联校验。showModal 自带焦点圈定；Enter 提交、Esc 走 cancel。
+function showProcessGroupDialog({ title = "Group name", name = "" } = {}) {
+  return new Promise((resolve) => {
+    const dialog = rowTemplate("processGroupDialogTemplate").cloneNode(true);
+    const form = dialog.querySelector("form");
+    dialog.querySelector("[data-group-dialog-title]").textContent = title;
+    const input = form.elements.groupName;
+    input.value = name;
+    const error = dialog.querySelector(".process-step-error");
+    const finish = (value) => {
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    dialog.oncancel = (event) => {
+      event.preventDefault();
+      finish(null);
+    };
+    dialog.querySelector("[data-group-dialog-cancel]").onclick = () =>
+      finish(null);
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const label = input.value.trim();
+      if (!label) {
+        error.hidden = false;
+        error.textContent = "Group name cannot be empty.";
+        return;
+      }
+      finish(label);
+    };
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
+function showWorkspaceNotice(message) {
+  return new Promise((resolve) => {
+    const dialog = rowTemplate("noticeDialogTemplate").cloneNode(true);
+    dialog.querySelector("[data-notice-message]").textContent = message;
+    const ok = dialog.querySelector("[data-notice-ok]");
+    const finish = () => {
+      dialog.close();
+      dialog.remove();
+      resolve();
+    };
+    dialog.oncancel = (event) => {
+      event.preventDefault();
+      finish();
+    };
+    ok.onclick = finish;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    ok.focus();
+  });
+}
+
 async function addProcessGroupAfter(item, groupId) {
   const groups = item.processFlow?.steps || [];
   const index = groups.findIndex((group) => group.kind === "group" && group.id === groupId);
   if (index < 0) return;
-  const name = window.prompt("New group name", `Group ${groups.length + 1}`);
-  if (name === null) return;
-  const label = name.trim();
-  if (!label) {
-    window.alert("Group name cannot be empty.");
-    return;
-  }
+  const label = await showProcessGroupDialog({
+    title: "New group",
+    name: `Group ${groups.length + 1}`,
+  });
+  if (!label) return;
   const group = {
     kind: "group",
     id: `group_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
@@ -4045,11 +4130,15 @@ function showManualStepEditor(item, groupId) {
   );
   if (!group) return;
   if (group.steps.at(-1)?.kind === "condition") {
-    window.alert("A condition must remain the final step in its group.");
+    void showWorkspaceNotice(
+      "A condition must remain the final step in its group, so steps cannot be added after it. Add steps to another group instead.",
+    );
     return;
   }
-  const dialog = document.createElement("dialog");
-  dialog.className = "reference-dialog process-step-dialog";
+  const dialog = rowTemplate("processStepEditorTemplate").cloneNode(true);
+  dialog.querySelector("[data-step-editor-title]").textContent =
+    `Add step to ${group.label}`;
+  const form = dialog.querySelector("form");
   const groups = item.processFlow.steps.filter((step) => step.kind === "group");
   const groupOptions = groups
     .map((candidate) => `<option value="${escapeHTML(candidate.id)}">${escapeHTML(candidate.label)}</option>`)
@@ -4061,38 +4150,38 @@ function showManualStepEditor(item, groupId) {
       index,
       label: `${step.kind} · ${step.target.description || step.id}`,
     }));
-  const types = [
-    "navigate", "click", "input", "select", "key", "hover", "scroll",
-    "upload", "wait", "assert", "condition", "openTab", "switchTab",
-    "closeTab", "dialog", "extract", "script",
+  const hasElementRefs = targetReferences.length > 0;
+  // 上下文限定：元素类步骤只有在该 Flow 已有可复用的 ElementRef 时才提供；
+  // script 步骤刻意不出现在 UI（回放安全边界，见架构文档编辑器范围）。
+  const kinds = [
+    "navigate", "key", "scroll", "wait", "openTab", "switchTab",
+    "closeTab", "dialog",
+    ...(hasElementRefs
+      ? ["click", "input", "select", "hover", "upload", "extract", "assert", "condition"]
+      : []),
   ];
-  dialog.innerHTML = `<form class="reference-editor process-step-editor">
-    <h2>Add step to ${escapeHTML(group.label)}</h2>
-    <label>Step type<select name="kind">${types.map((kind) => `<option value="${kind}">${kind}</option>`).join("")}</select></label>
-    <label>Label<input name="label" maxlength="255"></label>
-    <label>Observed target<select name="targetRef"><option value="">Select an observed element</option>${targetReferences.map((target) => `<option value="${target.index}">${escapeHTML(target.label)}</option>`).join("")}</select></label>
-    <label>URL<input name="url" type="url"></label>
-    <label>Value<input name="value"></label>
-    <label>Mark input as secret<input name="secret" type="checkbox"></label>
-    <label>Key<input name="key"></label>
-    <label>Wait type<select name="waitCondition"><option value="timeout">timeout</option><option value="userOperation">user operation</option><option value="element">element present</option><option value="networkIdle">network idle</option></select></label>
-    <label>Wait time (ms)<input name="ms" type="number" min="0" value="1000"></label>
-    <label>User operation prompt<input name="prompt" value="Complete the operation, then continue."></label>
-    <label>Condition check<select name="assertionKind"><option value="visible">visible</option><option value="hidden">hidden</option><option value="text">text</option><option value="value">value</option><option value="count">count</option></select></label>
-    <label>Expected value<input name="expected"></label>
-    <label>True group<select name="trueGroupId"><option value="">End branch</option>${groupOptions}</select></label>
-    <label>False group<select name="falseGroupId"><option value="">End branch</option>${groupOptions}</select></label>
-    <label>Tab index<input name="tabIndex" type="number" min="0" value="0"></label>
-    <label>Dialog action<select name="dialogAction"><option value="accept">accept</option><option value="dismiss">dismiss</option></select></label>
-    <label>Variable name<input name="variableName" placeholder="generated automatically"></label>
-    <label>Script / extraction name<input name="extra"></label>
-    <p class="process-step-error" role="alert"></p>
-    <div class="reference-dialog-actions"><button type="submit" class="btn">Add step</button><button type="button" class="btn secondary" data-step-cancel>Cancel</button></div>
-  </form>`;
+  form.elements.kind.innerHTML = kinds
+    .map((kind) => `<option value="${kind}">${kind}</option>`)
+    .join("");
+  form.elements.targetRef.insertAdjacentHTML(
+    "beforeend",
+    targetReferences
+      .map((target) => `<option value="${target.index}">${escapeHTML(target.label)}</option>`)
+      .join(""),
+  );
+  form.elements.trueGroupId.insertAdjacentHTML("beforeend", groupOptions);
+  form.elements.falseGroupId.insertAdjacentHTML("beforeend", groupOptions);
+  if (!hasElementRefs)
+    form.elements.waitCondition.querySelector('option[value="element"]')?.remove();
+
   document.body.appendChild(dialog);
   dialog.showModal();
-  const form = dialog.querySelector("form");
+
   const errorLabel = dialog.querySelector(".process-step-error");
+  const showError = (message) => {
+    errorLabel.hidden = false;
+    errorLabel.textContent = message;
+  };
   const secretField = form.elements.secret;
   form.elements.targetRef.onchange = () => {
     const choice = form.elements.targetRef.value;
@@ -4101,9 +4190,53 @@ function showManualStepEditor(item, groupId) {
     if (isPassword) secretField.checked = true;
     secretField.disabled = isPassword;
   };
+  // 只显示当前 kind 真正用到的字段：全部铺开会让 17 种步骤共享一张巨型表单。
+  const fieldsByKind = {
+    navigate: ["url"],
+    openTab: ["url"],
+    key: ["key", "targetRef"],
+    scroll: ["deltaY", "targetRef"],
+    wait: ["waitCondition", "ms", "prompt", "targetRef"],
+    switchTab: ["tabIndex"],
+    closeTab: ["tabIndex"],
+    dialog: ["dialogAction"],
+    click: ["targetRef"],
+    hover: ["targetRef"],
+    upload: ["targetRef"],
+    extract: ["targetRef", "extra"],
+    input: ["targetRef", "value", "secret", "variableName"],
+    select: ["targetRef", "value"],
+    assert: ["targetRef", "assertionKind", "expected"],
+    condition: ["targetRef", "assertionKind", "expected", "trueGroupId", "falseGroupId"],
+  };
+  const updateFields = () => {
+    const kind = form.elements.kind.value;
+    const visible = new Set(["kind", "label", ...(fieldsByKind[kind] || [])]);
+    if (kind === "wait") {
+      const condition = form.elements.waitCondition.value;
+      if (condition !== "timeout") visible.delete("ms");
+      if (condition !== "userOperation") visible.delete("prompt");
+      if (condition !== "element") visible.delete("targetRef");
+    }
+    if (kind === "assert" || kind === "condition") {
+      if (!["text", "value", "count"].includes(form.elements.assertionKind.value))
+        visible.delete("expected");
+    }
+    dialog.querySelectorAll("[data-field]").forEach((row) => {
+      row.hidden = !visible.has(row.dataset.field);
+    });
+  };
+  form.elements.kind.onchange = updateFields;
+  form.elements.waitCondition.onchange = updateFields;
+  form.elements.assertionKind.onchange = updateFields;
+  updateFields();
   const close = () => {
     dialog.close();
     dialog.remove();
+  };
+  dialog.oncancel = (event) => {
+    event.preventDefault();
+    close();
   };
   dialog.querySelector("[data-step-cancel]").onclick = close;
   form.onsubmit = async (event) => {
@@ -4128,28 +4261,28 @@ function showManualStepEditor(item, groupId) {
     const requiredTarget = ["click", "input", "select", "hover", "upload", "extract", "assert", "condition"].includes(kind) ||
       (kind === "wait" && values.waitCondition.value === "element");
     if (requiredTarget && !target) {
-      errorLabel.textContent = "Select an element observed in a recorded step.";
+      showError("Select an element observed in a recorded step.");
       return;
     }
     if (target) step.target = target;
     if (kind === "navigate" || kind === "openTab") {
       const url = values.url.value.trim();
       if (kind === "navigate" && !url) {
-        errorLabel.textContent = "A URL is required for navigation.";
+        showError("A URL is required for navigation.");
         return;
       }
       if (url) step.url = url;
     }
     if (kind === "input" || kind === "select") {
       if (!values.value.value && kind === "input") {
-        errorLabel.textContent = "Enter the value to parameterize.";
+        showError("Enter the value to parameterize.");
         return;
       }
       if (kind === "input") {
         const name = values.variableName.value.trim() || nextFlowVariableName(item.processFlow, "input");
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
             (item.processFlow.variables || []).some((variable) => variable.name === name)) {
-          errorLabel.textContent = "Use an unused variable identifier.";
+          showError("Use an unused variable identifier.");
           return;
         }
         const secret = secretInput;
@@ -4169,7 +4302,7 @@ function showManualStepEditor(item, groupId) {
     }
     if (kind === "key") {
       if (!values.key.value) {
-        errorLabel.textContent = "Enter a key to press.";
+        showError("Enter a key to press.");
         return;
       }
       step.key = values.key.value;
@@ -4185,19 +4318,19 @@ function showManualStepEditor(item, groupId) {
       if (assertionKind === "text") {
         step.assertion = expected ? { kind: "text", equals: expected } : { kind: "text", contains: "" };
         if (!expected) {
-          errorLabel.textContent = "Enter expected text.";
+          showError("Enter expected text.");
           return;
         }
       } else if (assertionKind === "value") {
         if (!expected) {
-          errorLabel.textContent = "Enter the expected value.";
+          showError("Enter the expected value.");
           return;
         }
         step.assertion = { kind: "value", equals: expected };
       } else if (assertionKind === "count") {
         const count = Number(expected);
         if (!Number.isInteger(count) || count < 0) {
-          errorLabel.textContent = "Enter a non-negative integer count.";
+          showError("Enter a non-negative integer count.");
           return;
         }
         step.assertion = { kind: "count", equals: count };
@@ -4212,7 +4345,7 @@ function showManualStepEditor(item, groupId) {
     if (kind === "switchTab") step.index = Number(values.tabIndex.value);
     if (kind === "closeTab" && values.tabIndex.value !== "") step.index = Number(values.tabIndex.value);
     if (kind === "dialog") step.action = values.dialogAction.value;
-    if (kind === "scroll") step.delta = { x: 0, y: Number(values.ms.value) };
+    if (kind === "scroll") step.delta = { x: 0, y: Number(values.deltaY.value) };
     if (kind === "upload") {
       const name = nextFlowVariableName(item.processFlow, "file");
       item.processFlow.variables ||= [];
@@ -4222,27 +4355,25 @@ function showManualStepEditor(item, groupId) {
     if (kind === "extract") {
       const name = values.extra.value.trim();
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-        errorLabel.textContent = "Enter a valid extraction variable name.";
+        showError("Enter a valid extraction variable name.");
         return;
       }
       step.into = name;
       step.prop = "text";
     }
-    if (kind === "script") {
-      if (!values.extra.value.trim()) {
-        errorLabel.textContent = "Enter script code.";
-        return;
-      }
-      step.code = values.extra.value;
-    }
+    // flow:updateSteps 的契约错误在对话框内联展示：先记录本地长度再提交，
+    // 失败时回滚步骤与变量，磁盘 Flow 未变，用户输入原地保留可改后重试。
+    const variablesBefore = item.processFlow.variables?.length ?? 0;
     group.steps.push(step);
     try {
       await persistProcessFlow(item);
       close();
       renderSummaryWorkspace();
     } catch (error) {
-      errorLabel.textContent = error instanceof Error ? error.message : String(error);
-      item.processFlowError = errorLabel.textContent;
+      group.steps.pop();
+      if (item.processFlow.variables && item.processFlow.variables.length > variablesBefore)
+        item.processFlow.variables.length = variablesBefore;
+      showError(error instanceof Error ? error.message : String(error));
     }
   };
   form.elements.kind.focus();
@@ -4358,7 +4489,11 @@ function bindProcessMap() {
       remove = e.target.closest("[data-group-delete]"),
       insert = e.target.closest("[data-group-insert]"),
       addStep = e.target.closest("[data-group-add-step]"),
-      addAfter = e.target.closest("[data-group-add-after]");
+      addAfter = e.target.closest("[data-group-add-after]"),
+      rename = e.target.closest("[data-group-rename]"),
+      move = e.target.closest("[data-group-move]"),
+      merge = e.target.closest("[data-group-merge]"),
+      ownerActions = e.target.closest("[data-group-actions]");
     if (addStep) {
       e.preventDefault();
       e.stopPropagation();
@@ -4368,6 +4503,21 @@ function bindProcessMap() {
       e.preventDefault();
       e.stopPropagation();
       void addProcessGroupAfter(item, addAfter.dataset.groupAddAfter);
+    }
+    if (rename && ownerActions) {
+      e.preventDefault();
+      e.stopPropagation();
+      void renameProcessGroup(item, ownerActions.dataset.groupActions);
+    }
+    if (move && ownerActions) {
+      e.preventDefault();
+      e.stopPropagation();
+      void moveProcessGroup(item, ownerActions.dataset.groupActions, move.dataset.groupMove);
+    }
+    if (merge && ownerActions) {
+      e.preventDefault();
+      e.stopPropagation();
+      void mergeProcessGroupIntoNext(item, ownerActions.dataset.groupActions);
     }
     if (record) {
       e.preventDefault();
@@ -4732,7 +4882,7 @@ async function deleteProcessGroup(item, groupId) {
     );
     if (groupIndex < 0) return;
     if (groups.length <= 1) {
-      window.alert("A Flow must keep at least one group.");
+      await showWorkspaceNotice("A Flow must keep at least one group.");
       return;
     }
     if (
@@ -4780,6 +4930,84 @@ async function deleteProcessGroup(item, groupId) {
   item.selectedGroup = null;
   item.nodeUpdates = true;
   rebuildItemTestFlow(item);
+  renderSummaryWorkspace();
+}
+
+/* 分组操作（重命名 / 上移下移 / 并入下一组）都走 flow:updateSteps 校验保存；
+ * 01/02 编号是 ensureProcessGroups 的派生值，保存后重渲染即自动重算。 */
+async function renameProcessGroup(item, groupId) {
+  const group = item.processFlow?.steps.find(
+    (step) => step.kind === "group" && step.id === groupId,
+  );
+  if (!group) return;
+  const label = await showProcessGroupDialog({
+    title: "Rename group",
+    name: group.label,
+  });
+  if (!label || label === group.label) return;
+  group.label = label;
+  try {
+    await persistProcessFlow(item);
+  } catch (error) {
+    item.processFlowError = error instanceof Error ? error.message : String(error);
+  }
+  renderSummaryWorkspace();
+}
+
+async function moveProcessGroup(item, groupId, direction) {
+  const steps = item.processFlow?.steps || [];
+  const groups = steps.filter((step) => step.kind === "group");
+  const position = groups.findIndex((group) => group.id === groupId);
+  const swapWith = direction === "up" ? position - 1 : position + 1;
+  if (position < 0 || swapWith < 0 || swapWith >= groups.length) return;
+  const a = steps.indexOf(groups[position]);
+  const b = steps.indexOf(groups[swapWith]);
+  [steps[a], steps[b]] = [steps[b], steps[a]];
+  item.selectedGroup = groupId;
+  try {
+    await persistProcessFlow(item);
+  } catch (error) {
+    item.processFlowError = error instanceof Error ? error.message : String(error);
+  }
+  renderSummaryWorkspace();
+}
+
+async function mergeProcessGroupIntoNext(item, groupId) {
+  const steps = item.processFlow?.steps || [];
+  const groups = steps.filter((step) => step.kind === "group");
+  const position = groups.findIndex((group) => group.id === groupId);
+  if (position < 0 || position >= groups.length - 1) return;
+  const current = groups[position];
+  const next = groups[position + 1];
+  // condition 必须是其 group 的最后一步：并入下一组会让它落到中间，契约会拒绝保存。
+  if (current.steps.at(-1)?.kind === "condition") {
+    await showWorkspaceNotice(
+      `“${current.label}” ends with a condition branch, which must stay final in its group. This group cannot be merged.`,
+    );
+    return;
+  }
+  if (
+    !(await confirmWorkspaceAction(
+      `Merge “${current.label}” into “${next.label}”? The merged group keeps the name “${next.label}”.`,
+    ))
+  )
+    return;
+  next.steps = [...current.steps, ...next.steps];
+  steps.splice(steps.indexOf(current), 1);
+  // 指向被并掉分组的条件分支改为到该分支结束（与删除分组的清理语义一致）。
+  for (const group of steps) {
+    if (group.kind !== "group") continue;
+    const last = group.steps.at(-1);
+    if (last?.kind !== "condition") continue;
+    if (last.trueGroupId === current.id) delete last.trueGroupId;
+    if (last.falseGroupId === current.id) delete last.falseGroupId;
+  }
+  item.selectedGroup = next.id;
+  try {
+    await persistProcessFlow(item);
+  } catch (error) {
+    item.processFlowError = error instanceof Error ? error.message : String(error);
+  }
   renderSummaryWorkspace();
 }
 

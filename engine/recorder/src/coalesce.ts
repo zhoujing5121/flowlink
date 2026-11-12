@@ -18,6 +18,24 @@ import type { CoalescedAction, RawElementFacts, RawEvent } from './types.js'
 export interface CoalesceOptions {
 	/** 合流窗口，默认 500ms */
 	bufferMs?: number
+	/**
+	 * 跨批次待配对拖拽槽：record() 在批次之间持有同一个槽对象传入，
+	 * dragStart 与 drop 落在不同冲洗批次时仍能配对（配对窗口 DRAG_PAIR_MS 内）。
+	 */
+	pendingDrag?: PendingDragSlot
+}
+
+interface PendingDrag {
+	ts: number
+	pageIndex: number
+	trusted: boolean
+	facts: RawElementFacts
+	raw: RawEvent[]
+}
+
+/** 待配对拖拽的可变槽：coalesceEvents 读取 current 作为初始状态并在结束时写回。 */
+export interface PendingDragSlot {
+	current?: PendingDrag
 }
 
 const DEFAULT_BUFFER_MS = 500
@@ -35,20 +53,13 @@ const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift', 'CapsLock', 'A
 /** 这些事件若出现在 dragStart 与 drop 之间，说明拖拽手势已被打断，配对作废 */
 const DRAG_BREAKING_KINDS = new Set(['click', 'contextmenu', 'input', 'change', 'keydown', 'scroll', 'hover', 'navigation'])
 
-interface PendingDrag {
-	ts: number
-	pageIndex: number
-	trusted: boolean
-	facts: RawElementFacts
-	raw: RawEvent[]
-}
-
 export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): CoalescedAction[] {
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
 	// 不原地排序调用方队列：record() 可能还要用原始顺序保存诊断事件。
 	const sorted = [...events].sort((a, b) => a.ts - b.ts)
 	const actions: CoalescedAction[] = []
-	let pendingDrag: PendingDrag | undefined
+	// 跨批次槽：上一批未配对的 dragStart 从这里接力，本批结束后写回。
+	let pendingDrag = opts.pendingDrag?.current
 
 	for (let i = 0; i < sorted.length; i++) {
 		const event = sorted[i]!
@@ -89,8 +100,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 				pendingDrag = undefined
 				if (!start || !event.facts) break
 				// 孤儿 drop / 跨页 / 非可信 / 超窗 → 不成步；原始事件始终保留在证据流。
-				// v1 限制：coalesceEvents 按批次无状态运行，起点与落点落在不同冲洗批次
-				// （约 500ms 一批）时不配对，仅存证据；跨批次配对留作后续改进。
+				// 起点可能在上一冲洗批次：record() 通过 options.pendingDrag 把它带过来。
 				if (event.pageIndex !== start.pageIndex) break
 				if (!start.trusted || !event.trusted) break
 				if (event.ts - start.ts > DRAG_PAIR_MS) break
@@ -311,6 +321,8 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 			}
 		}
 	}
+
+	if (opts.pendingDrag) opts.pendingDrag.current = pendingDrag
 
 	return postFilter(actions)
 }

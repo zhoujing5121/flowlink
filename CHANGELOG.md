@@ -18,6 +18,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **Pi:** Support `--pi-system-proxy` and `--pi-proxy=<URL>` launch options for provider requests.
 - **Recording:** Capture native tab opens, tab switches, and user-requested navigation while marking classified SSO/login redirects as optional steps; save recorded text inputs as Reference variables, marking password values secret.
 - **Process:** Edit grouped flows with manual steps, waits, and assertion-based true/false branches; replay allows at most three visits per group.
+- **Process:** Group operations beyond delete: rename, move up/down, and merge into the next group, all persisted through the validated `flow:updateSteps` contract with group numbering recomputed.
+- **Process:** The manual step editor shows only the fields relevant to the chosen step type, offers element-based kinds only when the Flow has recorded elements to reference, no longer offers `script` steps, and surfaces save/contract errors inline while keeping the entered values for correction.
+- **UI:** Group naming and workspace notices use styled in-app dialogs with inline validation instead of native `window.prompt`/`window.alert`.
 - **UI:** Restore saved recordings into the Design tab after app restart.
 - **UI:** Refine side pane with three mock options that dispatch to the existing merge flow.
 - **UI:** "Auto" badge on every step in Process, Instruction, and Test views.
@@ -30,6 +33,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 ### Changed
 
 - **Startup:** The app prewarms the recording engine (CDP/Playwright attach) and the Pi runtime in the background after launch or when the AI pane opens, and no longer loads Playwright during cold start, cutting Record-click and first-AI-message latency; `[perf]` log lines now quantify cold start, Record start, and Pi prompt timings.
+- **Recording:** Every session logs one `[perf] recording-session` summary (events received, batch failures, events requeued or dropped, capture reinjection attempts, popups never captured, pages attached/detached) to make stability issues measurable.
 - **Recording:** Clicking Record no longer reloads the start URL when the embedded browser is already on it (hash differences ignored); the recording baseline is the current page, so use the browser toolbar reload first if a freshly loaded page is required.
 - **UI:** Rebranded to the FlowLink green identity end to end: theme colors, header wordmark, navigation labels, and app title replace the previous blue/Taskflow look.
 - **Packaging:** The window, taskbar, and packaged `FlowLink.exe` now show the FlowLink icon (multi-size `.ico` under `resources/`, verified by `package.mjs`); the renderer also ships an SVG favicon and logo under `renderer/assets/`.
@@ -40,6 +44,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Fixed
 
+- **Recording:** Event batches whose processing fails are retried once and otherwise kept in the evidence stream with their event IDs named in the warning, instead of being lost silently.
+- **Recording:** A drag whose start and drop land in different capture flush windows (~500 ms apart) now records as one drag step instead of staying evidence-only.
+- **Recording:** A tab that crashes or is closed mid-recording no longer breaks the session; its actions are skipped with a warning while the remaining tabs keep recording, and popups that cannot be captured are retried and reported.
+- **Recording:** Stop no longer waits a fixed ~0.85 s for the capture video; it waits only for the in-flight frame plus one closing frame (hard-capped at 850 ms), so Stop returns quickly on fast machines without racing slow ones.
 - **AI:** The Refine button no longer enables for (or silently ignores) selections that mix un-analyzed recordings; it now enables exactly when the selection is refinable and explains otherwise.
 - **AI:** Refined-material generation no longer truncates source steps at 65k characters (which could yield unparseable output); oversized prompts now fail with a clear message, and generated steps are schema-validated in the main process with recorded element evidence rehydrated from an immutable `$ref` library.
 - **Startup:** Load task-list metadata and recording counts first, then defer recording metadata and saved Flow detail hydration until its task drawer opens.

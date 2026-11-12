@@ -908,7 +908,7 @@
                   id="summaryTabTest"
                   aria-controls="summaryResultPanel"
                 >
-                  Replay
+                  Test
                 </button>
                 <button
                   class="tab"
@@ -936,10 +936,6 @@
                   aria-label="Process canvas"
                   hidden
                 >
-                  <p class="process-graph-limit">
-                    Conditions route between groups. Each group can run at most
-                    3 times per replay.
-                  </p>
                   <div class="process-status" role="status" hidden>
                     Loading saved Flow…
                   </div>
@@ -1385,11 +1381,138 @@
       <div class="canvas-group-actions" hidden>
         <button data-group-add-step>Add step</button>
         <button data-group-add-after>Add group after</button>
+        <button data-group-rename>Rename</button>
+        <button data-group-move="up">Move up</button>
+        <button data-group-move="down">Move down</button>
+        <button data-group-merge>Merge into next</button>
         <button data-group-record>Re-record</button>
         <button data-group-insert="before">Add recording before</button>
         <button data-group-insert="after">Add recording after</button>
         <button data-group-delete>Delete</button>
       </div>
+    </template>
+    <template id="processGroupDialogTemplate">
+      <dialog class="reference-dialog" aria-label="Group name">
+        <form class="reference-editor" novalidate>
+          <h2 data-group-dialog-title>Group name</h2>
+          <label
+            >Group name<input
+              name="groupName"
+              maxlength="255"
+              autocomplete="off"
+          /></label>
+          <p class="process-step-error" role="alert" hidden></p>
+          <div class="reference-dialog-actions">
+            <button type="submit" class="btn">Save</button>
+            <button
+              type="button"
+              class="btn secondary"
+              data-group-dialog-cancel
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </dialog>
+    </template>
+    <template id="noticeDialogTemplate">
+      <dialog class="reference-dialog" aria-label="Notice">
+        <p data-notice-message></p>
+        <div class="reference-dialog-actions">
+          <button type="button" class="btn" data-notice-ok>OK</button>
+        </div>
+      </dialog>
+    </template>
+    <template id="processStepEditorTemplate">
+      <dialog class="reference-dialog process-step-dialog">
+        <form class="reference-editor process-step-editor" novalidate>
+          <h2 data-step-editor-title>Add step</h2>
+          <label data-field="kind"
+            >Step type<select name="kind"></select
+          ></label>
+          <label data-field="label"
+            >Label<input name="label" maxlength="255" /></label>
+          <label data-field="targetRef"
+            >Observed target<select name="targetRef">
+              <option value="">Select an observed element</option>
+            </select></label
+          >
+          <label data-field="url">URL<input name="url" type="url" /></label>
+          <label data-field="value">Value<input name="value" /></label>
+          <label data-field="secret"
+            >Mark input as secret<input name="secret" type="checkbox" /></label
+          >
+          <label data-field="key">Key<input name="key" /></label>
+          <label data-field="waitCondition"
+            >Wait type<select name="waitCondition">
+              <option value="timeout">timeout</option>
+              <option value="userOperation">user operation</option>
+              <option value="element">element present</option>
+              <option value="networkIdle">network idle</option>
+            </select></label
+          >
+          <label data-field="ms"
+            >Wait time (ms)<input name="ms" type="number" min="0" value="1000"
+          /></label>
+          <label data-field="deltaY"
+            >Scroll distance (px, negative scrolls up)<input
+              name="deltaY"
+              type="number"
+              value="300"
+          /></label>
+          <label data-field="prompt"
+            >User operation prompt<input
+              name="prompt"
+              value="Complete the operation, then continue."
+          /></label>
+          <label data-field="assertionKind"
+            >Condition check<select name="assertionKind">
+              <option value="visible">visible</option>
+              <option value="hidden">hidden</option>
+              <option value="text">text</option>
+              <option value="value">value</option>
+              <option value="count">count</option>
+            </select></label
+          >
+          <label data-field="expected"
+            >Expected value<input name="expected"
+          /></label>
+          <label data-field="trueGroupId"
+            >True group<select name="trueGroupId">
+              <option value="">End branch</option>
+            </select></label
+          >
+          <label data-field="falseGroupId"
+            >False group<select name="falseGroupId">
+              <option value="">End branch</option>
+            </select></label
+          >
+          <label data-field="tabIndex"
+            >Tab index<input name="tabIndex" type="number" min="0" value="0"
+          /></label>
+          <label data-field="dialogAction"
+            >Dialog action<select name="dialogAction">
+              <option value="accept">accept</option>
+              <option value="dismiss">dismiss</option>
+            </select></label
+          >
+          <label data-field="variableName"
+            >Variable name<input
+              name="variableName"
+              placeholder="generated automatically"
+          /></label>
+          <label data-field="extra"
+            >Extraction variable name<input name="extra"
+          /></label>
+          <p class="process-step-error" role="alert" hidden></p>
+          <div class="reference-dialog-actions">
+            <button type="submit" class="btn">Add step</button>
+            <button type="button" class="btn secondary" data-step-cancel>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </dialog>
     </template>
     <template id="instructionGroupTemplate">
       <section class="steps-group">

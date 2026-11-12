@@ -59,7 +59,7 @@ renderer/index.html + app.js + bridge.js
 | `src/pi-agent.ts` | Pi worker lifecycle, settings/credential validation, `pi:*` IPC handlers |
 | `src/pi-agent-worker.ts` | Node worker thread hosting Pi SDK sessions with a restricted resource loader |
 | `renderer/index.html` | Static UI shells and `<template>` elements for repeated rows and per-flow recording workspaces; JavaScript fills these instead of authoring markup |
-| `renderer/app.js` | UI state, profile/recording workflows, Process editor, AI advice pane, and template slot filling |
+| `renderer/app.js` | UI state, profile/recording workflows, Process editor (manual step editor and group rename/move/merge dialogs defined as `index.html` templates), AI advice pane, and template slot filling |
 | `renderer/bridge.js` | Connects the UI to preload IPC; loads persistent tasks and forwards live events |
 | `engine/schema/src/` | Flow types, Zod schemas, migration, validation, serialization |
 | `engine/recorder/src/` | Recording lifecycle, element facts, event coalescing, planning and expectations |
@@ -313,7 +313,9 @@ Contract invariants:
    configured quiet interval. It handles cases such as typing followed by
    change/blur and drag sequences that should yield one user intent: a trusted
    `dragStart`+`drop` pair on one tab within `DRAG_PAIR_MS` (5 s) coalesces
-   into a `drag` action carrying source and target facts, and its step planner
+   into a `drag` action carrying source and target facts — including pairs
+   split across flush windows, because the recorder threads a pending-drag
+   slot through the coalesce options between batches — and its step planner
    resolves both into `ElementRef`s (skipping the step with a warning when
    either side cannot be re-verified); unpaired, cross-tab, stale, or
    interrupted drags remain evidence-only, and v1 does not infer expectations
@@ -326,7 +328,11 @@ Contract invariants:
    outcomes. The schema validates the assembled Flow before it is written.
 7. Step callbacks stream progress to the UI. Stop flushes pending coalesced
    actions before final persistence; a truly empty recording is a cancellation
-   outcome and does not create a saved recording.
+   outcome and does not create a saved recording. A batch whose processing
+   fails is retried once inside the serialized flush chain (a post-Stop retry
+   cannot wait for a next tick, because none will come); if the retry fails
+   too, the raw events stay in the evidence stream and the warning names their
+   event IDs.
 
 Alongside page-side events, the main process feeds a mutable host-event buffer
 into the recorder while a session is active. Address-bar navigation
@@ -365,6 +371,21 @@ tab's open action so replay can reproduce the tab and destination together.
 Pages that existed before recording are seed context, not implicitly new tabs.
 Stopping while startup is waiting for navigation or CDP attachment aborts that
 startup; transient capture output is discarded on cancellation.
+
+Recording sessions are instrumented and page-fault tolerant. Every session ends
+with one `[perf] recording-session` summary line (raw events received, batch
+failures, events requeued or dropped after retry, capture reinjection attempts
+that could not install, popups never captured, pages attached/detached), so
+stability work starts from counts instead of guesses. A tab that crashes or
+closes mid-recording is dropped from step planning with a warning — the session
+continues on the remaining tabs, and actions on the dead page are skipped
+rather than throwing into the flush chain. Popup tabs get a bounded
+capture-install retry (five attempts) and are reported when never captured.
+When `EngineBridge.pageFor` exhausts its marker-discovery loop it logs the
+attempt count and the CDP-visible page URLs instead of surfacing a bare attach
+failure. Stopping the capture video waits for the in-flight frame plus one
+closing frame, hard-capped at 850 ms, instead of sleeping a fixed interval —
+fast machines stop quickly, slow machines never stop early.
 
 ## 9. Replay, resolution, and verification
 

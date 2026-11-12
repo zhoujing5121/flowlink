@@ -61,6 +61,8 @@ let recordingCaptureTimer: ReturnType<typeof setInterval> | null = null
 let recordingCaptureRoot = ''
 let recordingCaptureDir = ''
 let recordingCaptureFrames: string[] = []
+let recordingCaptureBusy = false
+let recordingCaptureActive = false
 let recordingAdditionalPages: Page[] = []
 let recordingTabIds: string[] = []
 const recordingTabSnapshots = new Map<string, { url: string; title: string }>()
@@ -410,40 +412,44 @@ function ensureBrowserBounds(): void {
 	}
 }
 
+/** 采一帧：截图 + 落盘 + 推给渲染端。busy 标记串行化，保证帧的写入顺序与采集顺序一致。 */
+function captureRecordingFrame(force = false): Promise<void> {
+	if (recordingCaptureBusy) return Promise.resolve()
+	if (!force && (!recordingCaptureActive || browserViews.size === 0)) return Promise.resolve()
+	recordingCaptureBusy = true
+	const view = browserView
+	const tabId = activeBrowserTabId
+	return view.webContents
+		.capturePage()
+		.then(async (image) => {
+			const png = image.toPNG()
+			if (!png.length) return
+			const framePath = join(recordingCaptureDir, `frame-${String(recordingCaptureFrames.length + 1).padStart(4, '0')}.png`)
+			await writeFile(framePath, png)
+			recordingCaptureFrames.push(framePath)
+			if (!mainWindow.isDestroyed()) {
+				mainWindow.webContents.send('recording:captureFrame', {
+					dataUrl: image.toDataURL(),
+					index: recordingCaptureFrames.length,
+					tabId,
+					url: view.webContents.getURL(),
+				})
+			}
+		})
+		.catch(() => {})
+		.finally(() => {
+			recordingCaptureBusy = false
+		})
+}
+
 async function startRecordingCapture(flowId: string): Promise<void> {
 	recordingCaptureRoot = join(artifactsRoot, flowId)
 	recordingCaptureDir = join(recordingCaptureRoot, 'record', 'video')
 	recordingCaptureFrames = []
 	await mkdir(recordingCaptureDir, { recursive: true })
-	let capturing = false
+	recordingCaptureActive = true
 	recordingCaptureTimer = setInterval(() => {
-		// 截图和磁盘写入较慢时也不排队启动下一次捕获，避免积压任务并
-		// 保证帧的写入顺序与实际采集顺序一致。
-		if (capturing || browserViews.size === 0) return
-		capturing = true
-		const view = browserView
-		const tabId = activeBrowserTabId
-		view.webContents
-			.capturePage()
-			.then(async (image) => {
-				const png = image.toPNG()
-				if (!png.length) return
-				const framePath = join(recordingCaptureDir, `frame-${String(recordingCaptureFrames.length + 1).padStart(4, '0')}.png`)
-				await writeFile(framePath, png)
-				recordingCaptureFrames.push(framePath)
-				if (!mainWindow.isDestroyed()) {
-					mainWindow.webContents.send('recording:captureFrame', {
-						dataUrl: image.toDataURL(),
-						index: recordingCaptureFrames.length,
-						tabId,
-						url: view.webContents.getURL(),
-					})
-				}
-			})
-			.catch(() => {})
-			.finally(() => {
-				capturing = false
-			})
+		void captureRecordingFrame()
 	}, 800)
 }
 
@@ -452,7 +458,22 @@ async function stopRecordingCapture(): Promise<{ frames: string[]; poster: strin
 		clearInterval(recordingCaptureTimer)
 		recordingCaptureTimer = null
 	}
-	await sleep(850)
+	const hadSession = recordingCaptureActive
+	recordingCaptureActive = false
+	if (!hadSession) {
+		return {
+			frames: [...recordingCaptureFrames],
+			poster: recordingCaptureFrames[0] ?? '',
+		}
+	}
+	// 事件有界收尾：等正在落盘的最后一帧完成，再补一帧停止瞬间的画面。
+	// 硬上限仍是 850ms（原固定 sleep 的时长）：快机器不空等，慢机器也不会提前返回。
+	const deadline = Date.now() + 850
+	while (recordingCaptureBusy && Date.now() < deadline) await sleep(25)
+	if (Date.now() < deadline - 150) {
+		await captureRecordingFrame(true)
+		while (recordingCaptureBusy && Date.now() < deadline) await sleep(25)
+	}
 	return {
 		frames: [...recordingCaptureFrames],
 		poster: recordingCaptureFrames[0] ?? '',

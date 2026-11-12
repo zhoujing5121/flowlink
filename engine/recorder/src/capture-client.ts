@@ -81,10 +81,11 @@ export async function installCapture(context: BrowserContext, onEmit: EmitHandle
 /**
  * 只给**这一页**装采集：不在 context 上 addInitScript。
  * Electron 的默认 CDP context 里还有产品壳页面，context 级注入会把壳层操作也录进去。
+ * 返回主 frame 是否装上（false = 页面正在导航/不可求值，稍后可重试）。
  */
-export async function installCaptureOnPage(page: Page, onEmit: EmitHandler): Promise<void> {
+export async function installCaptureOnPage(page: Page, onEmit: EmitHandler): Promise<boolean> {
 	await ensureEmitBinding(page.context(), onEmit)
-	await ensureCaptureInPage(page)
+	return ensureCaptureInPage(page)
 }
 
 /**

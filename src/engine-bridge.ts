@@ -96,7 +96,24 @@ export class EngineBridge {
 			}
 			await new Promise((resolve) => setTimeout(resolve, 50))
 		}
-		throw new Error('未能附着到内嵌浏览器页面（CDP 页面列表里找不到对应标签页）')
+		// 40 次仍未命中：把「试了多少次、CDP 里能看到什么」一起打出来，
+		// 否则调用方只拿到一句裸的附着失败，无从诊断（端口未就绪/壳层 target 缺失/竞态）。
+		const seen = browser.contexts().map((context) =>
+			context.pages().map((page) => {
+				try {
+					return page.url().slice(0, 120)
+				} catch {
+					return '<unavailable>'
+				}
+			}),
+		)
+		timing.mark('failed')
+		console.warn(
+			`[flowlink] pageFor(${tabId}) 40 次尝试后仍未命中页面标记；CDP contexts=${seen.length}，页面 URL：${JSON.stringify(seen)}`,
+		)
+		throw new Error(
+			`未能附着到内嵌浏览器页面（CDP 页面列表里找不到对应标签页；已尝试 40 次，可见 contexts=${seen.length}）`,
+		)
 	}
 
 	/** 回放登记时反查原生 tabId，避免依赖 URL 或创建顺序猜测。 */

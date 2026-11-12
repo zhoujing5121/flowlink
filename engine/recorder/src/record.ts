@@ -56,7 +56,7 @@ import {
  * `__name(...)` 调用，页面里没有该全局就会 ReferenceError。纯字符串，不经过编译。
  */
 const NAME_KEEPALIVE_SOURCE = 'globalThis.__name = globalThis.__name || ((fn) => fn); true'
-import { coalesceEvents } from './coalesce.js'
+import { coalesceEvents, type PendingDragSlot } from './coalesce.js'
 import { compileAuthMatchers, isAuthUrl, AUTO_NAVIGATION_TYPES } from './classify.js'
 import { buildElementRef, deriveCandidates } from './element.js'
 import { appearedNodes, inferExpect, pickExpectTarget, urlPattern } from './expect.js'
@@ -176,6 +176,26 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	warnings.push(...authMatchers.warnings)
 	let lastEventTs = Date.now()
 	let rawEventSequence = 0
+
+	/* ---------------- 会话观测计数（[perf] 口径） ----------------
+	 * 稳定性问题先量化再动手：每场录制结束打一行汇总，异常计数同时进 warnings。
+	 */
+	const sessionStats = {
+		rawEventsReceived: 0,
+		eventsRequeued: 0,
+		eventsDroppedAfterRetry: 0,
+		processBatchFailures: 0,
+		captureReinjectAttempts: 0,
+		captureReinjectFailed: 0,
+		popupsNeverCaptured: 0,
+		pagesAttached: 0,
+		pagesDetached: 0,
+	}
+	const logSessionStats = (): void => {
+		console.log(
+			`[perf] recording-session: events=${sessionStats.rawEventsReceived} batchFailures=${sessionStats.processBatchFailures} requeued=${sessionStats.eventsRequeued} droppedAfterRetry=${sessionStats.eventsDroppedAfterRetry} reinjectFailed=${sessionStats.captureReinjectFailed}/${sessionStats.captureReinjectAttempts} popupsNeverCaptured=${sessionStats.popupsNeverCaptured} pagesAttached=${sessionStats.pagesAttached} pagesDetached=${sessionStats.pagesDetached}`,
+		)
+	}
 
 	/** 标签页序号：按 Page 创建顺序，0 = 录制起点（任务要求 index=0 可省略） */
 	const pageIndexes = new WeakMap<Page, number>()
@@ -342,6 +362,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		event.systemId = systemId
 		event.systemName = systemName
 		lastEventTs = event.ts
+		sessionStats.rawEventsReceived++
 		pending.push(event)
 		// 完整证据副本有较高上限；不反过来限制执行 IR 的生成队列。
 		if (allEvents.length < 100_000) allEvents.push(event)
@@ -420,26 +441,43 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		 * - page：popup / target=_blank 新开的标签页，按创建顺序拿 index。
 		 */
 		const wiredPages = new WeakSet<Page>()
+		/** 渲染进程崩溃的页面：事件采不到了，成步/稳定等待都要跳过它，但不终止整场录制。 */
+		const crashedPages = new WeakSet<Page>()
+		const pageAlive = (target: Page | undefined): boolean =>
+			target !== undefined && !target.isClosed() && !crashedPages.has(target)
 		const attachPageListeners = (target: Page): void => {
 			// context.on('page') 对 context.newPage() 也会触发，必须去重：
 			// 否则 dialog 会被 accept 两次、记录成两条 dialog 步骤（实测踩过）
 			if (wiredPages.has(target)) return
 			wiredPages.add(target)
+			sessionStats.pagesAttached++
 
+			/** 计数版重注入：返回 false 表示该页当时不可安装（导航中/帧不可求值）。 */
+			const countReinject = (promise: Promise<boolean>): void => {
+				sessionStats.captureReinjectAttempts++
+				promise.then(
+					(installed) => {
+						if (!installed) sessionStats.captureReinjectFailed++
+					},
+					() => {
+						sessionStats.captureReinjectFailed++
+					},
+				)
+			}
 			/**
 			 * 兜底注入：popup 的首个真实文档拿不到 context 级 initScript（实测），
 			 * 所以每个页面在「创建时 / domcontentloaded / 主 frame 导航后」各补一次。
 			 * capture.js 用 document 级标记去重，重复调用是安全的。
 			 */
 			const reinjectCapture = (): void => {
-				void ensureCaptureInPage(target).catch(() => {})
+				countReinject(ensureCaptureInPage(target))
 			}
 			reinjectCapture()
 			target.on('domcontentloaded', reinjectCapture)
 			target.on('frameattached', reinjectCapture)
 			target.on('framenavigated', (frame) => {
 				if (frame === target.mainFrame()) reinjectCapture()
-				else void ensureCaptureInPage(target).catch(() => {})
+				else countReinject(ensureCaptureInPage(target))
 				if (frame !== target.mainFrame()) return
 				const url = frame.url()
 				if (!navigationReadyByPage.has(target)) {
@@ -512,16 +550,44 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					filename: download.suggestedFilename(),
 				})
 			})
-			target.on('close', () => {
+			/** 页面退出录制但其余标签页继续：成步阶段会按 pageAlive 跳过该页的动作。 */
+			const detachPage = (reason: 'close' | 'crash'): void => {
+				sessionStats.pagesDetached++
 				const pageIndex = pageIndexes.get(target)
+				const label = pageIndex === undefined ? '未知页' : `page ${pageIndex}`
+				if (reason === 'crash') {
+					crashedPages.add(target)
+					warnings.push(`标签页（${label}）渲染进程崩溃，已停止采集该页；其余标签页继续录制`)
+				} else if (pageIndex === 0) {
+					warnings.push('录制起始页被关闭；其余标签页继续录制，起始页上的动作将被跳过')
+				}
 				if (pageIndex !== undefined && pageIndex > 0 && recordingActive) {
 					pushStep({ kind: 'closeTab', id: `s${++stepSeq}`, index: pageIndex }, pageIndex)
 				}
-			})
+			}
+			target.on('close', () => detachPage('close'))
+			target.on('crash', () => detachPage('crash'))
 		}
 
 		// 新标签页需要纳入全局事件流。附着 Electron 模式下只接受网页 / about:blank
 		// target，明确排除 file:// 产品壳层，避免 FlowLink UI 污染业务 pageIndex。
+		/** popup 首文档注入有创建/导航竞态：有界重试直到主 frame 装上采集脚本。 */
+		const installCaptureOnPageWithRetry = async (
+			target: Page,
+			attempts = 5,
+			intervalMs = 200,
+		): Promise<boolean> => {
+			for (let attempt = 0; attempt < attempts; attempt++) {
+				if (target.isClosed() || crashedPages.has(target)) return false
+				try {
+					if (await installCaptureOnPage(target, onEmit)) return true
+				} catch {
+					/* 页面还在创建/导航：稍后重试 */
+				}
+				await sleep(intervalMs)
+			}
+			return false
+		}
 		context.on('page', (opened) => {
 			const accept = !attachOnly || /^(https?:|about:blank)/i.test(opened.url())
 			if (!accept) return
@@ -529,8 +595,10 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			attachPageListeners(opened)
 			if (idx > 0) recordOpenedTab(opened, idx)
 			if (attachOnly) {
-				void installCaptureOnPage(opened, onEmit).catch((err) => {
-					warnings.push(`新标签页采集脚本安装失败（page ${idx}）：${(err as Error).message}`)
+				void installCaptureOnPageWithRetry(opened).then((installed) => {
+					if (installed) return
+					sessionStats.popupsNeverCaptured++
+					warnings.push(`新标签页（page ${idx}）采集脚本多次安装失败；该页事件未被录制`)
 				})
 			}
 		})
@@ -1070,14 +1138,32 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				try {
 					await processBatch(batch, hostBatch)
 				} catch (err) {
-					warnings.push(`批次处理失败（${batch.length} 个事件）：${(err as Error).message}`)
+					sessionStats.processBatchFailures++
+					// 重试一次，且必须发生在同一条链内：Stop 的强制冲洗之后不会再有下一轮 tick，
+					// 依赖「下一次 flush」的重试在收尾路径上等于把批次丢掉。
+					// 注：processBatch 中途抛错可能已推入部分步骤，重放会重复这些步骤；
+					// 相比整批丢失，保留重复风险更可接受（原始事件 id 已在告警中可追溯）。
+					try {
+						await sleep(150)
+						sessionStats.eventsRequeued += batch.length
+						await processBatch(batch, hostBatch)
+					} catch (retryErr) {
+						sessionStats.processBatchFailures++
+						sessionStats.eventsDroppedAfterRetry += batch.length
+						const ids = batch.map((event) => event.eventId).filter((id): id is string => Boolean(id))
+						warnings.push(
+							`批次处理失败且重试仍失败（${batch.length} 个事件，原始事件保留在证据流）：${(retryErr as Error).message}` +
+								(ids.length ? `；事件：${ids.slice(0, 12).join(', ')}${ids.length > 12 ? '…' : ''}` : ''),
+						)
+					}
 				}
 			})
 			return flushChain
 		}
 
-		/** 跨批次状态：待定的 hover */
+		/** 跨批次状态：待定的 hover / 待配对的 dragStart（与 tabState 同样跨批持有） */
 		const pendingHovers: CoalescedAction[] = []
+		const pendingDragSlot: PendingDragSlot = { current: undefined }
 
 		const nextTsOf = (items: PlannedItem[], index: number): number | undefined => {
 			const next = items[index + 1]
@@ -1111,7 +1197,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 					)
 				})
 			})
-			const actions = coalesceEvents(pageEvents, { bufferMs })
+			const actions = coalesceEvents(pageEvents, { bufferMs, pendingDrag: pendingDragSlot })
 			const explicitNavigationActions: CoalescedAction[] = explicitNavigations.flatMap((event) => {
 				const pageIndex = opts.tabIds?.indexOf(event.tabId) ?? -1
 				if (pageIndex < 0 || !event.url) return []
@@ -1232,6 +1318,14 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				if (action.kind === 'unknown') continue
 				const pageIndex = pageIndexOf(action, tabState.page)
 				const actionPage = pageOfAction(action)
+				// 页面崩溃/被关后跳过成步：对该页的 evaluate/截图只会抛错，
+				// 原始事件已入证据流，其余标签页的录制不受影响。
+				if (!pageAlive(actionPage)) {
+					warnings.push(
+						`动作（${action.kind}，ts=${action.ts}）所在标签页已关闭或崩溃，未生成步骤；原始事件保留在证据流`,
+					)
+					continue
+				}
 
 				// 动作后稳定点：布局不再跳 + 事件流静默（只影响「什么时候算录完」，不影响归因）
 				await settleFrameStability(actionPage).catch(() => {})
@@ -1470,6 +1564,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		// 兜底：任何异常路径（drive 抛错、goto 失败、保存 flow 失败）都尝试保存一次登录态。
 		// persistStorageState 幂等，正常路径已经存过就不会重复写。
 		await persistStorageState()
+		logSessionStats()
 		// 附着模式不关浏览器：页面由 Electron / 调用方持有
 		if (ownsBrowser && browser) await browser.close().catch(() => {})
 	}
