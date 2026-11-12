@@ -9,7 +9,7 @@
  */
 import { z } from 'zod'
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 /** 元素/视口矩形（相对 viewport 的 CSS 像素） */
 export const RectSchema = z.object({
@@ -139,6 +139,11 @@ const BaseStepSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().optional(),
 	timeout: z.number().int().positive().optional(),
+	/**
+	 * 回放自适应步骤：效果已自行发生时可以跳过（报告为 skip，不算失败）。
+	 * 目前仅录制器对机器发起的认证跳转 navigate 步骤设置。
+	 */
+	isOptional: z.boolean().optional(),
 	expect: ExpectSchema.optional(),
 	/**
 	 * 这一步发生在哪个标签页（0 = 录制起点页面，1 = 第一个新开的标签页…）。
@@ -225,9 +230,10 @@ const uploadStep = BaseStepSchema.extend({
 
 const waitStep = BaseStepSchema.extend({
 	kind: z.literal('wait'),
-	condition: z.enum(['element', 'networkIdle', 'timeout']),
+	condition: z.enum(['element', 'networkIdle', 'timeout', 'userOperation']),
 	target: ElementRefSchema.optional(),
 	ms: z.number().int().min(0).optional(),
+	prompt: z.string().optional(),
 })
 
 const AssertionSchema = z.discriminatedUnion('kind', [
@@ -247,6 +253,14 @@ const assertStep = BaseStepSchema.extend({
 	kind: z.literal('assert'),
 	target: ElementRefSchema.optional(),
 	assertion: AssertionSchema,
+})
+
+const conditionStep = BaseStepSchema.extend({
+	kind: z.literal('condition'),
+	target: ElementRefSchema.optional(),
+	assertion: AssertionSchema,
+	trueGroupId: z.string().min(1).optional(),
+	falseGroupId: z.string().min(1).optional(),
 })
 
 const extractStep = BaseStepSchema.extend({
@@ -297,6 +311,7 @@ export type Step =
 	| z.infer<typeof uploadStep>
 	| z.infer<typeof waitStep>
 	| z.infer<typeof assertStep>
+	| z.infer<typeof conditionStep>
 	| z.infer<typeof extractStep>
 	| z.infer<typeof scriptStep>
 	| z.infer<typeof dialogStep>
@@ -322,6 +337,7 @@ export const StepSchema: z.ZodType<Step, z.ZodTypeDef, unknown> = z.lazy(() =>
 		uploadStep,
 		waitStep,
 		assertStep,
+		conditionStep,
 		extractStep,
 		scriptStep,
 		dialogStep,
@@ -419,6 +435,16 @@ const SAFE_REL_PATH = /^(?!\/)(?!.*\.\.)[\w./-]+$/
  */
 export function validateFlowContract(flow: Flow): string[] {
 	const errors: string[] = []
+	const topLevelGroups = flow.steps.filter(
+		(step): step is Extract<Step, { kind: 'group' }> => step.kind === 'group',
+	)
+	const groupIds = new Set<string>()
+	const groupsById = new Map<string, Extract<Step, { kind: 'group' }>>()
+	for (const group of topLevelGroups) {
+		if (groupIds.has(group.id)) errors.push(`steps: group id "${group.id}" 重复`)
+		groupIds.add(group.id)
+		groupsById.set(group.id, group)
+	}
 	// 递归检查所有引用并累积诊断；发现一项错误后继续遍历，避免只报告首个问题。
 	const visitRef = (ref: ElementRef, where: string): void => {
 		// 候选顺序本身决定解析优先级，同分允许保留原顺序，因此只拒绝逆序项。
@@ -447,7 +473,12 @@ export function validateFlowContract(flow: Flow): string[] {
 			}
 		}
 	}
-	const visitStep = (step: Step, where: string): void => {
+	const visitStep = (
+		step: Step,
+		where: string,
+		groupId?: string,
+		isFinalGroupStep = false,
+	): void => {
 		switch (step.kind) {
 			case 'click':
 			case 'hover': {
@@ -489,6 +520,41 @@ export function validateFlowContract(flow: Flow): string[] {
 			case 'assert':
 				if ('target' in step && step.target) visitRef(step.target, `${where}.target`)
 				break
+			case 'condition': {
+				if (!groupId) {
+					errors.push(`${where}: condition 必须直接位于顶层 group 中`)
+				} else if (!isFinalGroupStep) {
+					errors.push(`${where}: condition 必须是所在 group 的最后一步`)
+				}
+				if (!step.target) errors.push(`${where}: condition assertion 缺少 target`)
+				if (
+					step.assertion.kind === 'text' &&
+					(step.assertion.equals === undefined) === (step.assertion.contains === undefined)
+				) {
+					errors.push(`${where}: condition text assertion 必须且只能提供 equals 或 contains`)
+				}
+				if (
+					step.target?.observed.attributes['type'] === 'password' &&
+					step.assertion.kind === 'value'
+				) {
+					try {
+						if (parseTemplate(step.assertion.equals).length === 0) {
+							errors.push(`${where}: password 条件必须引用 secret 变量，不能保存明文`)
+						}
+					} catch {
+						errors.push(`${where}: password 条件的变量模板语法错误`)
+					}
+				}
+				if (step.target) visitRef(step.target, `${where}.target`)
+				for (const target of [step.trueGroupId, step.falseGroupId]) {
+					if (target && !groupIds.has(target)) {
+						errors.push(`${where}: condition 引用了不存在的 group "${target}"`)
+					} else if (target && !groupsById.get(target)?.steps.length) {
+						errors.push(`${where}: condition 目标 group "${target}" 不能为空`)
+					}
+				}
+				break
+			}
 			case 'key':
 			case 'wait':
 			case 'scroll':
@@ -515,6 +581,19 @@ export function validateFlowContract(flow: Flow): string[] {
 		if (e.kind === 'urlChange' || e.kind === 'domSignature' || e.kind === 'download') return
 		visitRef(e.target, `${where}.target`)
 	}
-	flow.steps.forEach((s, i) => visitStep(s, `steps[${i}]`))
+	flow.steps.forEach((step, index) => {
+		if (step.kind === 'group') {
+			step.steps.forEach((child, childIndex) =>
+				visitStep(
+					child,
+					`steps[${index}].steps[${childIndex}]`,
+					step.id,
+					childIndex === step.steps.length - 1,
+				),
+			)
+			return
+		}
+		visitStep(step, `steps[${index}]`)
+	})
 	return errors
 }

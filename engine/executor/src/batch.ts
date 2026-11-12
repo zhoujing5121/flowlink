@@ -12,7 +12,7 @@
 import { existsSync } from 'node:fs'
 import { relative as pathRelative } from 'node:path'
 
-import { chromium, type Browser } from 'playwright-core'
+import type { Browser } from 'playwright-core'
 
 import { makeId, type Flow } from '../../schema/src/index.js'
 
@@ -211,6 +211,7 @@ function failedStepScreenshot(
 }
 
 async function launchBrowser(headless: boolean): Promise<Browser> {
+	const { chromium } = await import('playwright-core')
 	return chromium.launch({ headless })
 }
 

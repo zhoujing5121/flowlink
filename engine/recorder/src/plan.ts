@@ -11,7 +11,9 @@
  * 规划器消费已合流动作，以及旁路采集的 dialog 和 download 记录。它不创建 Step，也不访问 Page；
  * 输出保留时间戳，让编排层能够推断动作预期，并把浏览器原生副作用关联到触发它的动作。
  */
-import type { CoalescedAction, PlannedItem, RecordedDialog, RecordedDownload } from './types.js'
+import type { ElementRef, Step } from '../../schema/src/index.js'
+import type { CoalescedAction, PlannedItem, RawEvent, RecordedDialog, RecordedDownload } from './types.js'
+import { AUTO_NAVIGATION_TYPES } from './classify.js'
 
 /** hover 相关性窗口：悬停后 2s 内点了另一个元素，才算「悬停展开菜单再点」 */
 export const HOVER_CORRELATION_MS = 2000
@@ -40,9 +42,53 @@ export function pageIndexOf(action: CoalescedAction, fallback: number): number {
  *
  * @param state 会被就地更新（`state.page` 变成最后一个动作所在的页），跨批次调用要复用同一个对象
  */
-export function withTabSwitches(actions: CoalescedAction[], state: TabSwitchState): PlannedItem[] {
+export function withTabSwitches(
+	actions: CoalescedAction[],
+	state: TabSwitchState,
+	hostEvents: ReadonlyArray<{
+		action: string
+		ts: number
+		index: number
+		url?: string
+	}> = [],
+): PlannedItem[] {
 	const items: PlannedItem[] = []
-	for (const action of actions) {
+	const timeline = [
+		...actions.map((action) => ({ ts: action.ts, priority: 2, action })),
+		...hostEvents
+			.filter((event) => event.action === 'tabCreated' || event.action === 'tabActivated')
+			.map((event) => ({
+				ts: event.ts,
+				priority: event.action === 'tabCreated' ? 0 : 1,
+				hostEvent: event,
+			})),
+	].sort((a, b) => a.ts - b.ts || a.priority - b.priority)
+	for (const entry of timeline) {
+		if ('hostEvent' in entry) {
+			const { hostEvent } = entry
+			if (hostEvent.action === 'tabCreated') {
+				if (hostEvent.index > 0) {
+					items.push({
+						kind: 'openTab',
+						ts: hostEvent.ts,
+						index: hostEvent.index,
+						pageIndex: hostEvent.index,
+						...(hostEvent.url ? { url: hostEvent.url } : {}),
+					})
+					state.page = hostEvent.index
+				}
+			} else if (hostEvent.index !== state.page) {
+				items.push({
+					kind: 'switchTab',
+					ts: hostEvent.ts,
+					index: hostEvent.index,
+					pageIndex: hostEvent.index,
+				})
+				state.page = hostEvent.index
+			}
+			continue
+		}
+		const { action } = entry
 		const page = pageIndexOf(action, state.page)
 		if (page !== state.page) {
 			items.push({ kind: 'switchTab', ts: action.ts, index: page, pageIndex: page })
@@ -186,4 +232,103 @@ export function findDownloadFor(
 /** 上传占位变量名：file_1 / file_2 …（给 `upload.files` 用） */
 export function uploadVariableName(seq: number): string {
 	return `file_${seq}`
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. 机器发起的认证跳转 → 可选导航动作                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 把被识别为机器跳转（AUTO_NAVIGATION_TYPES）的导航事件合成为独立的 navigate 动作，
+ * 成步时带 `isOptional`，由回放时决定执行还是跳过。
+ *
+ * 这些事件已被 processBatch 从合流输入中剔除——再喂给 coalesceEvents 会并进前一个
+ * 动作的 expectUrl，改写每个点击的预期——所以只能在这里单独合成。
+ */
+export function synthesizeOptionalNavigations(events: RawEvent[]): CoalescedAction[] {
+	return events.flatMap((event) => {
+		const url = event.url ?? event.frameUrl
+		if (event.kind !== 'navigation' || !url) return []
+		if (!AUTO_NAVIGATION_TYPES.has(event.navigationType ?? '')) return []
+		return [{
+			kind: 'navigate' as const,
+			ts: event.ts,
+			frameIndex: event.frameIndex,
+			frameUrl: event.frameUrl,
+			pageIndex: event.pageIndex,
+			url,
+			previousUrl: event.previousUrl,
+			navigationType: event.navigationType,
+			navigationEvidence: event.navigationEvidence,
+			merged: 1,
+			raw: [event],
+		}]
+	})
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. 录制后步骤清理                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 步骤清理：合并碎片化的输入、去掉可编辑元素上多余的 click、
+ * 把新标签页的首次地址栏导航并入 openTab。
+ *
+ * `isOptional` 的 navigate 绝不并入 openTab——并入会丢掉可选标记和回放时的跳过判定。
+ */
+export function refineSteps(steps: Step[]): Step[] {
+	const keyOf = (step: Step): string | undefined => {
+		if (!('target' in step) || !step.target) return undefined
+		const ref = step.target as ElementRef
+		return `${ref.fingerprint.stableHash}|${JSON.stringify(ref.frame?.path ?? [])}|${step.page?.index ?? 0}`
+	}
+	const isEditable = (step: Step): boolean => {
+		if (!('target' in step) || !step.target) return false
+		const ref = step.target as ElementRef
+		const tag = ref.observed.tag
+		return (
+			tag === 'input' ||
+			tag === 'textarea' ||
+			tag === 'select' ||
+			ref.observed.attributes?.['contenteditable'] === 'true'
+		)
+	}
+	const out: Step[] = []
+	const mergedOpenTabs = new Set<string>()
+	for (const step of steps) {
+		const prev = out[out.length - 1]
+		const prevKey = prev ? keyOf(prev) : undefined
+		const curKey = keyOf(step)
+		// 新标签页的第一次地址栏导航是 openTab 的一部分，而不是第二个动作。
+		// 只合并第一次；后续主动导航仍保留为独立 navigate 步骤。
+		if (
+			step.kind === 'navigate' &&
+			!step.isOptional &&
+			prev?.kind === 'openTab' &&
+			(prev.page?.index ?? 0) === (step.page?.index ?? 0) &&
+			!mergedOpenTabs.has(prev.id)
+		) {
+			const merged = { ...prev, url: step.url, expect: step.expect ?? prev.expect } as Step
+			mergedOpenTabs.add(prev.id)
+			out[out.length - 1] = merged
+			continue
+		}
+		// 连续 input（同目标）→ 保留最后一次，沿用第一条的 id（时间线稳定）
+		if (step.kind === 'input' && prev?.kind === 'input' && prevKey && prevKey === curKey) {
+			out[out.length - 1] = { ...step, id: prev.id }
+			continue
+		}
+		// 可编辑元素上的 click 紧跟同目标 input/select → 丢掉 click
+		if (
+			prev?.kind === 'click' &&
+			isEditable(prev) &&
+			prevKey === curKey &&
+			(step.kind === 'input' || step.kind === 'select')
+		) {
+			out[out.length - 1] = step
+			continue
+		}
+		out.push(step)
+	}
+	return out
 }

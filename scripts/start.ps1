@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [switch]$Dev
+    [switch]$Dev,
+    [switch]$PiSystemProxy,
+    [string]$PiProxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +31,12 @@ try {
     $electronArgs = @($electronCli, '.')
     if ($Dev) {
         $electronArgs += '--inspect=9229'
+    }
+    if ($PiSystemProxy) {
+        $electronArgs += '--pi-system-proxy'
+    }
+    if ($PiProxy) {
+        $electronArgs += "--pi-proxy=$PiProxy"
     }
     & node @electronArgs
     exit $LASTEXITCODE

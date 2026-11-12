@@ -16,8 +16,18 @@
  */
 export { record, recordOnPage, EmptyRecordingError } from './record.js'
 export type { RecordOnPageOptions } from './record.js'
-export { coalesceEvents, summarizeAction, actionRawEvents } from './coalesce.js'
+export { coalesceEvents, summarizeAction, actionRawEvents, DRAG_PAIR_MS } from './coalesce.js'
 export type { CoalesceOptions } from './coalesce.js'
+export {
+	compileAuthMatchers,
+	isAuthUrl,
+	DEFAULT_IDP_HOST_PATTERN,
+	DEFAULT_LOGIN_PATH_PATTERN,
+	AUTO_NAVIGATION_TYPES,
+} from './classify.js'
+export type { AuthMatchers, ClassificationConfig } from './classify.js'
+export { resolveSystem } from './systems.js'
+export type { SystemIdentity } from './systems.js'
 export { inferExpect, appearedNodes, pickExpectTarget, urlPattern, emptySignature } from './expect.js'
 export {
 	buildElementRef,
@@ -41,6 +51,8 @@ export {
 	isMeaningfulHover,
 	mayBeMeaningfulHover,
 	pageIndexOf,
+	refineSteps,
+	synthesizeOptionalNavigations,
 	uploadVariableName,
 	withTabSwitches,
 	HOVER_CORRELATION_MS,
@@ -83,6 +95,6 @@ export type {
 } from './types.js'
 
 export { writeFlowForgeArchive } from './flowforge-archive.js'
-export type { CaptureTab, HostCaptureEvent } from './flowforge-archive.js'
+export type { CaptureTab, HostCaptureEvent, FlowForgeArchiveOptions } from './flowforge-archive.js'
 
 export { FlowForgeCaptureEventSchema, FlowForgeRecordingSchema, FlowForgeTargetSchema } from './flowforge-capture-schema.js'

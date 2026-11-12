@@ -290,3 +290,19 @@ export async function runAssertion(
 		}
 	}
 }
+
+export async function evaluateAssertion(
+	deps: VerifyDeps,
+	assertion: Assertion,
+	target: ElementRef | undefined,
+): Promise<{ matches: boolean; note: string }> {
+	try {
+		await runAssertion(deps, assertion, target, 0)
+		return { matches: true, note: `${assertion.kind} matched` }
+	} catch (error) {
+		if (error instanceof StepFailure && error.code === 'EXPECT_MISMATCH') {
+			return { matches: false, note: `${assertion.kind} did not match` }
+		}
+		throw error
+	}
+}

@@ -23,6 +23,10 @@ const api = {
 			ipcRenderer.invoke('tasks:removeRecording', code, recordingId),
 	},
 
+	processLandscape: {
+		load: () => ipcRenderer.invoke('processLandscape:load'),
+	},
+
 	recording: {
 		/** 启动录制：主进程附着 CDP + recordOnPage，后台运行，步骤通过 on('recording:step') 推送 */
 		start: (opts: { taskCode: string; startUrl: string; preservePage?: boolean }) =>
@@ -45,6 +49,8 @@ const api = {
 	playback: {
 		run: (opts: { taskCode: string; recordingId: string; variables?: Record<string, string> }) =>
 			ipcRenderer.invoke('playback:run', opts),
+		continueUserOperation: (token: string) =>
+			ipcRenderer.invoke('playback:continueUserOperation', token),
 		/** 仅回放已有录制的前 N 步，为节点重录准备浏览器状态 */
 		runPrefix: (opts: { taskCode: string; recordingId: string; stepCount: number }) =>
 			ipcRenderer.invoke('playback:runPrefix', opts),
@@ -54,13 +60,24 @@ const api = {
 
 	pi: {
 		status: () => ipcRenderer.invoke('pi:status'),
+		/** 空闲预热 Pi worker（SDK 导入 + 运行时缓存），不发起 provider 请求 */
+		prewarm: () => ipcRenderer.invoke('pi:prewarm'),
 		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
+		/** 从已保存录制生成细化的新 Flow：主进程负责投影、提示词、校验；返回已校验的提案（不落盘） */
+		generateFlow: (opts: {
+			taskCode: string
+			recordingIds: string[]
+			instruction?: string
+			conversation?: Array<{ role: string; text: string }>
+		}) => ipcRenderer.invoke('pi:generateFlow', opts),
 	},
 
 	flow: {
 		load: (flowFile: string) => ipcRenderer.invoke('flow:load', flowFile),
 		updateVariables: (opts: { taskCode: string; recordingId: string; variables: unknown[] }) =>
 			ipcRenderer.invoke('flow:updateVariables', opts),
+		updateSteps: (opts: { taskCode: string; recordingId: string; steps: unknown[] }) =>
+			ipcRenderer.invoke('flow:updateSteps', opts),
 	},
 
 	browser: {
@@ -84,10 +101,12 @@ const api = {
 			'playback:step',
 			'playback:done',
 			'playback:error',
+			'playback:userOperation',
 			'browser:urlChanged',
 			'browser:loading',
 			'recording:captureFrame',
 			'browser:tabOpened',
+			'ai:autoRefine',
 		]
 		// 事件通道名称本身就是能力边界：即使通道名由渲染进程传入，也只能
 		// 订阅下方明确允许的事件，不能监听任意 IPC 消息。

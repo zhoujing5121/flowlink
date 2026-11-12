@@ -7,9 +7,10 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node build.mjs",
+    "test": "node --test",
     "start": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1",
     "dev": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1 -Dev",
-    "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --out=release --overwrite && node package.mjs"
+    "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --icon=resources/icon.ico --out=release --overwrite && node package.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.5.1",

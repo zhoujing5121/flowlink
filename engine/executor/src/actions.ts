@@ -99,6 +99,26 @@ async function bestEffortNetworkIdle(page: Page, timeoutMs: number): Promise<voi
 	}
 }
 
+/** 可选导航回放：留给自动重定向发生的等待窗口（毫秒） */
+export const OPTIONAL_NAV_WAIT_MS = 800
+
+/**
+ * 比较 URL 的 origin + pathname 是否一致（忽略 query 与 hash）。
+ * SSO 往返携带每次运行都不同的 state/nonce 查询参数，完整比对必然误判；
+ * hash 路由 SPA 不覆盖（已知限制）。解析失败按不相等处理。
+ */
+export function sameSitePath(a: string, b: string): boolean {
+	let left: URL
+	let right: URL
+	try {
+		left = new URL(a)
+		right = new URL(b)
+	} catch {
+		return false
+	}
+	return left.origin === right.origin && left.pathname === right.pathname
+}
+
 export async function runAction(deps: ActionDeps, step: ActionStep): Promise<ActionResult> {
 	const timeout = deps.timeoutMs
 
@@ -327,6 +347,12 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 				await deps.page.waitForLoadState('networkidle', { timeout })
 				return { note: 'networkIdle' }
 			}
+			if (step.condition === 'userOperation') {
+				throw new StepFailure(
+					'NOT_ACTIONABLE',
+					'userOperation wait 应由 run.ts 的宿主确认逻辑处理',
+				)
+			}
 			if (!step.target) throw new StepFailure('NOT_ACTIONABLE', 'wait element 缺少 target')
 			const { hit } = await withTarget(deps, step.target, async (h) => {
 				await h.locator.waitFor({ state: 'visible', timeout })
@@ -366,6 +392,9 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 		case 'switchTab':
 			// 标签页切换由 run.ts 的 page 管理逻辑处理
 			throw new StepFailure('NOT_ACTIONABLE', 'switchTab 步骤应由 run.ts 的 page 管理逻辑处理')
+
+		case 'condition':
+			throw new StepFailure('NOT_ACTIONABLE', 'condition 步骤应由 run.ts 的流程分支逻辑处理')
 
 		case 'openTab':
 		case 'closeTab':

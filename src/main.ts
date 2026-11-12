@@ -11,15 +11,17 @@
  */
 import { app, BrowserWindow, ipcMain, WebContentsView } from 'electron'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { disposePiWorker, piStatus, runPiPrompt } from './pi-agent.js'
-import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
-import { flattenSteps, playOnPage, type RunResult } from '../engine/executor/src/index.js'
+import { disposePiWorker, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { perf, perfSinceAppStart } from './perf.js'
+import { generateRefinedFlow } from './ai-refine.js'
+import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
+import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
@@ -67,6 +69,7 @@ let recordingHostEvents: HostCaptureEvent[] = []
 /* ---------------- 回放会话状态 ---------------- */
 let playPromise: Promise<RunResult> | null = null
 let playAbortController: AbortController | null = null
+const pendingUserOperationWaits = new Map<string, () => void>()
 
 /* ================================================================ */
 /* 启动                                                              */
@@ -75,10 +78,11 @@ let playAbortController: AbortController | null = null
 /** 生成便于用户识别的每日名称；Flow 持久化 ID 仍负责保证唯一性。 */
 function generatedRecordingName(): string {
 	const now = new Date()
-	const yyyy = String(now.getFullYear())
 	const mm = String(now.getMonth() + 1).padStart(2, '0')
 	const dd = String(now.getDate()).padStart(2, '0')
-	return `RECORD-${yyyy}-${mm}-${dd}`
+	const hh = String(now.getHours()).padStart(2, '0')
+	const min = String(now.getMinutes()).padStart(2, '0')
+	return `RECORD-${mm}${dd}-${hh}${min}`
 }
 
 function isEmptyRecordingError(error: unknown): boolean {
@@ -132,6 +136,59 @@ function resetRecordingState(): void {
 	recordingTabSnapshots.clear()
 	recordingHostEvents = []
 	recStopRequested = false
+}
+
+function managedDirectChild(root: string, targetPath: string, description: string): string {
+	const target = resolve(targetPath)
+	const rel = relative(resolve(root), target)
+	if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || rel.includes(sep)) {
+		throw new Error(`Refusing to remove ${description} outside its managed directory`)
+	}
+	return target
+}
+
+async function removeRecordingFiles(recording: RecordingMeta): Promise<void> {
+	const directories = new Set<string>()
+	const files = new Set<string>()
+	const artifactDir = managedDirectChild(artifactsRoot, recording.artifactsDir, 'recording artifacts')
+	if (basename(artifactDir) !== recording.id) {
+		throw new Error('Refusing to remove recording artifacts with a mismatched ID')
+	}
+	directories.add(artifactDir)
+
+	const flowFile = managedDirectChild(flowsRoot, recording.flowFile, 'Flow file')
+	if (!/^(?:\d+-[\w-]+|recording-[\w-]+)\.json$/i.test(basename(flowFile))) {
+		throw new Error('Refusing to remove a Flow file with an invalid generated name')
+	}
+	files.add(flowFile)
+	files.add(`${flowFile}.bak`)
+	files.add(flowFile.replace(/\.json$/i, '.raw.json'))
+
+	const captureDirs = [recording.captureDir].filter((path): path is string => !!path)
+	for (const frame of recording.frames ?? []) {
+		const framePath = resolve(frame)
+		const rel = relative(resolve(artifactsRoot), framePath)
+		const parts = rel.split(sep)
+		if (
+			parts.length === 4 &&
+			parts[0].startsWith('recording-') &&
+			parts[1] === 'record' &&
+			parts[2] === 'video' &&
+			/^frame-\d+\.png$/i.test(parts[3])
+		) {
+			captureDirs.push(join(artifactsRoot, parts[0]))
+		}
+	}
+	for (const captureDir of new Set(captureDirs)) {
+		const managedDir = managedDirectChild(artifactsRoot, captureDir, 'recording capture')
+		if (!basename(managedDir).startsWith('recording-')) {
+			throw new Error('Refusing to remove an invalid recording capture directory')
+		}
+		directories.add(managedDir)
+	}
+
+	for (const directory of directories) await rm(directory, { recursive: true, force: true })
+	for (const file of files) await rm(file, { force: true })
 }
 
 /** 启动被取消或没有记录到步骤时，清理本次会话产生的临时捕获文件。 */
@@ -247,6 +304,17 @@ function normalizeHttpUrl(value: string): string {
 	return parsed.href
 }
 
+/** origin+path+query 相同（忽略 hash）即视为同一页面，无需重新导航。 */
+function samePageUrl(a: string, b: string): boolean {
+	try {
+		const ua = new URL(a)
+		const ub = new URL(b)
+		return ua.origin === ub.origin && ua.pathname === ub.pathname && ua.search === ub.search
+	} catch {
+		return false
+	}
+}
+
 /** 模式切换前把内嵌浏览器还原到单一 start-URL 标签页；cookie/storage/cache 保留。 */
 async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
@@ -264,7 +332,9 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	}
 	browserViews.clear()
 	recordingAdditionalPages = []
-	engine?.forgetAll()
+	// 上面的销毁循环已逐个 forget；主标签页未被销毁，其缓存的 Playwright
+	// Page 在 loadURL 导航后依然有效（CDP target 不变），保留它让 Record 点击
+	// 时 pageFor 直接命中缓存。完整重置（browser:restart）单独调用 forgetAll。
 
 	activeBrowserTabId = 'browser'
 	if (!browserView || browserView.webContents.isDestroyed()) {
@@ -280,7 +350,15 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	syncBrowserVisibility()
 
 	const startUrl = initialUrl || 'https://bosch.com.cn'
-	await browserView.webContents.loadURL(startUrl).catch(() => {})
+	// 跳过重载意味着录制基线是当前 DOM 而非新加载页面（与 preservePage 同
+	// 一取舍）。若将来需要保证干净基线，应做成显式的「录制前强制刷新」选项，
+	// 而不是恢复这里的无条件 loadURL；recorder 本就把已存在的页面当作种子
+	// 上下文（无初始导航事件）。
+	if (samePageUrl(browserView.webContents.getURL(), startUrl)) return
+	// 导航后台进行，不再二次等待整页加载：recorder 的 waitForLoadState('load')
+	// 是唯一加载闸门，回放路径的执行器 goto 同理；Stop 仍经 webContents.stop()
+	// 与 withAbort 立即中止。
+	void browserView.webContents.loadURL(startUrl).catch(() => {})
 }
 
 /** Electron 回放专用开页工厂：禁止走 Playwright Target.createTarget。 */
@@ -397,6 +475,7 @@ async function waitForCdpPort(userDataDir: string): Promise<number> {
 }
 
 app.whenReady().then(async () => {
+	perfSinceAppStart('startup:whenReady')
 	// 先创建持久化目录，再注册可能写入这些目录的操作；随后等待 Electron
 	// 分配并写入随机 CDP 端口，以便引擎桥接建立连接。
 	const userData = app.getPath('userData')
@@ -414,6 +493,9 @@ app.whenReady().then(async () => {
 	try {
 		await waitForCdpPort(userData)
 		engine = new EngineBridge(userData)
+		// 预热 CDP 附着与页面标记发现：后台进行，失败绝不阻塞或搞挂启动；
+		// recording:start 的「引擎未就绪」守卫保持不变。
+		void engine.pageFor(activeBrowserTabId, browserView.webContents).catch(() => {})
 	} catch (err) {
 		console.error('[flowlink] EngineBridge 初始化失败：', (err as Error).message)
 	}
@@ -439,6 +521,7 @@ async function createWindow(): Promise<void> {
 		minHeight: 700,
 		show: false,
 		title: 'FlowLink',
+		icon: join(app.getAppPath(), 'resources', 'icon.ico'),
 		autoHideMenuBar: true,
 		webPreferences: {
 			preload: join(app.getAppPath(), 'dist', 'preload.cjs'),
@@ -499,7 +582,12 @@ async function createWindow(): Promise<void> {
 	})
 
 	await mainWindow.loadFile(join(app.getAppPath(), 'renderer', 'index.html'))
+	perfSinceAppStart('startup:loadFile-done')
 	mainWindow.show()
+	perfSinceAppStart('startup:shown')
+	// 窗口出现后约 1.5s 的空闲里预热 Pi（SDK 导入 + 运行时缓存）；
+	// AI 面板打开时渲染层也会经 pi:prewarm 触发，先到先得，重复调用是无害空转。
+	setTimeout(() => void prewarmPi().catch(() => {}), 1500)
 
 	// Don't make the first browser page's network response block the app window.
 	try {
@@ -523,6 +611,95 @@ interface RecordingStopResult {
 	recording: RecordingMeta | null
 	reason?: string
 	error?: string
+}
+
+/** 把（已通过 schema 校验的）细化 Flow 保存为一条全新的 isMerged 录制；永不覆盖已有录制。 */
+async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Promise<RecordingMeta> {
+	const recordingId = makeId('recording')
+	const artifactsDir = join(artifactsRoot, recordingId)
+	const flowFile = join(flowsRoot, `${recordingId}.json`)
+	await mkdir(artifactsDir, { recursive: true })
+	await saveFlow(flow, flowFile)
+	const recording: RecordingMeta = {
+		id: recordingId,
+		name,
+		flowFile,
+		artifactsDir,
+		createdAt: new Date().toISOString(),
+		steps: flow.steps.length,
+		posterFile: '',
+		frames: [],
+		stepScreenshots: [],
+		isMerged: true,
+	}
+	await taskStore.addRecording(taskCode, recording)
+	return recording
+}
+
+/** REFINED-MMDD-HHmm 使用细化生成时刻的时间；重名追加 (2)/(3)。 */
+function refinedRecordingName(_sourceName: string, existingNames: Set<string>): string {
+	const now = new Date()
+	const mm = String(now.getMonth() + 1).padStart(2, '0')
+	const dd = String(now.getDate()).padStart(2, '0')
+	const hh = String(now.getHours()).padStart(2, '0')
+	const min = String(now.getMinutes()).padStart(2, '0')
+	const base = `REFINED-${mm}${dd}-${hh}${min}`
+	if (!existingNames.has(base)) return base
+	let suffix = 2
+	while (existingNames.has(`${base} (${suffix})`)) suffix++
+	return `${base} (${suffix})`
+}
+
+const autoRefineInFlight = new Set<string>()
+
+function emitAutoRefine(payload: Record<string, unknown>): void {
+	if (!mainWindow.isDestroyed()) mainWindow.webContents.send('ai:autoRefine', payload)
+}
+
+/**
+ * 录制停止后的自动细化：走与手动细化相同的生成管线（投影 → Pi → 再水化 →
+ * parseFlow 校验），成功后经 persistMergedFlow 另存为 REFINED 录制并广播
+ * ai:autoRefine。原始录制始终保持原样；任何失败只以事件告知，不影响 Stop。
+ */
+async function autoRefineRecording(taskCode: string, recording: RecordingMeta): Promise<void> {
+	if (autoRefineInFlight.has(recording.id)) return
+	autoRefineInFlight.add(recording.id)
+	try {
+		const status = await piStatus()
+		if (!status.available) {
+			emitAutoRefine({ state: 'skipped', taskCode, recordingId: recording.id, reason: status.error })
+			return
+		}
+		const result = await generateRefinedFlow({
+			flowFiles: [recording.flowFile],
+			mode: 'auto',
+			runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
+		})
+		if (!result.ok) {
+			emitAutoRefine({ state: 'failed', taskCode, recordingId: recording.id, error: result.error })
+			return
+		}
+		await taskStore.list()
+		const names = new Set((taskStore.get(taskCode)?.recordings ?? []).map((item) => item.name))
+		const name = refinedRecordingName(recording.name, names)
+		const refined = await persistMergedFlow(taskCode, result.flow, name)
+		emitAutoRefine({
+			state: 'done',
+			taskCode,
+			sourceRecordingId: recording.id,
+			refinedRecordingId: refined.id,
+			name,
+		})
+	} catch (error) {
+		emitAutoRefine({
+			state: 'failed',
+			taskCode,
+			recordingId: recording.id,
+			error: error instanceof Error ? error.message : String(error),
+		})
+	} finally {
+		autoRefineInFlight.delete(recording.id)
+	}
 }
 
 /** 所有 Stop/Test reset 共用同一份收尾，避免并发删除、重复保存或旧会话复活。 */
@@ -561,9 +738,8 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				const view = browserViews.get(tabId)
 				const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : (recordingTabSnapshots.get(tabId)?.url || '')
 				const title = view && !view.webContents.isDestroyed() ? view.webContents.getTitle() : (recordingTabSnapshots.get(tabId)?.title || '')
-				let systemId = 'browser', systemName = 'Browser'
-				try { const host = new URL(url).hostname.toLowerCase(); if (host) { systemId = host.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown-system'; systemName = host } } catch {}
-				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId, systemName }
+				const system = resolveSystem(url)
+				return { tabId, pageIndex, url, title, active: tabId === activeBrowserTabId, systemId: system.systemId, systemName: system.systemName }
 			})
 			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents).catch((error) => {
 				console.warn('[flowlink] FlowForge evidence archive could not be written:', (error as Error).message)
@@ -584,6 +760,7 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				name: generatedRecordingName(),
 				flowFile: recOutPath,
 				artifactsDir: result.artifactsDir,
+				captureDir: recordingCaptureRoot,
 				createdAt: result.flow.createdAt,
 				steps: result.flow.steps.length,
 				posterFile: capture.poster,
@@ -591,6 +768,11 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				stepScreenshots,
 			}
 			await taskStore.addRecording(recTaskCode, recording)
+			// 元数据已持久化后火后即忘地触发自动细化；不阻塞 Stop 响应，
+			// 失败只通过 ai:autoRefine 事件告知，细化产物（isMerged）本身不再二次细化。
+			if (!recording.isMerged && isAutoRefineEnabled()) {
+				void autoRefineRecording(recTaskCode, recording)
+			}
 			// 先持久化元数据再发送完成事件，确保 UI 收到通知后能立即重新加载。
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('recording:done', { recording })
@@ -638,17 +820,33 @@ function registerIpc(): void {
 	// IPC 是渲染进程访问主进程的唯一入口。文件系统、Electron 和引擎操作
 	// 均由处理器执行，preload 只公开经过筛选的窄接口。
 	/* ---------- 任务 CRUD ---------- */
+	ipcMain.handle('processLandscape:load', async () =>
+		JSON.parse(
+			await readFile(join(app.getAppPath(), 'process_landscape', 'full.json'), 'utf8'),
+		),
+	)
 	ipcMain.handle('tasks:list', () => taskStore.listMetadata())
 	ipcMain.handle('tasks:saveProfile', (_e, patch: TaskProfilePatch) =>
 		taskStore.upsertProfile(patch),
 	)
-	ipcMain.handle('tasks:delete', (_e, code: string) => taskStore.remove(code))
-	ipcMain.handle('tasks:getRecordings', (_e, code: string) =>
-		taskStore.get(code)?.recordings ?? [],
-	)
-	ipcMain.handle('tasks:removeRecording', (_e, code: string, recordingId: string) =>
-		taskStore.removeRecording(code, recordingId),
-	)
+	ipcMain.handle('tasks:delete', async (_e, code: string) => {
+		await taskStore.list()
+		const task = taskStore.get(code)
+		if (!task) return
+		for (const recording of task.recordings) await removeRecordingFiles(recording)
+		await taskStore.remove(code)
+	})
+	ipcMain.handle('tasks:getRecordings', async (_e, code: string) => {
+		await taskStore.list()
+		return taskStore.get(code)?.recordings ?? []
+	})
+	ipcMain.handle('tasks:removeRecording', async (_e, code: string, recordingId: string) => {
+		await taskStore.list()
+		const recording = taskStore.get(code)?.recordings.find((item) => item.id === recordingId)
+		if (!recording) return
+		await removeRecordingFiles(recording)
+		await taskStore.removeRecording(code, recordingId)
+	})
 
 	/* ---------- 内嵌浏览器：定位 / 显隐 ---------- */
 	ipcMain.handle('browser:setBounds', (_e, rect: { x: number; y: number; width: number; height: number }) => {
@@ -691,6 +889,9 @@ function registerIpc(): void {
 		}
 
 		await resetBrowserTabs(startUrl)
+		// 完整重置路径：主标签页的附着缓存也一并放弃，随后后台重新预热。
+		engine?.forgetAll()
+		void engine?.pageFor(activeBrowserTabId, browserView.webContents).catch(() => {})
 		return browserView.webContents.getURL() || startUrl
 	})
 	ipcMain.handle('browser:createTab', async () => {
@@ -758,26 +959,59 @@ function registerIpc(): void {
 
 	ipcMain.handle(
 		'recording:persistMerged',
-		async (_event, opts: { taskCode: string; flow: Flow; name: string }) => {
-			const recordingId = makeId('recording')
-			const artifactsDir = join(artifactsRoot, recordingId)
-			const flowFile = join(flowsRoot, `${recordingId}.json`)
-			await mkdir(artifactsDir, { recursive: true })
-			await saveFlow(opts.flow, flowFile)
-			const recording: RecordingMeta = {
-				id: recordingId,
-				name: opts.name,
-				flowFile,
-				artifactsDir,
-				createdAt: new Date().toISOString(),
-				steps: opts.flow.steps.length,
-				posterFile: '',
-				frames: [],
-				stepScreenshots: [],
-				isMerged: true,
+		async (_event, opts: { taskCode: string; flow: Flow; name: string }) =>
+			persistMergedFlow(opts.taskCode, opts.flow, opts.name),
+	)
+
+	/* ---------- Pi：从已保存录制生成细化的新 Flow（校验后返回，不落盘） ---------- */
+	ipcMain.handle(
+		'pi:generateFlow',
+		async (
+			_event,
+			opts: {
+				taskCode: string
+				recordingIds: string[]
+				instruction?: string
+				conversation?: Array<{ role: string; text: string }>
+			},
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				!Array.isArray(opts.recordingIds) ||
+				!opts.recordingIds.length ||
+				opts.recordingIds.some((id) => typeof id !== 'string')
+			) {
+				throw new Error('Pi generateFlow request is invalid')
 			}
-			await taskStore.addRecording(opts.taskCode, recording)
-			return recording
+			await taskStore.list()
+			const task = taskStore.get(opts.taskCode)
+			const flowFiles: string[] = []
+			for (const recordingId of opts.recordingIds) {
+				const recording = task?.recordings.find((item) => item.id === recordingId)
+				if (!recording) throw new Error(`Recording not found: ${recordingId}`)
+				flowFiles.push(recording.flowFile)
+			}
+			await mkdir(flowsRoot, { recursive: true })
+			const result = await generateRefinedFlow({
+				flowFiles,
+				instruction: typeof opts.instruction === 'string' ? opts.instruction : undefined,
+				conversation: Array.isArray(opts.conversation)
+					? opts.conversation.filter(
+							(turn): turn is { role: string; text: string } =>
+								!!turn && typeof turn === 'object' && typeof (turn as { text?: unknown }).text === 'string',
+						)
+					: undefined,
+				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
+			})
+			if (!result.ok) throw new Error(result.error)
+			return {
+				flow: result.flow,
+				title: result.title,
+				summary: result.summary,
+				rationale: result.rationale,
+				risks: result.risks,
+			}
 		},
 	)
 
@@ -786,7 +1020,7 @@ function registerIpc(): void {
 		const normalized = normalizeHttpUrl(url)
 		const resolvedTabId = tabId || activeBrowserTabId
 		const view = browserViews.get(resolvedTabId) ?? browserView
-		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'userNavigateRequested', ts: Date.now(), tabId: resolvedTabId, url: normalized, title: view.webContents.getTitle() })
+		if (recPromise || recStartPromise) recordingHostEvents.push({ action: 'userNavigateRequested', ts: Date.now(), tabId: resolvedTabId, url: normalized, previousUrl: view.webContents.getURL(), title: view.webContents.getTitle() })
 		await view.webContents.loadURL(normalized)
 		return view.webContents.getURL()
 	})
@@ -820,6 +1054,8 @@ function registerIpc(): void {
 		// 拒绝重入，避免共享的录制状态和输出路径被两个会话覆盖。
 		if (recStartPromise || recStopPromise || recPromise) throw new Error('已有录制正在进行')
 		if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
+		const timing = perf('recording:start')
+		timing.mark('enter')
 
 		const controller = new AbortController()
 		recController = controller
@@ -832,6 +1068,7 @@ function registerIpc(): void {
 			   必须保留当前文档及其状态，不能再次刷新。 */
 			if (!opts.preservePage) {
 				await resetBrowserTabs(opts.startUrl)
+				timing.mark('resetBrowserTabs')
 			}
 
 			/* 附着 Playwright 到内嵌浏览器的 webContents */
@@ -839,6 +1076,7 @@ function registerIpc(): void {
 				engine.pageFor(activeBrowserTabId, browserView.webContents),
 				controller.signal,
 			)
+			timing.mark('pageFor-primary')
 			// 先附着当前页，再附着其他已打开页；标签页顺序必须与主进程
 			// browserViews 保持一致，供跨页录制和回放映射复用。
 			const additionalPages: Page[] = []
@@ -859,9 +1097,11 @@ function registerIpc(): void {
 					console.warn(`[flowlink] 标签页 ${tabId} 未能附着：`, (err as Error).message)
 				}
 			}
+			timing.mark('pages-attached')
 
 			// mkdir 很快完成；不要在 capture timer 尚未建立时让取消流程越过它。
 			await startRecordingCapture(`recording-${Date.now()}`)
+			timing.mark('capture-installed')
 			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
@@ -874,6 +1114,7 @@ function registerIpc(): void {
 				skipNavigate: true,
 				outPath: recOutPath,
 				artifactsRoot,
+				hostEvents: recordingHostEvents,
 				stopSignal: controller.signal,
 				title: generatedRecordingName(),
 				onStep: (step) => {
@@ -893,7 +1134,9 @@ function registerIpc(): void {
 		})()
 		recStartPromise = start
 		try {
-			return await start
+			const result = await start
+			timing.mark('exit')
+			return result
 		} catch (err) {
 			// Stop 引发的错误转换为取消结果；真正的启动错误仍原样抛给 IPC 调用方。
 			if (recStopRequested || controller.signal.aborted) {
@@ -941,7 +1184,7 @@ function registerIpc(): void {
 			// 只构造并验证临时前缀 Flow；节点重录不得改写原 Flow 或其最近
 			// 一次运行记录。
 			const prefixFlow = parseFlow(
-				{ ...flow, steps: flattened.slice(0, stepCount).map((item) => item.step) },
+				{ ...flow, steps: prefixSteps(flow.steps, stepCount) },
 				`${recording.flowFile}#prefix-${stepCount}`,
 			)
 			// 前缀回放需要从 Flow 的起始 URL 重建环境；之后保持页面不刷新，
@@ -1035,6 +1278,33 @@ function registerIpc(): void {
 			stopOnFailure: true,
 			variables: opts.variables,
 			abortSignal: playAbortController.signal,
+			waitForUserOperation: ({ stepId, prompt, signal }) =>
+				new Promise<void>((resolve, reject) => {
+					const token = makeId('user-operation')
+					const cleanup = (): void => {
+						pendingUserOperationWaits.delete(token)
+						signal?.removeEventListener('abort', onAbort)
+					}
+					const onAbort = (): void => {
+						cleanup()
+						reject(new Error('用户操作等待已取消'))
+					}
+					if (signal?.aborted) {
+						onAbort()
+						return
+					}
+					pendingUserOperationWaits.set(token, () => {
+						cleanup()
+						resolve()
+					})
+					signal?.addEventListener('abort', onAbort, { once: true })
+					if (mainWindow.isDestroyed()) {
+						cleanup()
+						reject(new Error('应用窗口已关闭，无法继续用户操作等待'))
+						return
+					}
+					mainWindow.webContents.send('playback:userOperation', { token, stepId, prompt })
+				}),
 			openPage: createNativePlaybackPage(true, (msg) => console.log(`[playback:${flow.id}] ${msg}`)),
 			onStep: (r) => {
 				if (!mainWindow.isDestroyed())
@@ -1074,13 +1344,19 @@ function registerIpc(): void {
 		}
 	})
 
+	ipcMain.handle('playback:continueUserOperation', (_event, token: string) => {
+		const resume = pendingUserOperationWaits.get(token)
+		if (!resume) return false
+		resume()
+		return true
+	})
+
 	ipcMain.handle('playback:stop', async () => {
 		if (!playAbortController) return false
 		playAbortController.abort()
 		if (playPromise) {
 			const current = playPromise
-			playPromise = current.catch(() => ({ ok: false, error: 'Stopped' } as RunResult))
-			await playPromise.catch(() => undefined)
+			await current.catch(() => undefined)
 		}
 		return true
 	})
@@ -1088,6 +1364,7 @@ function registerIpc(): void {
 
 	/* ---------- Pi Coding Agent: AI bedrock ---------- */
 	ipcMain.handle('pi:status', async () => piStatus())
+	ipcMain.handle('pi:prewarm', () => prewarmPi())
 	ipcMain.handle('pi:prompt', async (_event, opts: { prompt: string; timeoutMs?: number }) => {
 		if (!opts || typeof opts.prompt !== 'string') throw new Error('Pi request is invalid')
 		// Keep the agent's workspace inside FlowLink's own workflow/artifact directory.
@@ -1124,6 +1401,29 @@ function registerIpc(): void {
 			}, recording.flowFile)
 			await saveFlow(updated, recording.flowFile)
 			return updated.variables
+		},
+	)
+	ipcMain.handle(
+		'flow:updateSteps',
+		async (_event, opts: { taskCode: string; recordingId: string; steps: unknown[] }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				!Array.isArray(opts.steps)
+			) {
+				throw new Error('Flow steps 更新请求无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const flow = await loadFlow(recording.flowFile)
+			const updated = parseFlow({
+				...flow,
+				version: flow.version + 1,
+				steps: opts.steps,
+			}, recording.flowFile)
+			await saveFlow(updated, recording.flowFile, { backup: true })
+			return updated
 		},
 	)
 }

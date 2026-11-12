@@ -6,15 +6,26 @@
  * 会将部分函数替换为通过 IPC 调用的实现。observed 界面状态应与已持久化的 Flow 数据分开。
  */
 // 范围：Flow 列表、Profile，以及提供的四态 Design 录制界面。
-// 当前未提供 Category/Service Level 目录、Validation 和远程服务。
+// Service Level 选项来自主进程加载的流程层级目录；Category 和远程服务仍为演示状态。
 // SVG 资源直接嵌入自提供的文件。
-const rowIcons = {
-  edit: '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M16 148h40v8H16zm154.85-70.65-2.829 2.828-.021-.021-65.955 65.955-39.543 9.886 9.886-39.543 68.763-68.805c8.187-8.187 21.51-8.187 29.698 0 8.188 8.189 8.188 21.511 0 29.7M100 136.842l54.35-54.35-18.301-18.385L81.657 118.5zm-26.502 8.16 18.678-4.67-14.009-14.009zm91.694-91.696c-4.858-4.859-12.638-5.06-17.74-.603l-5.747 5.747 18.301 18.386 5.79-5.79c4.456-5.1 4.255-12.88-.604-17.74" /></svg>',
-  delete:
-    '<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 192 192" class="icon" aria-hidden="true" focusable="false" fill="currentColor"><path d="M152 56H40V40h112zm-12 104c0 4.411-3.59 8-8 8H60c-4.412 0-8-3.589-8-8V64h16v56h8V64h16v56h8V64h16v56h8V64h16zM80 24h32c4.411 0 8 3.588 8 8H72c0-4.412 3.589-8 8-8m80 8h-32c0-8.822-7.178-16-16-16H80c-8.823 0-16 7.178-16 16H32v32h12v96c0 8.822 7.178 16 16 16h72c8.822 0 16-7.178 16-16V64h12z" /></svg>',
-  run: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4 19 12 6 20Z" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>',
-};
 const flowData = [];
+const serviceLevelIds = [
+  "serviceLine",
+  "serviceLine2",
+  "serviceLine3",
+  "serviceLine4",
+];
+let processLandscape = null;
+
+// 页面级模板（index.html 底部 <template>）的克隆入口。
+const rowTemplate = (id) => document.getElementById(id).content.firstElementChild;
+
+// 列表行操作按钮的禁用规则；bridge.js 在 IPC 模式下按真实录制状态覆盖。
+function flowRowActionDisabled(name, flow) {
+  if (name === "run") return !flow?.enabled;
+  if (name === "delete") return true;
+  return false;
+}
 
 // 优先在当前显示的 Design 工作区内查找 ID：每个 Flow 都有独立的录制布局副本，
 // 若直接全局查找，隐藏副本中的同名 ID 可能会遮蔽当前活动元素。
@@ -40,6 +51,28 @@ const escapeHTML = (s) =>
       ],
   );
 
+// 版本号统一为 vX.Y.Z；无法解析的旧值（r1/V1）在下次保存时归一为 v1.0.0。
+function nextTaskVersion(current) {
+  const match = /v(\d+)\.(\d+)\.(\d+)/i.exec(String(current || ""));
+  if (!match) return "v1.0.0";
+  return `v${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+function taskVersionLabel(flow) {
+  const rows = flow?.versions;
+  return (rows?.length ? rows[rows.length - 1].name : flow?.version) || "v1.0.0";
+}
+
+// Import 子菜单在点击页面其他位置或按 Escape 时关闭。
+document.addEventListener("click", (e) => {
+  const menu = $("recordingImportMenu");
+  if (menu && !menu.hidden && !e.target.closest(".recording-import"))
+    closeImportMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeImportMenu();
+});
+
 let appliedName = "";
 let  appliedVersion = "";
 let appliedSearch = "";
@@ -48,7 +81,88 @@ let currentFlow = null;
 let trigger = null;
 let initialName = "";
 let savedScroll = 0;
+let processLandscapeError = "";
 const profileDrafts = new Map();
+
+function completeProcessNodes(nodes, level) {
+  return nodes.filter(
+    (node) =>
+      level === 4 ||
+      completeProcessNodes(node.children, level + 1).length > 0,
+  );
+}
+
+function populateServiceLevels(values = profileDraft().serviceLines) {
+  if (!processLandscape) {
+    for (const id of serviceLevelIds) {
+      document.getElementById(id).disabled = true;
+    }
+    return;
+  }
+
+  let parent = null;
+  let invalidSelection = false;
+  const resolvedValues = [];
+
+  serviceLevelIds.forEach((id, index) => {
+    const select = document.getElementById(id);
+    const options =
+      index === 0
+        ? completeProcessNodes(processLandscape, 1)
+        : parent
+          ? completeProcessNodes(parent.children, index + 1)
+          : [];
+    select.replaceChildren(new Option("Please select", ""));
+    for (const option of options) {
+      select.add(new Option(option.label, option.label));
+    }
+
+    const requestedValue = invalidSelection ? "" : values[index] || "";
+    const hasRequestedValue = options.some(
+      (option) => option.label === requestedValue,
+    );
+    select.value = hasRequestedValue ? requestedValue : "";
+    select.disabled = options.length === 0;
+    select.setCustomValidity("");
+    resolvedValues[index] = select.value;
+    parent = options.find((option) => option.label === select.value) || null;
+
+    if (requestedValue && !hasRequestedValue) invalidSelection = true;
+  });
+
+  profileDraft().serviceLines = resolvedValues;
+  if (invalidSelection) {
+    $("profileSaveStatus").textContent =
+      "Saved service levels are no longer available. Please select them again.";
+  }
+}
+
+function setProcessLandscape(tree) {
+  const isNode = (node) =>
+    node &&
+    typeof node.label === "string" &&
+    Array.isArray(node.children) &&
+    node.children.every(isNode);
+  if (
+    !Array.isArray(tree) ||
+    !tree.every(isNode) ||
+    completeProcessNodes(tree, 1).length === 0
+  ) {
+    throw new Error("The process landscape data has an invalid format.");
+  }
+
+  processLandscape = tree;
+  processLandscapeError = "";
+  populateServiceLevels();
+}
+
+function setProcessLandscapeError(error) {
+  processLandscapeError = String(error);
+  if ($("drawer").open) {
+    $("profileSaveStatus").textContent =
+      "Could not load process landscape: " + processLandscapeError;
+  }
+}
 
 // Profile 编辑内容在点击 Save 前都只是草稿；新 Flow 尚未持久化时先使用稳定生成的编号，
 // 不要因此过早将它插入列表。
@@ -68,17 +182,24 @@ function saveProfile() {
   if (!validateProfileServices()) return;
   const draft = profileDraft(),
     code = currentFlow?.code || nextTaskflowCode(),
-    snapshot = {
-      code,
-      name: $("flowName").value.trim(),
-      description: $("flowDescription").value.trim(),
-      serviceLines: [...draft.serviceLines],
-      versions: draft.versions.map((version) => ({ ...version })),
-      enabled: draft.versions.some((version) => version.enabled),
-      version: currentFlow?.version || "r1",
-      category: currentFlow?.category || "",
-      status: currentFlow?.status || "Ready",
-    };
+    // 每次保存推进一位版本号；首次保存归一为 v1.0.0。
+    version = currentFlow?.version
+      ? nextTaskVersion(currentFlow.version)
+      : "v1.0.0";
+  if (draft.versions.length)
+    draft.versions[draft.versions.length - 1].name = version;
+  else draft.versions.push({ name: version, enabled: false });
+  const snapshot = {
+    code,
+    name: $("flowName").value.trim(),
+    description: $("flowDescription").value.trim(),
+    serviceLines: [...draft.serviceLines],
+    versions: draft.versions.map((version) => ({ ...version })),
+    enabled: draft.versions.some((version) => version.enabled),
+    version,
+    category: currentFlow?.category || "",
+    status: currentFlow?.status || "Ready",
+  };
   // 先从表单和草稿构造快照，避免未保存输入提前污染 flowData。
   if (currentFlow) Object.assign(currentFlow, snapshot);
   else {
@@ -89,7 +210,7 @@ function saveProfile() {
     profileDrafts.delete("new");
     activeFlowKey = code;
   }
-  $("drawerTitle").textContent = code.replace("TASKFLOW", "Taskflow");
+  $("drawerTitle").textContent = code;
   draft.name = snapshot.name;
   draft.description = snapshot.description;
   render();
@@ -107,37 +228,33 @@ function profileDraft() {
       name: currentFlow?.name || "",
       description: currentFlow?.description || "",
       serviceLines: [...(currentFlow?.serviceLines || ["", "", "", ""])],
-      versions: (currentFlow?.versions || [{ name: "V1", enabled: false }]).map(
-        (version) => ({ ...version }),
-      ),
+      versions: (
+        currentFlow?.versions || [{ name: "v1.0.0", enabled: false }]
+      ).map((version) => ({ ...version })),
     });
   return profileDrafts.get(key);
 }
 
 function renderVersionManagement() {
   const draft = profileDraft();
-  $("versionManagementRows").innerHTML = draft.versions
-    .map(
-      (version, index) =>
-        `
-      <div class="version-management-row">
-        <div class="field version-value-field">
-          <label class="field-label" for="${index === 0 ? "flowVersion" : "flowVersion" + index}">Version</label>
-          <input id="${index === 0 ? "flowVersion" : "flowVersion" + index}" value="${escapeHTML(version.name)}" readonly>
-        </div>
-        <div class="field version-state-field">
-          <label class="field-label" for="${index === 0 ? "flowStatus" : "flowStatus" + index}">Status</label>
-          <div class="version-status-field">
-            <select id="${index === 0 ? "flowStatus" : "flowStatus" + index}" data-version-index="${index}" aria-label="${escapeHTML(version.name)} status">
-              <option value="Active" ${version.enabled ? "selected" : ""}>Active</option>
-              <option value="Deactive" ${!version.enabled ? "selected" : ""}>Deactive</option>
-            </select>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg>
-          </div>
-        </div>
-      </div>`,
-    )
-    .join("");
+  $("versionManagementRows").replaceChildren(
+    ...draft.versions.map((version, index) => {
+      const row = rowTemplate("versionRowTemplate").cloneNode(true);
+      const inputId = index === 0 ? "flowVersion" : "flowVersion" + index;
+      const statusId = index === 0 ? "flowStatus" : "flowStatus" + index;
+      row.querySelector("[data-version-label]").setAttribute("for", inputId);
+      const input = row.querySelector("[data-version-input]");
+      input.id = inputId;
+      input.value = version.name;
+      row.querySelector("[data-status-label]").setAttribute("for", statusId);
+      const select = row.querySelector("[data-version-select]");
+      select.id = statusId;
+      select.dataset.versionIndex = index;
+      select.setAttribute("aria-label", version.name + " status");
+      select.value = version.enabled ? "Active" : "Deactive";
+      return row;
+    }),
+  );
 }
 
 function commitVersionStatus(index, value) {
@@ -150,19 +267,6 @@ function commitVersionStatus(index, value) {
     );
     render();
   }
-}
-
-function rowIcon(name, code, disabled = false) {
-  return `
-  <button 
-    type="button" 
-    class="icon-button" 
-    aria-label="${name[0].toUpperCase() + name.slice(1)} ${code}" title="${name[0].toUpperCase() + name.slice(1)}" 
-    data-action="${name}" 
-    data-code="${code}" ${disabled ? "disabled" : ""}
-  >
-    ${rowIcons[name]}
-  </button>`;
 }
 
 function render() {
@@ -180,33 +284,38 @@ function render() {
         (activeStatus === "Active" ? f.enabled : !f.enabled)),
   );
   // 显示列表只由已应用筛选条件决定；空结果仍保留一致的表格结构。
-  $("flowRows").innerHTML =
-    rows
-      .map(
-        (f) =>
-          `
-        <tr>
-          <td>
-            <a class="code-link" href="#${f.code}" data-open="${f.code}">${f.code}</a>
-          </td>
-          <td>${escapeHTML(f.name)}</td>
-          <td><span class="flow-description" title="${escapeHTML(f.description)}">${escapeHTML(f.description)}</span></td>
-          <td>${escapeHTML(f.version)}</td>
-          <td>
-            <span class="flow-enabled ${f.enabled ? "active" : "deactive"}">
-              <span class="flow-status-dot" aria-hidden="true"></span>
-              ${f.enabled ? "Active" : "Deactive"}
-            </span>
-          </td>
-          <td class="action-cell">
-            <div class="row-actions">
-              ${rowIcon("edit", f.code)}${rowIcon("run", f.code, f.enabled)}${rowIcon("delete", f.code, true)}
-            </div>
-          </td>
-        </tr>`,
-      )
-      .join("") ||
-    '<tr><td class="empty" colspan="6">No matching flows.</td></tr>';
+  $("flowRows").replaceChildren(
+    ...(rows.length
+      ? rows.map((f) => {
+          const row = rowTemplate("flowRowTemplate").cloneNode(true);
+          const codeLink = row.querySelector(".code-link");
+          codeLink.href = "#" + f.code;
+          codeLink.dataset.open = f.code;
+          codeLink.textContent = f.code;
+          row.querySelector('[data-slot="name"]').textContent = f.name;
+          const description = row.querySelector(".flow-description");
+          description.title = f.description;
+          description.textContent = f.description;
+          row.querySelector('[data-slot="version"]').textContent =
+            taskVersionLabel(f);
+          const status = row.querySelector(".flow-enabled");
+          status.classList.add(f.enabled ? "active" : "deactive");
+          row.querySelector('[data-slot="status"]').textContent = f.enabled
+            ? "Active"
+            : "Deactive";
+          row.querySelectorAll("[data-action]").forEach((button) => {
+            const name = button.dataset.action;
+            button.dataset.code = f.code;
+            button.setAttribute(
+              "aria-label",
+              name[0].toUpperCase() + name.slice(1) + " " + f.code,
+            );
+            button.disabled = flowRowActionDisabled(name, f);
+          });
+          return row;
+        })
+      : [rowTemplate("flowEmptyRowTemplate").cloneNode(true)]),
+  );
 
   $("range").textContent = rows.length
   ? `1 - ${rows.length} of ${rows.length} items`
@@ -227,10 +336,12 @@ function openDrawer(code, source) {
   currentFlow = code ? flowData.find((f) => f.code === code) : null;
   trigger = source;
   savedScroll = window.scrollY;
-  $("drawerTitle").textContent = code
-    ? code.replace("TASKFLOW", "Taskflow")
-    : nextTaskflowCode().replace("TASKFLOW", "Taskflow");
+  $("drawerTitle").textContent = code || nextTaskflowCode();
   $("profileSaveStatus").textContent = "";
+  if (processLandscapeError) {
+    $("profileSaveStatus").textContent =
+      "Could not load process landscape: " + processLandscapeError;
+  }
   
   if (!code) {
     profileDrafts.delete("new");
@@ -249,13 +360,7 @@ function openDrawer(code, source) {
   initialName = draft.name;
   renderVersionManagement();
   
-  document
-    .querySelectorAll("[data-service-index]")
-    .forEach(
-      (select) =>
-        (select.value =
-          draft.serviceLines[Number(select.dataset.serviceIndex)] || ""),
-    );
+  populateServiceLevels(draft.serviceLines);
   closePopup("category");
   closePopup("service");
   initializeDrawerRecording(code);
@@ -407,20 +512,29 @@ $("versionManagementRows").onchange = (e) => {
   if (e.target.matches("[data-version-index]"))
     commitVersionStatus(Number(e.target.dataset.versionIndex), e.target.value);
 };
+// 原生文件选择器取消时产生的 cancel 事件可能在选择器关闭后才异步到达（可能指向
+// input 也可能指向抽屉本身）；三层防护：input 处截停冒泡、抽屉监听只响应直接
+// 作用于自身的事件，并在打开选择器后短暂抑制，确保取消上传不会触发 Close 确认。
+let suppressDrawerCancelUntil = 0;
 $("drawer").addEventListener("cancel", (e) => {
   e.preventDefault();
+  if (e.target !== e.currentTarget) return;
+  if (Date.now() < suppressDrawerCancelUntil) return;
   closeDrawer();
 });
 $("category").onclick = () => togglePopup("category");
 
 document.querySelectorAll("[data-service-index]").forEach((control) => {
-  const save = () => {
+  control.onchange = () => {
     control.setCustomValidity("");
-    profileDraft().serviceLines[Number(control.dataset.serviceIndex)] =
-      control.value;
+    const index = Number(control.dataset.serviceIndex);
+    const values = serviceLevelIds.map(
+      (id) => document.getElementById(id).value,
+    );
+    values.fill("", index + 1);
+    populateServiceLevels(values);
+    $("profileSaveStatus").textContent = "";
   };
-  control.oninput = save;
-  control.onchange = save;
 });
 
 for (const type of ["category"]) {
@@ -535,7 +649,6 @@ function designIcon(name) {
   return `<svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name] || ""}"/></svg>`;
 }
 
-const recordingDeleteIcon = designIcon("delete");
 const summaryTabs = [
   "Process",
   "Instruction",
@@ -585,44 +698,8 @@ function testStepLabel(step, index) {
   return `${kind}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
 }
 
-function testStepRowsMarkup(item) {
-  const steps = item?.testFlowSteps?.length
-    ? item.testFlowSteps
-    : item?.steps || [];
-  const results = item?.testResults || [];
-  return steps.length
-    ? steps
-        .map((step, index) => {
-          const result = results[index];
-          const status = result?.status || "pending";
-          const error = result?.error?.message
-            ? `<div class="test-step-error">${escapeHTML(result.error.message)}</div>`
-            : "";
-          return `<div class="test-step status-${status}">${testStepStatusIcon(status)}<span class="test-step-name">${escapeHTML(typeof step === "string" ? step : testStepLabel(step, index))}</span><span class="test-step-status">${status === "pass" ? "Passed" : status === "fail" ? "Failed" : status === "running" ? "Running" : "Pending"}</span>${error}</div>`;
-        })
-        .join("")
-    : `<div class="test-empty">No executable steps in this recording.</div>`;
-}
-
-function testProgressHeadingMarkup(item) {
-  const steps = item?.testFlowSteps?.length
-    ? item.testFlowSteps
-    : item?.steps || [];
-  const succeeded = (item?.testResults || []).filter(
-    (result) => result?.status === "pass",
-  ).length;
-  return `<div class="test-progress-heading"><strong>Progress</strong><span>${succeeded} / ${steps.length}</span></div>`;
-}
-
-function testStepStatusIcon(status) {
-  const icons = {
-    pending:
-      '<circle cx="12" cy="12" r="8" fill="#f2c811" aria-hidden="true"/>',
-    running:
-      '<circle class="test-step-spinner" cx="12" cy="12" r="8" fill="none" stroke="#007bc0" stroke-width="3" stroke-dasharray="34 16" aria-hidden="true"/>',
-    pass: '<circle cx="12" cy="12" r="10" fill="#00884a"/><path d="m7 12 3.2 3.2L17 8.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-    fail: '<circle cx="12" cy="12" r="10" fill="#b00020"/><path d="m8.5 8.5 7 7m0-7-7 7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
-  };
+function testStepNode(step, index, result) {
+  const status = result?.status || "pending";
   const label =
     status === "pass"
       ? "Passed"
@@ -631,7 +708,21 @@ function testStepStatusIcon(status) {
         : status === "running"
           ? "Running"
           : "Pending";
-  return `<span class="test-step-icon status-${status}" role="img" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[status] || icons.pending}</svg></span>`;
+  const node = rowTemplate("testStepTemplate").cloneNode(true);
+  node.classList.add("status-" + status);
+  const icon = node.querySelector(".test-step-icon");
+  icon.classList.add("status-" + status);
+  icon.setAttribute("aria-label", label);
+  icon.querySelectorAll("[data-status-icon]").forEach((svg) => {
+    svg.hidden = svg.dataset.statusIcon !== status;
+  });
+  node.querySelector(".test-step-name").textContent =
+    typeof step === "string" ? step : testStepLabel(step, index);
+  node.querySelector(".test-step-status").textContent = label;
+  const error = node.querySelector(".test-step-error");
+  error.hidden = !result?.error?.message;
+  if (result?.error?.message) error.textContent = result.error.message;
+  return node;
 }
 
 function resetTestExecutionStatus(item) {
@@ -643,18 +734,242 @@ function resetTestExecutionStatus(item) {
   item.testResults = steps.map(() => ({ status: "pending" }));
 }
 
-function analysisResultMarkup(active) {
-  const item = currentAssistantItem(),
-    steps = item?.steps || referenceOperation;
-  if (active === "Process") return processMapMarkup(item);
-  if (active === "Record") return recordingMediaMarkup(item);
-  if (active === "Operation")
-    return `<ol class="analysis-operation">${steps.map((line) => `<li>${escapeHTML(line)}</li>`).join("")}</ol>`;
-  if (active === "Instruction") return editableStepsMarkup(item);
-  if (active === "Reference") return referenceFilesMarkup(item);
-  if (active === "Metric") return metricMarkup(item);
-  if (active === "Test") return "";
-  return "";
+// 结果面板的静态分区已由 recordingLayoutTemplate 提供；这里按标签页填充数据。
+function fillResultPanel(panel, active, item) {
+  panel.querySelectorAll("[data-result-tab]").forEach((section) => {
+    section.hidden = section.dataset.resultTab !== active;
+  });
+  if (active === "Process") fillProcessPanel(panel, item);
+  else if (active === "Instruction") fillInstructionPanel(panel, item);
+  else if (active === "Reference") fillReferencePanel(panel, item);
+  else if (active === "Metric") fillMetricPanel(panel);
+  else if (active === "Record") fillRecordPanel(panel, item);
+}
+
+function canvasStepNode(group, text, index) {
+  const step = rowTemplate("canvasStepTemplate").cloneNode(true);
+  step.dataset.canvasStepIndex = group.start + index;
+  step.querySelector("[data-step-code]").textContent =
+    group.number + "-" + String(index + 1).padStart(3, "0");
+  step.querySelector("[data-step-text]").textContent = text;
+  return step;
+}
+
+function fillProcessPanel(panel, item) {
+  const canvas = panel.querySelector(".process-canvas");
+  canvas.querySelector(".process-status:not(.error)").hidden =
+    !item?.processFlowLoading;
+  const error = canvas.querySelector(".process-status.error");
+  error.hidden = !item?.processFlowError;
+  if (item?.processFlowError) error.textContent = item.processFlowError;
+  const groups = item ? ensureProcessGroups(item) : [];
+  canvas.querySelector(".process-canvas-world").replaceChildren(
+    ...groups.map((group) => {
+      const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
+      const selected = item.selectedGroup === group.id;
+      section.dataset.canvasGroup = group.id;
+      section.classList.toggle("selected", selected);
+      const icon = section.querySelector(".canvas-group-icon");
+      icon.src = groupFaviconUrl(group.url);
+      icon.onerror = () => {
+        icon.src = genericGroupIcon;
+        icon.onerror = null;
+      };
+      const heading = section.querySelector(".canvas-group-heading");
+      heading.dataset.groupSelect = group.id;
+      heading.setAttribute("aria-pressed", String(selected));
+      heading.textContent = group.number + " · " + group.name;
+      section.querySelector(".canvas-group-nodes").replaceChildren(
+        ...(group.steps.length
+          ? group.steps.map((text, index) => canvasStepNode(group, text, index))
+          : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
+      );
+      return section;
+    }),
+  );
+  canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
+  const menu = canvas.querySelector(".canvas-step-menu");
+  for (const group of groups) {
+    const actions = rowTemplate("processGroupActionsTemplate").cloneNode(true);
+    actions.dataset.groupActions = group.id;
+    actions.hidden = item.selectedGroup !== group.id;
+    const addStep = actions.querySelector("[data-group-add-step]");
+    addStep.dataset.groupAddStep = group.id;
+    addStep.disabled = !item.processFlow;
+    const addAfter = actions.querySelector("[data-group-add-after]");
+    addAfter.dataset.groupAddAfter = group.id;
+    addAfter.disabled = !item.processFlow;
+    actions.querySelector("[data-group-record]").dataset.groupRecord = group.id;
+    actions
+      .querySelector('[data-group-insert="before"]')
+      .dataset.groupId = group.id;
+    actions
+      .querySelector('[data-group-insert="after"]')
+      .dataset.groupId = group.id;
+    actions.querySelector("[data-group-delete]").dataset.groupDelete = group.id;
+    canvas.insertBefore(actions, menu);
+  }
+}
+
+function fillInstructionPanel(panel, item) {
+  const container = panel.querySelector('[data-result-tab="Instruction"]');
+  if (!item) {
+    container.replaceChildren();
+    return;
+  }
+  ensureStepDetails(item);
+  item.instructionExpanded ??= [];
+  container.replaceChildren(
+    ...ensureProcessGroups(item).map((group) => {
+      const expanded = item.instructionExpanded.includes(group.id);
+      const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
+      section.dataset.instructionGroup = group.id;
+      section.querySelector("h3").textContent = group.number + " " + group.name;
+      const expand = section.querySelector(".instruction-expand");
+      expand.dataset.instructionExpand = group.id;
+      expand.setAttribute("aria-expanded", String(expanded));
+      expand.querySelector("span").textContent = expanded
+        ? "Collapse"
+        : "Expand";
+      group.steps.forEach((text, offset) => {
+        const index = group.start + offset,
+          detail = item.stepDetails[index],
+          code = group.number + "-" + String(offset + 1).padStart(3, "0");
+        const step = rowTemplate("instructionStepTemplate").cloneNode(true);
+        step.querySelector(".step-row-number").textContent = code;
+        step.querySelector(".step-row-text").textContent = text;
+        const fields = step.querySelector(".step-detail-fields");
+        fields.hidden = !expanded;
+        const textarea = step.querySelector('[data-step-field="text"]');
+        textarea.dataset.stepIndex = index;
+        textarea.setAttribute("aria-label", code + " 操作内容");
+        textarea.value = text;
+        for (const field of ["type", "target", "value"]) {
+          const input = step.querySelector('[data-step-field="' + field + '"]');
+          input.dataset.stepIndex = index;
+          input.value = detail[field];
+        }
+        section.appendChild(step);
+      });
+      return section;
+    }),
+  );
+}
+
+function fillReferencePanel(panel, item) {
+  const section = panel.querySelector('[data-result-tab="Reference"]');
+  const files = ensureReferenceFiles(item);
+  const selectedCount = files.filter((file) => file.selected).length;
+  section.querySelector("#referenceSelectAll").disabled = !files.length;
+  section.querySelector("#referenceRows").replaceChildren(
+    ...files.map((file) => {
+      const row = rowTemplate("referenceRowTemplate").cloneNode(true);
+      row.dataset.referenceRow = file.id;
+      const check = row.querySelector(".recording-check");
+      check.dataset.referenceCheck = file.id;
+      check.setAttribute("aria-label", "Select " + file.name);
+      check.checked = !!file.selected;
+      const isVariable = file.kind === "variable";
+      const span = row.querySelector("span.reference-name");
+      const link = row.querySelector("a.reference-name");
+      span.hidden = !isVariable;
+      link.hidden = isVariable;
+      if (isVariable) {
+        span.textContent = file.name;
+      } else {
+        link.href = file.url;
+        link.setAttribute("download", file.name);
+        link.textContent = file.name;
+      }
+      row.querySelector('[data-slot="type"]').textContent = file.type;
+      row.querySelector('[data-slot="value"]').textContent = isVariable
+        ? file.secret && file.value
+          ? "••••••"
+          : file.value || ""
+        : "";
+      const [edit, remove] = row.querySelectorAll(
+        ".reference-row-actions .icon-button",
+      );
+      edit.dataset.referenceEdit = file.id;
+      edit.setAttribute("aria-label", "Update " + file.name);
+      remove.dataset.referenceDelete = file.id;
+      remove.setAttribute("aria-label", "Delete " + file.name);
+      return row;
+    }),
+  );
+  section.querySelector("#referenceStatus").textContent =
+    item?.referenceLoadError || "";
+  section.querySelector("#referenceDownload").disabled = !selectedCount;
+  section.querySelector("#referenceAdd").disabled = !!(
+    item?.referenceVariablesLoading || item?.referenceLoadError
+  );
+}
+
+function fillMetricPanel(panel) {
+  const state = metricPreference();
+  panel.querySelector("[data-metric-groups]").replaceChildren(
+    ...metricChoices.map(([name, options]) => {
+      const group = rowTemplate("metricGroupTemplate").cloneNode(true);
+      group.setAttribute("aria-label", name);
+      group.querySelector("h3").textContent = name;
+      group.querySelector(".metric-consent-options").replaceChildren(
+        ...options.map(([id, label]) => {
+          const row = rowTemplate("metricRowTemplate").cloneNode(true);
+          const input = row.querySelector("input");
+          input.dataset.metricChoice = id;
+          input.checked = state.selected.includes(id);
+          row.querySelector("span").textContent = label;
+          return row;
+        }),
+      );
+      return group;
+    }),
+  );
+  panel.querySelector("#metricConsentStatus").textContent = state.message;
+}
+
+function fillRecordPanel(panel, item) {
+  const section = panel.querySelector('[data-result-tab="Record"]');
+  const media = item?.media || {},
+    screenshots = media.screenshots || [];
+  const poster = media.posterFile
+    ? "file:///" + String(media.posterFile).replace(/\\/g, "/")
+    : screenshots[0]?.image || "";
+  const name = item?.name || "Recording";
+  const video = section.querySelector("video");
+  video.hidden = !media.videoURL;
+  if (media.videoURL) {
+    video.setAttribute("aria-label", name + " video");
+    video.src = media.videoURL;
+  } else {
+    video.removeAttribute("src");
+  }
+  const preview = section.querySelector(
+    ".recording-frame-preview:not(.recording-frame-empty)",
+  );
+  const showPreview = !media.videoURL && !!poster;
+  preview.hidden = !showPreview;
+  if (showPreview) {
+    const img = preview.querySelector("img");
+    img.src = poster;
+    img.alt = name + " poster";
+  }
+  section.querySelector(".recording-frame-empty").hidden =
+    !!media.videoURL || !!poster;
+  section.querySelector(".recording-media-name").textContent =
+    name + (media.videoURL ? ".webm" : " - frame recording");
+  section.querySelector(".recording-screenshots").replaceChildren(
+    ...screenshots.map((file) => {
+      const shot = rowTemplate("recordingScreenshotTemplate").cloneNode(true);
+      shot.dataset.screenshotZoom = file.image;
+      shot.setAttribute("aria-label", "Zoom " + file.name);
+      const img = shot.querySelector("img");
+      img.src = file.image;
+      img.alt = file.name;
+      shot.querySelector("span").textContent = file.name;
+      return shot;
+    }),
+  );
 }
 
 let activeFlowKey = "TASKFLOW-001",
@@ -664,10 +979,11 @@ let activeFlowKey = "TASKFLOW-001",
 
 function generatedRecordingName() {
   const now = new Date(),
-    yyyy = String(now.getFullYear()),
     mm = String(now.getMonth() + 1).padStart(2, "0"),
-    dd = String(now.getDate()).padStart(2, "0");
-  return `RECORD-${yyyy}-${mm}-${dd}`;
+    dd = String(now.getDate()).padStart(2, "0"),
+    hh = String(now.getHours()).padStart(2, "0"),
+    min = String(now.getMinutes()).padStart(2, "0");
+  return `RECORD-${mm}${dd}-${hh}${min}`;
 }
 
 function createBrowserPage(url = "", showGuide = false) {
@@ -916,12 +1232,31 @@ function updateBrowserChrome() {
     )
     .join("|");
   if (tabs.dataset.signature !== tabSignature) {
-    tabs.innerHTML = state.browserTabs
-      .map(
-        (tab, index) =>
-          `<div class="browser-page-tab" role="presentation"><button role="tab" data-browser-tab="${tab.id}" aria-label="Browser page ${index + 1}: ${escapeHTML(browserPageLabel(tab))}" aria-selected="${tab.id === page.id}" tabindex="${tab.id === page.id ? 0 : -1}">${escapeHTML(browserPageLabel(tab))}</button><button class="browser-page-close" data-browser-close="${tab.id}" aria-label="Close browser page ${index + 1}" title="Close page">${designIcon("close")}</button></div>`,
-      )
-      .join("");
+    tabs.replaceChildren(
+      ...state.browserTabs.map((tab, index) => {
+        const label = browserPageLabel(tab);
+        const row = rowTemplate("browserTabTemplate").cloneNode(true);
+        const tabButton = row.querySelector("[data-browser-tab]");
+        tabButton.dataset.browserTab = tab.id;
+        tabButton.setAttribute(
+          "aria-label",
+          "Browser page " + (index + 1) + ": " + label,
+        );
+        tabButton.setAttribute(
+          "aria-selected",
+          String(tab.id === page.id),
+        );
+        tabButton.tabIndex = tab.id === page.id ? 0 : -1;
+        tabButton.textContent = label;
+        const close = row.querySelector("[data-browser-close]");
+        close.dataset.browserClose = tab.id;
+        close.setAttribute(
+          "aria-label",
+          "Close browser page " + (index + 1),
+        );
+        return row;
+      }),
+    );
     tabs.dataset.signature = tabSignature;
   }
   tabs.onclick = (e) => {
@@ -1007,6 +1342,38 @@ function bindRecordingList() {
   };
   updateRecordingActionButton();
   $("summarizeRecordings").onclick = summarizeRecordings;
+  const menu = $("recordingImportMenu");
+  if (menu)
+    menu.onclick = (e) => {
+      const option = e.target.closest("[data-import-action]");
+      if (option) runImportAction(option.dataset.importAction);
+    };
+}
+
+function closeImportMenu() {
+  const menu = $("recordingImportMenu");
+  if (menu) {
+    menu.hidden = true;
+    $("prepareRecording")?.setAttribute("aria-expanded", "false");
+  }
+}
+
+function runImportAction(action) {
+  closeImportMenu();
+  const state = recordingSession();
+  if (action === "browser") {
+    void prepareRecording();
+    return;
+  }
+  if (action === "goal") {
+    state.aiOpen = true;
+    renderRecordingWorkspace();
+    const input = $("assistantInput");
+    if (input) {
+      input.placeholder = "Describe the goal to capture…";
+      input.focus();
+    }
+  }
 }
 
 function renderRecordingWorkspace() {
@@ -1046,32 +1413,27 @@ function renderRecordingWorkspace() {
 function renderRecordingItems() {
   const state = recordingSession();
   if (!$("recordingItems")) return;
-  $("recordingItems").innerHTML = state.items
-    .map(
-      (item) =>
-        `
-      <div class="recording-row ${state.focused === item.id ? "current" : ""}">
-        <input 
-          type="checkbox" 
-          class="recording-check" 
-          data-recording-check="${item.id}" 
-          aria-label="Select ${escapeHTML(item.name)}" 
-          ${item.checked ? "checked" : ""}
-        >
-        <button class="recording-row-name" data-recording-open="${item.id}">${escapeHTML(item.name)}</button>
-        ${item.summary ? '<span class="recording-badge merged">Refined</span>' : item.recorded ? '<span class="recording-badge recorded">Record</span>' : ""}
-        <button 
-          class="icon-button recording-delete" 
-          data-recording-delete="${item.id}" 
-          aria-label="Delete ${escapeHTML(item.name)}" 
-          title="Delete" 
-          ${state.stage === "recording" ? "disabled" : ""}
-        >
-          ${recordingDeleteIcon}
-        </button>
-      </div>`,
-    )
-    .join("");
+  $("recordingItems").replaceChildren(
+    ...state.items.map((item) => {
+      const row = rowTemplate("recordingItemRowTemplate").cloneNode(true);
+      row.classList.toggle("current", state.focused === item.id);
+      const check = row.querySelector(".recording-check");
+      check.dataset.recordingCheck = item.id;
+      check.setAttribute("aria-label", "Select " + item.name);
+      check.checked = !!item.checked;
+      const name = row.querySelector(".recording-row-name");
+      name.dataset.recordingOpen = item.id;
+      name.textContent = item.name;
+      row.querySelector(".recording-badge.merged").hidden = !item.summary;
+      row.querySelector(".recording-badge.recorded").hidden =
+        !!item.summary || !item.recorded;
+      const remove = row.querySelector(".recording-delete");
+      remove.dataset.recordingDelete = item.id;
+      remove.setAttribute("aria-label", "Delete " + item.name);
+      remove.disabled = state.stage === "recording";
+      return row;
+    }),
+  );
   $("recordingItems").onchange = (e) => {
     const id = e.target.dataset.recordingCheck;
     if (!id) return;
@@ -1104,21 +1466,33 @@ function updateRecordingActionButton() {
     state = recordingSession();
   if (!button) return;
   const recording = state.stage === "recording";
-  button.textContent = recording ? "Stop" : "Record";
-  button.setAttribute("aria-label", recording ? "Stop recording" : "Record");
+  button.textContent = recording ? "Stop" : "Import";
+  button.setAttribute("aria-label", recording ? "Stop recording" : "Import");
+  button.setAttribute("aria-expanded", String(!recording && ! $("recordingImportMenu")?.hidden));
   button.disabled = !!state.pending?.finishing || !!state.groupPreparing;
-  button.onclick = recording ? finishBrowserRecording : prepareRecording;
+  button.onclick = recording
+    ? finishBrowserRecording
+    : () => {
+        const menu = $("recordingImportMenu");
+        if (!menu) return;
+        menu.hidden = !menu.hidden;
+        button.setAttribute("aria-expanded", String(!menu.hidden));
+      };
+}
+
+function refineSelection(state) {
+  // Refine 需要至少一个已分析的录制，且不能混入未分析的录制（与点击处理同一判定）。
+  const chosen = state.items.filter((item) => item.checked && item.analyzed);
+  const hasUnanalyzed = state.items.some((item) => item.checked && !item.analyzed);
+  return { chosen, ready: chosen.length > 0 && !hasUnanalyzed, hasUnanalyzed };
 }
 
 function updateSummaryState() {
   const state = recordingSession(),
     button = $("summarizeRecordings");
-  if (button) {
-    button.disabled =
-      state.stage === "recording" ||
-      state.stage === "preparing" ||
-      !state.items.some((item) => item.checked);
-  }
+  if (!button) return;
+  const busy = state.stage === "recording" || state.stage === "preparing";
+  button.disabled = busy || !refineSelection(state).ready;
 }
 
 async function prepareRecording() {
@@ -1485,7 +1859,7 @@ async function buildMergedFlow(chosen, combined) {
     let steps = [];
     if (item.flowFile) {
       try {
-        const flow = await F.flow.load(item.flowFile);
+        const flow = await window.flowlink.flow.load(item.flowFile);
         steps = flow?.steps || [];
         for (const variable of flow?.variables || []) {
           if (!mergedVariables.has(variable.name))
@@ -1536,10 +1910,28 @@ async function buildMergedFlow(chosen, combined) {
 
 function summarizeRecordings() {
   const state = recordingSession();
-  const chosen = state.items.filter((item) => item.checked && item.analyzed);
-  if (!chosen.length || state.items.some((item) => item.checked && !item.analyzed) || state.stage === "recording" || state.stage === "preparing") return;
-  // Refine is an AI review action; merging remains available as a separate explicit operation.
-  startAIAdvice({ mode: "selected-materials", items: chosen, reason: "Review the selected material(s) and recommend concrete reliability improvements. Do not change or save anything yet." });
+  // 与 updateSummaryState 相同的守卫：守卫失败时给出可见提示而不是静默返回。
+  if (state.stage === "recording" || state.stage === "preparing") return;
+  const { chosen, ready, hasUnanalyzed } = refineSelection(state);
+  if (!ready) {
+    state.aiOpen = true;
+    renderRecordingWorkspace();
+    appendAIMessage(
+      currentAssistantContext(),
+      "assistant",
+      hasUnanalyzed
+        ? "Refine needs analyzed recordings only. The current selection includes recordings that have not finished analysis; uncheck them and try again."
+        : "Select at least one analyzed recording to refine.",
+    );
+    return;
+  }
+  // Refine 打开选项模式：用户选择预设 + 补充说明后，再走共享的生成管线。
+  state.aiMode = "refine-options";
+  state.aiSourceIds = chosen.map((item) => item.id);
+  state.aiOpen = true;
+  renderRecordingWorkspace();
+  renderAIPanel();
+  $("assistantInput")?.focus();
 }
 
 async function confirmRecordingSummary() {
@@ -1599,7 +1991,7 @@ async function confirmRecordingSummary() {
   };
   try {
     const flow = await buildMergedFlow(chosen, combined);
-    const recording = await F.recording.persistMerged({
+    const recording = await window.flowlink.recording.persistMerged({
       taskCode: currentFlow?.code || activeFlowKey,
       flow,
       name: combined.name,
@@ -1675,8 +2067,7 @@ function renderSummaryWorkspace() {
           ? "metric-active"
           : "");
   resultPanel.setAttribute("aria-labelledby", summaryTabId(active));
-  resultPanel.innerHTML =
-    active === "Test" ? "" : analysisResultMarkup(active);
+  fillResultPanel(resultPanel, active, item);
   if (active === "Test" && state.browserElement) {
     state.browserElement.hidden = false;
     mountBrowserSurface();
@@ -1689,6 +2080,18 @@ function renderSummaryWorkspace() {
   renderAIPanel();
   bindStepEditor();
   bindProcessMap();
+  if (
+    active === "Process" &&
+    item?.recordingId &&
+    !item.processFlowLoaded &&
+    !item.processFlowLoading &&
+    !item.processFlowError
+  ) {
+    void hydrateProcessFlow(item).then((loaded) => {
+      if (loaded && currentAssistantItem() === item && item.resultTab === "Process")
+        renderSummaryWorkspace();
+    });
+  }
   bindReferenceFiles();
   bindMetricPreferences();
   bindScreenshotZoom();
@@ -1736,6 +2139,19 @@ async function deleteRecording(id) {
     ))
   )
     return;
+  const itemToDelete = state.items[index];
+  if (itemToDelete.recordingId && window.flowlink?.tasks?.removeRecording) {
+    try {
+      await window.flowlink.tasks.removeRecording(
+        currentFlow?.code || activeFlowKey,
+        itemToDelete.recordingId,
+      );
+    } catch (err) {
+      console.error("Could not delete recording files:", err);
+      alert("Could not delete recording: " + err.message);
+      return;
+    }
+  }
   const wasFocused = state.focused === id;
   state.items.splice(index, 1);
   state.allExplicit = false;
@@ -1874,15 +2290,23 @@ function syncFloatingAIDock(target) {
 function ensureAssistantData(item) {
   const state = recordingSession();
   state.aiConversations ??= new Map();
+  // Replay（Test）标签页使用独立对话：录制项的聊天按标签页拆分，
+  // Replay 中的消息（如回放诊断）不与其他标签页的对话互通。
+  const replay = item !== state.guideAssistant && item?.resultTab === "Test";
   const key =
-    item === state.guideAssistant
+    (item === state.guideAssistant
       ? "guide"
-      : String(item.recordingId || item.id || "current");
+      : String(item.recordingId || item.id || "current")) +
+    (replay ? "-replay" : "");
   let conversation = state.aiConversations.get(key);
   if (!conversation) {
+    // 仅首个对话继承 item 上已有的聊天；其余标签页从空白开始，避免共享同一数组。
+    const inherit = !replay && !item.chatScopeClaimed;
+    item.chatScopeClaimed = true;
     conversation = {
-      messages: Array.isArray(item.chat) ? item.chat : [],
-      draft: typeof item.chatDraft === "string" ? item.chatDraft : "",
+      messages: inherit && Array.isArray(item.chat) ? item.chat : [],
+      draft:
+        inherit && typeof item.chatDraft === "string" ? item.chatDraft : "",
     };
     state.aiConversations.set(key, conversation);
   }
@@ -1898,6 +2322,181 @@ function setAssistantDraft(item, draft) {
   item.chatDraft = draft;
 }
 
+const REFINE_PRESETS = [
+  "Group steps into labeled stages",
+  "Remove redundant or accidental steps",
+  "Add stability waits around page transitions",
+  "Add assertions for key outcomes",
+  "Move repeated text inputs into Reference variables",
+];
+
+function submitRefineOptions() {
+  const state = recordingSession();
+  const presets = REFINE_PRESETS.filter(
+    (preset, index) =>
+      document.querySelector(`input[data-refine-preset="${index}"]`)?.checked,
+  );
+  const freeText = $("refineFreeText")?.value.trim() || "";
+  const instruction =
+    [...presets, freeText].filter(Boolean).join(" ") ||
+    "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
+  state.aiMode = undefined;
+  invokeAIMerge("input", instruction, { forceMaterial: true });
+}
+
+/* ---------------- @ 提及与附件（录制 id 进 UI 状态，Flow 载荷只在主进程组装） ---------------- */
+
+function aiAttachmentItems(ids) {
+  const state = recordingSession();
+  const list = Array.isArray(ids) ? ids : state.aiAttachments || [];
+  const resolved = [];
+  for (const id of list) {
+    const item = (state.items || []).find((entry) => (entry.recordingId || entry.id) === id);
+    if (item && !resolved.includes(item)) resolved.push(item);
+  }
+  return resolved;
+}
+
+function renderAttachmentChips() {
+  const state = recordingSession();
+  const box = $("assistantAttachments");
+  if (!box) return;
+  const items = aiAttachmentItems();
+  box.replaceChildren(
+    ...items.map((item) => {
+      const chip = rowTemplate("attachmentChipTemplate").cloneNode(true);
+      chip.querySelector("[data-chip-name]").textContent = "@" + item.name;
+      const remove = chip.querySelector("[data-attachment-remove]");
+      remove.dataset.attachmentRemove = item.recordingId || item.id;
+      remove.setAttribute(
+        "aria-label",
+        "Remove attachment " + item.name,
+      );
+      return chip;
+    }),
+  );
+  box.hidden = items.length === 0;
+  box.onclick = (e) => {
+    const remove = e.target.closest("[data-attachment-remove]");
+    if (!remove) return;
+    state.aiAttachments = (state.aiAttachments || []).filter((id) => id !== remove.dataset.attachmentRemove);
+    renderAttachmentChips();
+  };
+}
+
+const mentionPickerState = { open: false, items: [], active: 0, tokenStart: 0, caret: 0 };
+
+function mentionCandidates(query) {
+  const state = recordingSession();
+  const q = String(query || "").toLowerCase();
+  return (state.items || [])
+    .filter((item) => item.name && (!q || String(item.name).toLowerCase().includes(q)))
+    .slice(0, 8);
+}
+
+function mentionQueryAtCaret(input) {
+  if (!input) return null;
+  const caret = input.selectionStart ?? input.value.length;
+  if (caret !== input.selectionEnd) return null;
+  const before = input.value.slice(0, caret);
+  const match = before.match(/(^|\s)@([\w.\-À-ɏ㐀-鿿]*)$/u);
+  if (!match) return null;
+  return { tokenStart: caret - match[2].length - 1, query: match[2], caret };
+}
+
+function mentionOptionNode(item, index) {
+  const option = rowTemplate("mentionOptionTemplate").cloneNode(true);
+  const active = index === mentionPickerState.active;
+  option.classList.toggle("active", active);
+  option.dataset.mentionIndex = index;
+  option.setAttribute("aria-selected", String(active));
+  option.querySelector(".mention-name").textContent = item.name;
+  const badge = item.summary ? "Refined" : item.recorded ? "Record" : "";
+  option.querySelector(".mention-badge.refined").hidden = badge !== "Refined";
+  option.querySelector(".mention-badge.record").hidden = badge !== "Record";
+  return option;
+}
+
+function updateMentionPicker(input) {
+  const picker = $("mentionPicker");
+  if (!picker) return;
+  const at = mentionQueryAtCaret(input);
+  const items = at ? mentionCandidates(at.query) : [];
+  mentionPickerState.open = items.length > 0;
+  mentionPickerState.items = items;
+  mentionPickerState.active = 0;
+  if (at) {
+    mentionPickerState.tokenStart = at.tokenStart;
+    mentionPickerState.caret = at.caret;
+  }
+  picker.hidden = !mentionPickerState.open;
+  if (mentionPickerState.open) {
+    picker.replaceChildren(
+      ...items.map((item, index) => mentionOptionNode(item, index)),
+    );
+    picker.setAttribute("aria-expanded", "true");
+  } else {
+    picker.replaceChildren();
+    picker.setAttribute("aria-expanded", "false");
+  }
+}
+
+function closeMentionPicker() {
+  mentionPickerState.open = false;
+  mentionPickerState.items = [];
+  mentionPickerState.active = 0;
+  const picker = $("mentionPicker");
+  if (picker) {
+    picker.hidden = true;
+    picker.replaceChildren();
+    picker.setAttribute("aria-expanded", "false");
+  }
+}
+
+function chooseMention(item) {
+  const state = recordingSession();
+  const id = item.recordingId || item.id;
+  state.aiAttachments ??= [];
+  if (!state.aiAttachments.includes(id)) state.aiAttachments.push(id);
+  const input = $("assistantInput");
+  if (input) {
+    input.value = input.value.slice(0, mentionPickerState.tokenStart) + input.value.slice(mentionPickerState.caret);
+    setAssistantDraft(currentAssistantContext(), input.value);
+  }
+  const caret = mentionPickerState.tokenStart;
+  closeMentionPicker();
+  renderAIPanel();
+  const restored = $("assistantInput");
+  if (restored) {
+    restored.focus();
+    try {
+      restored.setSelectionRange(caret, caret);
+    } catch {
+      /* textarea 支持.setSelectionRange；防御性忽略 */
+    }
+  }
+}
+
+function bindMentionPicker() {
+  const picker = $("mentionPicker");
+  if (!picker) return;
+  picker.onclick = (e) => {
+    const option = e.target.closest("[data-mention-index]");
+    if (!option) return;
+    const item = mentionPickerState.items[Number(option.dataset.mentionIndex)];
+    if (item) chooseMention(item);
+  };
+}
+
+let aiPrewarmFired = false;
+// AI 面板一打开就请求主进程预热 Pi（SDK 导入 + 运行时缓存）；只发一次，
+// 之后的首条消息只剩会话创建与网络往返。
+function prewarmPiOnce() {
+  if (aiPrewarmFired) return;
+  aiPrewarmFired = true;
+  window.flowlink?.pi?.prewarm?.().catch(() => {});
+}
+
 function renderAIPanel() {
   // 分析后助手上下文关联到具体录制项，分析前则关联到操作指南。
   // 是否显示由当前 Design 标签页和 aiOpen 状态共同决定。
@@ -1906,6 +2505,10 @@ function renderAIPanel() {
     item = currentAssistantContext(),
     testTab = recording?.resultTab === "Test",
     open = drawerView === "Design" && state.aiOpen;
+  // refine-options 是一次性模式：面板关闭或来源丢失时还原为普通面板。
+  if (state.aiMode === "refine-options" && (!open || !state.aiSourceIds?.length))
+    state.aiMode = undefined;
+  const refineOptions = state.aiMode === "refine-options";
   $("drawer").classList.toggle("ai-open", !!open);
   $("recordingAssistant").hidden = !open;
   $("aiToggle")?.setAttribute("aria-expanded", String(!!open));
@@ -1916,6 +2519,7 @@ function renderAIPanel() {
   );
   testShell?.classList.toggle("has-visible-ai-dock", testTab && !open);
   if (!open) return;
+  prewarmPiOnce();
   ensureAssistantData(item);
   bindAssistantResize();
   $("assistantFileName").textContent = "AI 助手";
@@ -1938,26 +2542,67 @@ function renderAIPanel() {
     "has-group-context",
     !!selectedGroup && !testTab,
   );
-  const aiOptionsMarkup = `<div class="assistant-options"><button type="button" class="assistant-option" data-ai-option="merge" aria-label="Merge selected recordings">Merge selected recordings</button><button type="button" class="assistant-option" data-ai-option="generate" aria-label="Generate flow from description">Generate flow from description</button><button type="button" class="assistant-option" data-ai-option="optimize" aria-label="Optimize current flow">Optimize current flow</button></div>`;
-  $("assistantSteps").innerHTML = testTab
-    ? `
-    <div class="assistant-test-toolbar">
-      <button class="btn" id="runRecordingTest" type="button" ${recording?.testRunning || !recording?.recordingId ? "disabled" : ""}>
-        ${recording?.testRunning ? "Running…" : "Run"}
-      </button>
-      <button class="btn secondary" id="stopRecordingTest" type="button" ${!recording?.testRunning ? "disabled" : ""}>Stop</button>
-    </div>
-    ${testProgressHeadingMarkup(recording)}
-    <div class="assistant-test-steps" aria-live="polite">${testStepRowsMarkup(recording)}</div>`
-    : selectedGroup
-      ? `<div class="assistant-group-name">${selectedGroup.number} ${escapeHTML(selectedGroup.name)}</div><div class="assistant-group-options"><button type="button" id="assistantGroupRecord"><span>A</span><span>Re-record</span></button><button type="button" id="assistantGroupAdd" aria-expanded="false"><span>B</span><span>Add node</span></button><div id="assistantGroupInsert" class="assistant-group-insert" hidden><button type="button" data-ai-group-insert="before">Before this node</button><button type="button" data-ai-group-insert="after">After this node</button></div></div>`
-    : aiOptionsMarkup +
-      item.steps
-        .map(
-          (step, index) =>
-            `<div class="assistant-step"><span class="assistant-step-number">Step ${index + 1}:</span><span>${escapeHTML(step)}</span></div>`,
-        )
-        .join("");
+  const stepsHost = $("assistantSteps");
+  const showOptions = !refineOptions && !testTab && !selectedGroup;
+  stepsHost.querySelector('[data-ai-block="options"]').hidden = !showOptions;
+  stepsHost.querySelector('[data-ai-block="steps"]').hidden = !showOptions;
+  stepsHost.querySelector('[data-ai-block="refine"]').hidden = !refineOptions;
+  stepsHost.querySelector('[data-ai-block="test"]').hidden = !testTab;
+  stepsHost.querySelector('[data-ai-block="group"]').hidden = !(
+    selectedGroup && !testTab
+  );
+  if (refineOptions) {
+    const count = state.aiSourceIds?.length || 0;
+    stepsHost.querySelector(".assistant-refine-title").textContent =
+      "Refine " +
+      (count === 1 ? "1 selected material" : count + " selected materials");
+    stepsHost.querySelector("[data-refine-presets]").replaceChildren(
+      ...REFINE_PRESETS.map((preset, index) => {
+        const label = rowTemplate("refinePresetTemplate").cloneNode(true);
+        label.querySelector("input").dataset.refinePreset = index;
+        label.querySelector("span").textContent = preset;
+        return label;
+      }),
+    );
+    stepsHost.querySelector("#refineFreeText").value = "";
+  }
+  if (testTab) {
+    const running = !!recording?.testRunning;
+    const runButton = stepsHost.querySelector("#runRecordingTest");
+    runButton.disabled = running || !recording?.recordingId;
+    runButton.textContent = running ? "Running…" : "Run";
+    stepsHost.querySelector("#stopRecordingTest").disabled = !running;
+    const testSteps = recording?.testFlowSteps?.length
+      ? recording.testFlowSteps
+      : recording?.steps || [];
+    const results = recording?.testResults || [];
+    stepsHost.querySelector(".test-progress-heading span").textContent =
+      results.filter((result) => result?.status === "pass").length +
+      " / " +
+      testSteps.length;
+    const list = stepsHost.querySelector(".assistant-test-steps");
+    stepsHost.querySelector("[data-test-empty]").hidden = !!testSteps.length;
+    list.replaceChildren(
+      ...testSteps.map((step, index) =>
+        testStepNode(step, index, results[index]),
+      ),
+    );
+  }
+  if (selectedGroup && !testTab)
+    stepsHost.querySelector(".assistant-group-name").textContent =
+      selectedGroup.number + " " + selectedGroup.name;
+  if (showOptions)
+    stepsHost.querySelector('[data-ai-block="steps"]').replaceChildren(
+      ...item.steps.map((step, index) => {
+        const node = rowTemplate("assistantStepTemplate").cloneNode(true);
+        node.querySelector(".assistant-step-number").textContent =
+          "Step " + (index + 1) + ":";
+        node.querySelector("[data-step-text]").textContent = step;
+        return node;
+      }),
+    );
+  const continueButton = $("refineContinue");
+  if (continueButton) continueButton.onclick = submitRefineOptions;
   const runButton = $("runRecordingTest");
   if (runButton)
     runButton.onclick = () => {
@@ -2001,13 +2646,41 @@ function renderAIPanel() {
     };
   }
 
-  $("assistantChat").innerHTML = item.chat
-    .map(
-      (message) =>
-        `<p class="assistant-message ${message.role}" aria-label="${message.role === "user" ? "User" : "AI"}">${escapeHTML(message.text)}</p>`,
-    )
-    .join("");
+  $("assistantChat").replaceChildren(
+    ...item.chat.map((message) => {
+      // 聊天记录只存文本 + 附件 id/name 芯片；Flow JSON 永不进入 transcript。
+      const element = rowTemplate("assistantMessageTemplate").cloneNode(true);
+      element.classList.add(message.role);
+      element.setAttribute(
+        "aria-label",
+        message.role === "user" ? "User" : "AI",
+      );
+      element.insertBefore(
+        document.createTextNode(message.text),
+        element.firstChild,
+      );
+      if (
+        message.role === "user" &&
+        Array.isArray(message.attachments) &&
+        message.attachments.length
+      ) {
+        const chips = element.querySelector(".message-attachments");
+        chips.replaceChildren(
+          ...message.attachments.map((attachment) => {
+            const chip = rowTemplate("chatChipTemplate").cloneNode(true);
+            chip.textContent = "@" + attachment.name;
+            return chip;
+          }),
+        );
+      }
+      return element;
+    }),
+  );
   $("assistantContent").scrollTop = $("assistantContent").scrollHeight;
+  renderAttachmentChips();
+  closeMentionPicker();
+  bindMentionPicker();
+  $("assistantInput").placeholder = "Ask anything...";
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
   $("assistantSend").disabled = !item.chatDraft.trim();
@@ -2015,8 +2688,34 @@ function renderAIPanel() {
   $("assistantInput").oninput = (e) => {
     setAssistantDraft(item, e.target.value);
     $("assistantSend").disabled = !item.chatDraft.trim();
+    updateMentionPicker(e.target);
   };
   $("assistantInput").onkeydown = (e) => {
+    if (mentionPickerState.open && mentionPickerState.items.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const count = mentionPickerState.items.length;
+        mentionPickerState.active = (mentionPickerState.active + delta + count) % count;
+        $("mentionPicker").replaceChildren(
+          ...mentionPickerState.items.map((item, index) =>
+            mentionOptionNode(item, index),
+          ),
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        chooseMention(mentionPickerState.items[mentionPickerState.active]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMentionPicker();
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submitAssistantMessage();
@@ -2095,46 +2794,25 @@ async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext
 async function generateRefinedMaterial(sourceItems, request, parentItem) {
   const sources = sourceItems?.length ? sourceItems : [parentItem].filter(Boolean);
   if (!sources.length) throw new Error("Select at least one material to refine.");
-  const loaded = [];
-  for (const source of sources) {
-    if (source.flowFile && window.flowlink?.flow?.load) {
-      try { loaded.push(await window.flowlink.flow.load(source.flowFile)); } catch (error) { console.warn("Could not load source Flow", error); }
-    }
-  }
-  if (!loaded.length) throw new Error("The selected material has no saved executable Flow. Advice is available, but a replayable refined material cannot be saved yet.");
-  const sourceSteps = loaded.flatMap((flow) => flow.steps || []);
   const bridge = window.flowlink?.pi;
-  const prompt = [
-    "Generate a refined FlowLink material from the supplied executable Flow JSON.",
-    "Return JSON only with {title, summary, steps, rationale, risks}. `steps` must be valid FlowLink step objects compatible with the source schema.",
-    "Preserve the original business intent and source evidence. Do not invent selectors, URLs, field values, credentials, or unobserved outcomes. Prefer small, evidence-backed changes. If uncertain, preserve the original step.",
-    `User refinement request: ${request}`,
-    `Prior AI-pane discussion and recommendations: ${JSON.stringify((parentItem?.chat || []).slice(-10).map((message) => ({ role: message.role, text: message.text }))).slice(0, 16000)}`,
-    `Source Flow metadata: ${JSON.stringify(loaded.map(({ id, title, meta, variables }) => ({ id, title, meta, variables })))}`,
-    `Source executable steps: ${JSON.stringify(sourceSteps).slice(0, 65000)}`,
-  ].join("\n\n");
-  const result = await bridge.prompt({ prompt, timeoutMs: 180000 });
-  let parsed;
-  try {
-    const raw = result.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    parsed = JSON.parse(raw);
-  } catch { throw new Error("Pi did not return valid JSON for the refined material. The source was left unchanged. Ask Pi to retry with valid JSON."); }
-  if (!parsed || !Array.isArray(parsed.steps) || !parsed.steps.length) throw new Error("Pi's refined material has no executable steps; the source was left unchanged.");
-  const base = loaded[0];
-  const flow = {
-    ...base,
-    id: `refined-${Date.now().toString(36)}`,
-    title: String(parsed.title || `Refined ${parentItem?.name || sources[0].name || "Material"}`),
-    version: 1,
-    createdAt: new Date().toISOString(),
-    steps: parsed.steps,
-  };
+  if (!bridge?.generateFlow)
+    throw new Error("FlowLink Pi generation bridge is unavailable. Run inside FlowLink with the preload API to generate refined materials.");
+  const recordingIds = sources.map((source) => source.recordingId).filter(Boolean);
+  if (!recordingIds.length || recordingIds.length !== sources.length)
+    throw new Error("The selected material has no saved executable Flow. Advice is available, but a replayable refined material cannot be saved yet.");
   const taskCode = currentFlow?.code || activeFlowKey;
-  const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: flow.title });
+  const conversation = (parentItem?.chat || [])
+    .slice(-8)
+    .map((message) => ({ role: message.role, text: message.text }));
+  // 投影、提示词组装、$ref 再水化与 schema 校验都在主进程完成；渲染层只传
+  // 录制 id 和纯文本对话，聊天与 Flow 载荷互不沾染。
+  const result = await bridge.generateFlow({ taskCode, recordingIds, instruction: request, conversation });
+  const flow = result.flow;
+  const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: result.title || flow.title });
   const refined = {
     ...sources[0],
     id: recording.id,
-    name: flow.title,
+    name: recording.name,
     recordingId: recording.id,
     flowFile: recording.flowFile,
     artifactsDir: recording.artifactsDir,
@@ -2149,8 +2827,8 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
     processGroups: undefined,
     references: [],
     resultTab: "Process",
-    aiRationale: Array.isArray(parsed.rationale) ? parsed.rationale : [],
-    aiRisks: Array.isArray(parsed.risks) ? parsed.risks : [],
+    aiRationale: Array.isArray(result.rationale) ? result.rationale : [],
+    aiRisks: Array.isArray(result.risks) ? result.risks : [],
   };
   const state = recordingSession();
   state.items.push(refined);
@@ -2166,7 +2844,7 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   return refined;
 }
 
-async function invokeAIMerge(option, prompt) {
+async function invokeAIMerge(option, prompt, extra = {}) {
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext();
@@ -2178,16 +2856,32 @@ async function invokeAIMerge(option, prompt) {
     input: prompt || "User request",
   };
   const userText = prompt || optionLabels[option] || option;
-  item.chat.push({ role: "user", text: userText });
+  // 附件只在本次消息里生效：聊天条目存 id/name 芯片，发送后即清空。
+  const attachmentItems = aiAttachmentItems(extra.attachments);
+  state.aiAttachments = [];
+  item.chat.push({
+    role: "user",
+    text: userText,
+    ...(attachmentItems.length
+      ? {
+          attachments: attachmentItems.map((entry) => ({
+            id: entry.recordingId || entry.id,
+            name: entry.name,
+          })),
+        }
+      : {}),
+  });
   setAssistantDraft(item, "");
   renderAIPanel();
 
-  const selected = (state.aiSourceIds?.length
-    ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
-    : state.items.filter((entry) => entry.checked && entry.analyzed));
+  const selected = attachmentItems.length
+    ? attachmentItems
+    : state.aiSourceIds?.length
+      ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
+      : state.items.filter((entry) => entry.checked && entry.analyzed);
   const sources = selected.length ? selected : (recording?.analyzed ? [recording] : []);
 
-  if (aiRequestNeedsMaterial(userText)) {
+  if (extra.forceMaterial || aiRequestNeedsMaterial(userText)) {
     try {
       item.chat.push({ role: "assistant", text: "Pi is preparing a separate refined material. The original recording will not be overwritten…" });
       renderAIPanel();
@@ -2251,6 +2945,32 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
 // Bridge integration points used after recorder stop and replay failures.
 window.startFlowLinkAIAdvice = startAIAdvice;
 
+// 应用级轻提示：普通信息 6 秒后自动消失，警告需手动关闭。
+function showFlowlinkNotice(message, kind = "info") {
+  let host = document.getElementById("flowlinkNotices");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "flowlinkNotices";
+    document.body.appendChild(host);
+  }
+  const notice = document.createElement("div");
+  notice.className = `flowlink-notice ${kind === "warn" ? "warn" : "info"}`;
+  notice.setAttribute("role", kind === "warn" ? "alert" : "status");
+  const text = document.createElement("span");
+  text.textContent = String(message ?? "");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "flowlink-notice-close";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "×";
+  close.onclick = () => notice.remove();
+  notice.append(text, close);
+  host.appendChild(notice);
+  if (kind !== "warn") setTimeout(() => notice.remove(), 6000);
+  return notice;
+}
+window.showFlowlinkNotice = showFlowlinkNotice;
+
 function requestedStep(text) {
   const m =
     text.match(
@@ -2289,7 +3009,8 @@ function submitAssistantMessage() {
   ensureAssistantData(item);
   const message = $("assistantInput").value.trim();
   if (!message) return;
-  invokeAIMerge("input", message);
+  const state = recordingSession();
+  invokeAIMerge("input", message, { attachments: state.aiAttachments });
 }
 
 function beginNodeRecording(item, index) {
@@ -2393,10 +3114,6 @@ function finishNodeRecording(state) {
   $("assistantInput").focus();
 }
 
-function nativeUpdatedProcess(item) {
-  return processMapMarkup(item);
-}
-
 // 可编辑字段遵循提供的 Steps 参考内容，数据仅保存在当前录制项中。
 function ensureStepDetails(item) {
   ensureAssistantData(item);
@@ -2421,7 +3138,66 @@ function ensureStepDetails(item) {
 }
 
 let processGroupSequence = 0;
+function executableFlowSteps(steps) {
+  const result = [];
+  for (const step of steps || []) {
+    if (step.kind === "group") result.push(...executableFlowSteps(step.steps));
+    else result.push(step);
+  }
+  return result;
+}
+
+function processStepLabel(step, index, groups = []) {
+  const target =
+    step.target?.description ||
+    step.target?.candidates?.[0]?.value?.name ||
+    step.target?.candidates?.[0]?.value ||
+    "";
+  if (step.kind === "input") return `Input · ${target || "field"}`;
+  if (step.kind === "click" || step.kind === "hover")
+    return `${step.kind === "click" ? "Click" : "Hover"} · ${target || `Step ${index + 1}`}`;
+  if (step.kind === "navigate") return `Navigate · ${step.url}`;
+  if (step.kind === "openTab") return `Open tab${step.url ? ` · ${step.url}` : ""}`;
+  if (step.kind === "switchTab") return `Switch to tab ${step.index + 1}`;
+  if (step.kind === "wait") {
+    if (step.condition === "timeout") return `Wait · ${step.ms ?? 1000} ms`;
+    if (step.condition === "userOperation") return "Wait · user operation";
+    if (step.condition === "networkIdle") return "Wait · network idle";
+    return `Wait · element present${target ? ` · ${target}` : ""}`;
+  }
+  if (step.kind === "condition") {
+    const name = (id) => groups.find((group) => group.id === id)?.label || id || "End";
+    return `Condition · ${step.assertion.kind} · true → ${name(step.trueGroupId)} · false → ${name(step.falseGroupId)}`;
+  }
+  return `${step.kind}${target ? ` · ${target}` : ""}`;
+}
+
 function ensureProcessGroups(item) {
+  if (Array.isArray(item?.processFlow?.steps)) {
+    let start = 0;
+    return item.processFlow.steps
+      .filter((step) => step.kind === "group")
+      .map((group, index, all) => {
+        const flowSteps = group.steps || [];
+        const view = {
+          id: group.id,
+          name: group.label,
+          label: group.label,
+          index,
+          start,
+          count: flowSteps.length,
+          number: String(index + 1).padStart(2, "0"),
+          tab: flowSteps.find((step) => step.page?.index !== undefined)?.page?.index + 1 || 1,
+          url: flowSteps.find((step) => step.pageUrl)?.pageUrl || item.url || "",
+          flowSteps,
+          steps: flowSteps.map((step, stepIndex) =>
+            processStepLabel(step, stepIndex, all),
+          ),
+        };
+        start += flowSteps.length;
+        return view;
+      });
+  }
   // 根据演示种子数据按需创建分组，再生成派生视图；分组 ID 保持稳定，
   // start 偏移则反映其在当前扁平步骤列表中的位置。
   ensureAssistantData(item);
@@ -2463,6 +3239,82 @@ function ensureProcessGroups(item) {
   });
 }
 
+async function hydrateProcessFlow(item) {
+      if (!item || item.processFlowLoaded || item.processFlowLoading) return false;
+      if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.load) return false;
+      item.processFlowLoading = true;
+      try {
+        const flow = await window.flowlink.flow.load(item.flowFile);
+        if (!flow?.steps?.length) throw new Error("Saved Flow has no executable steps.");
+        let steps = flow.steps;
+        if (!steps.every((step) => step.kind === "group")) {
+          const groups = ensureProcessGroups(item);
+          const total = executableFlowSteps(steps).length;
+          const definitions =
+            groups.reduce((sum, group) => sum + group.count, 0) === total && groups.length
+              ? groups
+              : [{ id: "group-recorded", name: "Recorded flow", count: total }];
+          let offset = 0;
+          steps = definitions.map((group, index) => {
+            const count =
+              index === definitions.length - 1
+                ? steps.length - offset
+                : Math.min(group.count, steps.length - offset);
+            const value = {
+              kind: "group",
+              id: group.id || `group-recorded-${index + 1}`,
+              label: group.name || `Group ${index + 1}`,
+              steps: steps.slice(offset, offset + count),
+            };
+            offset += count;
+            return value;
+          });
+          if (offset < flow.steps.length) {
+            steps[steps.length - 1].steps.push(...flow.steps.slice(offset));
+          }
+        }
+        item.processFlow = { ...flow, steps };
+        item.processFlowLoaded = true;
+        item.processFlowError = "";
+        syncProcessFlowPresentation(item);
+        return true;
+      } catch (error) {
+        item.processFlowError = error instanceof Error ? error.message : String(error);
+        console.error("[process] Unable to load saved Flow:", error);
+        return false;
+      } finally {
+        item.processFlowLoading = false;
+      }
+  }
+
+  function syncProcessFlowPresentation(item) {
+      const steps = executableFlowSteps(item.processFlow?.steps || []);
+      item.steps = steps.map((step, index) => processStepLabel(step, index));
+      item.stepDetails = steps.map((step) => ({
+        type: step.kind,
+        target: step.target?.description || "",
+        value: step.kind === "input" ? step.value : "",
+        url: step.url || "",
+        tab: (step.page?.index ?? 0) + 1,
+      }));
+      item.processGroups = ensureProcessGroups(item);
+  }
+
+  async function persistProcessFlow(item) {
+      if (!item?.processFlow || !item.recordingId || !item.flowFile)
+        throw new Error("Save this recording before editing its Process flow.");
+      const flow = await window.flowlink.flow.updateSteps({
+        taskCode: currentFlow?.code || activeFlowKey,
+        recordingId: item.recordingId,
+        steps: item.processFlow.steps,
+      });
+      item.processFlow = { ...item.processFlow, version: flow.version, steps: flow.steps };
+      item.processFlowError = "";
+      item.nodeUpdates = true;
+      item.referenceVariablesLoaded = false;
+      syncProcessFlowPresentation(item);
+      rebuildItemTestFlow(item);
+  }
 const genericGroupIcon =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%2214%22 height=%2214%22 rx=%222%22 fill=%22none%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3Cpath d=%22M4 8h8M8 4v8%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3C/svg%3E";
 function groupFaviconUrl(url) {
@@ -2565,25 +3417,6 @@ function buildTabGroupsForItem(item) {
       ];
 }
 
-function editableStepsMarkup(item) {
-  if (!item) return "";
-  ensureStepDetails(item);
-  item.instructionExpanded ??= [];
-  return `<div class="grouped-steps">${ensureProcessGroups(item)
-    .map((group) => {
-      const expanded = item.instructionExpanded.includes(group.id);
-      return `<section class="steps-group" data-instruction-group="${group.id}"><div class="instruction-group-heading"><h3>${group.number} ${escapeHTML(group.name)}</h3><button class="instruction-expand" type="button" data-instruction-expand="${group.id}" aria-expanded="${expanded}"><span>${expanded ? "Collapse" : "Expand"}</span><svg class="design-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg></button></div>${group.steps
-        .map((text, offset) => {
-          const index = group.start + offset,
-            detail = item.stepDetails[index],
-            code = group.number + "-" + String(offset + 1).padStart(3, "0");
-          return `<div class="instruction-step"><div class="instruction-row"><span class="step-row-number">${code}</span><span class="step-row-text">${escapeHTML(text)}</span></div><div class="step-detail-fields" data-group-details ${expanded ? "" : "hidden"}><label>操作内容<textarea data-step-field="text" data-step-index="${index}" aria-label="${code} 操作内容">${escapeHTML(text)}</textarea></label><div class="step-field-grid"><label>操作类型<input data-step-field="type" data-step-index="${index}" value="${escapeHTML(detail.type)}"></label><label>目标<input data-step-field="target" data-step-index="${index}" value="${escapeHTML(detail.target)}"></label><label>填写内容<input data-step-field="value" data-step-index="${index}" value="${escapeHTML(detail.value)}"></label></div></div></div>`;
-        })
-        .join("")}</section>`;
-    })
-    .join("")}</div>`;
-}
-
 function normalizeStepKind(type) {
   if (type === "open" || type === "navigate" || type === "打开页面")
     return "navigate";
@@ -2644,10 +3477,15 @@ function rebuildTestFlowFromItem(item) {
 
 async function rebuildItemTestFlow(item) {
   if (!item) return;
+  if (item.processFlow?.steps) {
+    item.testFlowSteps = executableFlowSteps(item.processFlow.steps);
+    item.testResults = item.testFlowSteps.map(() => ({ status: "pending" }));
+    return;
+  }
   // 界面草稿尚未发生变化时，优先使用已持久化的 Flow 文件。
   if (item.flowFile && !item.nodeUpdates) {
     try {
-      const flow = await F.flow.load(item.flowFile);
+      const flow = await window.flowlink.flow.load(item.flowFile);
       if (flow) {
         item.testFlowSteps = (flow.steps || []).map((step) => step);
         item.testResults = item.testFlowSteps.map(() => ({
@@ -2755,12 +3593,6 @@ function metricPreference() {
     });
   }
   return metricDrafts.get(activeFlowKey);
-}
-
-function metricMarkup(item) {
-  if (!item) return "";
-  const state = metricPreference();
-  return `<form class="metric-consent" id="metricConsent" aria-label="Metric collection preferences"><p class="sr-only" id="metricConsentHint">Select the metrics you agree to share for platform statistics. Submit your choices to save them. You can change your choices and submit again.</p><div class="metric-consent-groups">${metricChoices.map(([name, options]) => `<section class="metric-consent-group" aria-label="${name}"><h3>${name}</h3><div class="metric-consent-options">${options.map(([id, label]) => `<label class="metric-consent-row"><input type="checkbox" class="recording-check" data-metric-choice="${id}" ${state.selected.includes(id) ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></section>`).join("")}</div><div class="metric-consent-footer"><span role="status" id="metricConsentStatus">${escapeHTML(state.message)}</span><button class="btn" type="submit" id="metricSubmit" aria-describedby="metricConsentHint" disabled>Submit</button></div></form>`;
 }
 
 function bindMetricPreferences() {
@@ -2919,18 +3751,13 @@ async function persistReferenceVariables(item, references) {
   });
 }
 
-function referenceFilesMarkup(item) {
-  const files = ensureReferenceFiles(item);
-  const selectedCount = files.filter((file) => file.selected).length;
-  return `<div class="reference-management"><div class="reference-table-wrap"><table class="reference-table" aria-label="Reference items"><colgroup><col class="reference-check-column"><col class="reference-name-column"><col><col class="reference-value-column"><col class="reference-actions-column"></colgroup><thead><tr><th scope="col" class="reference-check-cell"><input type="checkbox" class="recording-check" id="referenceSelectAll" aria-label="Select all reference items" ${files.length ? "" : "disabled"}></th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Value</th><th scope="col" aria-label="Reference actions"></th></tr></thead><tbody>${files.map((file) => `<tr data-reference-row="${file.id}"><td class="reference-check-cell"><input type="checkbox" class="recording-check" data-reference-check="${file.id}" aria-label="Select ${escapeHTML(file.name)}" ${file.selected ? "checked" : ""}></td><td>${file.kind === "variable" ? `<span class="reference-name">${escapeHTML(file.name)}</span>` : `<a class="reference-name" href="${file.url}" download="${escapeHTML(file.name)}">${escapeHTML(file.name)}</a>`}</td><td>${escapeHTML(file.type)}</td><td>${file.kind === "variable" ? escapeHTML(file.secret && file.value ? "••••••" : file.value || "") : ""}</td><td class="reference-action-cell"><div class="reference-row-actions"><button type="button" class="icon-button" data-reference-edit="${file.id}" aria-label="Update ${escapeHTML(file.name)}" title="Update">${designIcon("edit")}</button><button type="button" class="icon-button" data-reference-delete="${file.id}" aria-label="Delete ${escapeHTML(file.name)}" title="Delete">${recordingDeleteIcon}</button></div></td></tr>`).join("")}</tbody></table></div><div class="reference-footer"><span role="status" id="referenceStatus">${escapeHTML(item.referenceLoadError || "")}</span><input type="file" id="referenceFileInput" accept=".xlsx,.xls,.csv,.md,.markdown" multiple hidden><button type="button" class="btn secondary" id="referenceDownload" ${selectedCount ? "" : "disabled"}>${designIcon("export")}<span>Export</span></button><button type="button" class="btn secondary" id="referenceAdd" ${item.referenceVariablesLoading || item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add</span></button></div><dialog class="reference-dialog" id="referenceDialog" aria-labelledby="referenceDialogTitle"></dialog></div>`;
-}
 function bindReferenceFiles() {
   const input = $("referenceFileInput"),
     panel = $("summaryResultPanel"),
     item = currentAssistantItem();
   if (!input || !item) return;
   const redraw = () => {
-    panel.innerHTML = referenceFilesMarkup(item);
+    fillReferencePanel(panel, item);
     bindReferenceFiles();
   };
   const variablesLoaded = hydrateReferenceVariables(item);
@@ -2978,6 +3805,8 @@ function bindReferenceFiles() {
   };
   $("referenceAdd").onclick = showChooser;
   input.onchange = () => {
+    // 文件选择完成（选择器已关闭）后恢复抽屉 Escape 响应。
+    setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
     for (const file of input.files) {
       const ext = file.name.split(".").pop().toLowerCase(),
         type = ["xlsx", "xls", "csv"].includes(ext)
@@ -3009,6 +3838,11 @@ function bindReferenceFiles() {
     }
     if (upload) {
       dialog.close();
+      input.oncancel = (e) => {
+        e.stopPropagation();
+        setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
+      };
+      suppressDrawerCancelUntil = Date.now() + 60000;
       input.click();
       return;
     }
@@ -3170,69 +4004,250 @@ function bindScreenshotZoom() {
   panel.dataset.screenshotZoomBound = "true";
 }
 
-function processMapMarkup(item) {
-  if (!item) return "";
-  const groups = ensureProcessGroups(item);
-  return `
-  <div class="process-canvas" tabindex="0" aria-label="Process canvas">
-    <div class="process-canvas-world">
-      ${groups.map((group) => `
-      <section class="canvas-group ${item.selectedGroup === group.id ? "selected" : ""}" data-canvas-group="${group.id}">
-        <img class="canvas-group-icon" src="${groupFaviconUrl(group.url)}" alt="" loading="lazy" onerror="this.src='${genericGroupIcon}';this.onerror=null">
-        <button class="canvas-group-heading" data-group-select="${group.id}" aria-pressed="${item.selectedGroup === group.id}">
-          ${group.number} · ${escapeHTML(group.name)}
-        </button>
-        <div class="canvas-group-nodes">
-          ${group.steps.map((text, index) => `
-          <div class="canvas-step" data-canvas-step-index="${group.start + index}">
-            <span>${group.number}-${String(index + 1).padStart(3, "0")}</span>
-            <span>${escapeHTML(text)}</span>
-            <!-- 
-              // TODO：按条件显示手动操作图标
-              <span class="execution-mode-icon" role="img" aria-label="Manual" title="Manual">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <circle cx="12" cy="7" r="4"></circle>
-                  <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
-                </svg>
-              </span> 
-            -->
-            <span class="execution-mode-icon" role="img" aria-label="Automated" title="Automated">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="4" y="7" width="16" height="13" rx="2"></rect>
-                <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
-                <circle cx="9" cy="12" r=".5"></circle>
-                <circle cx="15" cy="12" r=".5"></circle>
-              </svg>
-            </span>
-          </div>`).join("")
-          }
-        </div>
-      </section>`).join("")
-      }
-    </div>
-    ${groups
-      .map(
-        (group) => `
-    <div class="canvas-group-actions" data-group-actions="${group.id}" ${item.selectedGroup === group.id ? "" : "hidden"}>
-      <button data-group-record="${group.id}">Re-record</button>
-      <button data-group-insert="before" data-group-id="${group.id}">Add recording before</button>
-      <button data-group-insert="after" data-group-id="${group.id}">Add recording after</button>
-      <button data-group-delete="${group.id}">Delete</button>
-    </div>`,
-      )
-      .join("")}
-    <div class="canvas-step-menu" id="canvasStepMenu" hidden>
-      <button data-step-modify>Modify</button>
-      <button data-step-break>Break</button>
-    </div>
-    <div class="canvas-view-controls">
-      <button data-canvas-zoom="out" aria-label="Zoom out">-</button>
-      <span class="canvas-zoom-label">100%</span>
-      <button data-canvas-zoom="in" aria-label="Zoom in">+</button>
-      <button data-canvas-fit>Fit to canvas</button>
-    </div>
-  </div>`;
+function nextFlowVariableName(flow, prefix) {
+  const names = new Set((flow.variables || []).map((variable) => variable.name));
+  let index = 1;
+  while (names.has(`${prefix}_${index}`)) index++;
+  return `${prefix}_${index}`;
 }
+
+async function addProcessGroupAfter(item, groupId) {
+  const groups = item.processFlow?.steps || [];
+  const index = groups.findIndex((group) => group.kind === "group" && group.id === groupId);
+  if (index < 0) return;
+  const name = window.prompt("New group name", `Group ${groups.length + 1}`);
+  if (name === null) return;
+  const label = name.trim();
+  if (!label) {
+    window.alert("Group name cannot be empty.");
+    return;
+  }
+  const group = {
+    kind: "group",
+    id: `group_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    label,
+    steps: [],
+  };
+  groups.splice(index + 1, 0, group);
+  item.selectedGroup = group.id;
+  try {
+    await persistProcessFlow(item);
+    renderSummaryWorkspace();
+  } catch (error) {
+    item.processFlowError = error instanceof Error ? error.message : String(error);
+    renderSummaryWorkspace();
+  }
+}
+
+function showManualStepEditor(item, groupId) {
+  const group = item.processFlow?.steps.find(
+    (step) => step.kind === "group" && step.id === groupId,
+  );
+  if (!group) return;
+  if (group.steps.at(-1)?.kind === "condition") {
+    window.alert("A condition must remain the final step in its group.");
+    return;
+  }
+  const dialog = document.createElement("dialog");
+  dialog.className = "reference-dialog process-step-dialog";
+  const groups = item.processFlow.steps.filter((step) => step.kind === "group");
+  const groupOptions = groups
+    .map((candidate) => `<option value="${escapeHTML(candidate.id)}">${escapeHTML(candidate.label)}</option>`)
+    .join("");
+  const targetReferences = executableFlowSteps(item.processFlow.steps)
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.target)
+    .map(({ step, index }) => ({
+      index,
+      label: `${step.kind} · ${step.target.description || step.id}`,
+    }));
+  const types = [
+    "navigate", "click", "input", "select", "key", "hover", "scroll",
+    "upload", "wait", "assert", "condition", "openTab", "switchTab",
+    "closeTab", "dialog", "extract", "script",
+  ];
+  dialog.innerHTML = `<form class="reference-editor process-step-editor">
+    <h2>Add step to ${escapeHTML(group.label)}</h2>
+    <label>Step type<select name="kind">${types.map((kind) => `<option value="${kind}">${kind}</option>`).join("")}</select></label>
+    <label>Label<input name="label" maxlength="255"></label>
+    <label>Observed target<select name="targetRef"><option value="">Select an observed element</option>${targetReferences.map((target) => `<option value="${target.index}">${escapeHTML(target.label)}</option>`).join("")}</select></label>
+    <label>URL<input name="url" type="url"></label>
+    <label>Value<input name="value"></label>
+    <label>Mark input as secret<input name="secret" type="checkbox"></label>
+    <label>Key<input name="key"></label>
+    <label>Wait type<select name="waitCondition"><option value="timeout">timeout</option><option value="userOperation">user operation</option><option value="element">element present</option><option value="networkIdle">network idle</option></select></label>
+    <label>Wait time (ms)<input name="ms" type="number" min="0" value="1000"></label>
+    <label>User operation prompt<input name="prompt" value="Complete the operation, then continue."></label>
+    <label>Condition check<select name="assertionKind"><option value="visible">visible</option><option value="hidden">hidden</option><option value="text">text</option><option value="value">value</option><option value="count">count</option></select></label>
+    <label>Expected value<input name="expected"></label>
+    <label>True group<select name="trueGroupId"><option value="">End branch</option>${groupOptions}</select></label>
+    <label>False group<select name="falseGroupId"><option value="">End branch</option>${groupOptions}</select></label>
+    <label>Tab index<input name="tabIndex" type="number" min="0" value="0"></label>
+    <label>Dialog action<select name="dialogAction"><option value="accept">accept</option><option value="dismiss">dismiss</option></select></label>
+    <label>Variable name<input name="variableName" placeholder="generated automatically"></label>
+    <label>Script / extraction name<input name="extra"></label>
+    <p class="process-step-error" role="alert"></p>
+    <div class="reference-dialog-actions"><button type="submit" class="btn">Add step</button><button type="button" class="btn secondary" data-step-cancel>Cancel</button></div>
+  </form>`;
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  const form = dialog.querySelector("form");
+  const errorLabel = dialog.querySelector(".process-step-error");
+  const secretField = form.elements.secret;
+  form.elements.targetRef.onchange = () => {
+    const choice = form.elements.targetRef.value;
+    const selected = choice ? targetReferences[Number(choice)]?.step.target : undefined;
+    const isPassword = selected?.observed?.attributes?.type?.toLowerCase() === "password";
+    if (isPassword) secretField.checked = true;
+    secretField.disabled = isPassword;
+  };
+  const close = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  dialog.querySelector("[data-step-cancel]").onclick = close;
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const values = form.elements;
+    const kind = values.kind.value;
+    const page = group.steps.at(-1)?.page;
+    const step = {
+      id: `manual_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      ...(values.label.value.trim() ? { label: values.label.value.trim() } : {}),
+      ...(page ? { page: structuredClone(page) } : {}),
+      kind,
+    };
+    const targetChoice = values.targetRef.value;
+    const selectedTarget = targetChoice
+      ? targetReferences[Number(targetChoice)]?.step.target
+      : undefined;
+    const target = selectedTarget ? structuredClone(selectedTarget) : undefined;
+    const secretInput =
+      values.secret.checked ||
+      target?.observed?.attributes?.type?.toLowerCase() === "password";
+    const requiredTarget = ["click", "input", "select", "hover", "upload", "extract", "assert", "condition"].includes(kind) ||
+      (kind === "wait" && values.waitCondition.value === "element");
+    if (requiredTarget && !target) {
+      errorLabel.textContent = "Select an element observed in a recorded step.";
+      return;
+    }
+    if (target) step.target = target;
+    if (kind === "navigate" || kind === "openTab") {
+      const url = values.url.value.trim();
+      if (kind === "navigate" && !url) {
+        errorLabel.textContent = "A URL is required for navigation.";
+        return;
+      }
+      if (url) step.url = url;
+    }
+    if (kind === "input" || kind === "select") {
+      if (!values.value.value && kind === "input") {
+        errorLabel.textContent = "Enter the value to parameterize.";
+        return;
+      }
+      if (kind === "input") {
+        const name = values.variableName.value.trim() || nextFlowVariableName(item.processFlow, "input");
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+            (item.processFlow.variables || []).some((variable) => variable.name === name)) {
+          errorLabel.textContent = "Use an unused variable identifier.";
+          return;
+        }
+        const secret = secretInput;
+        item.processFlow.variables ||= [];
+        item.processFlow.variables.push({
+          name,
+          type: secret ? "secret" : "string",
+          ...(secret ? {} : { defaultValue: values.value.value }),
+          secret,
+          source: "input",
+        });
+        step.value = `{{${name}}}`;
+        step.clear = true;
+      } else {
+        step.value = values.value.value;
+      }
+    }
+    if (kind === "key") {
+      if (!values.key.value) {
+        errorLabel.textContent = "Enter a key to press.";
+        return;
+      }
+      step.key = values.key.value;
+    }
+    if (kind === "wait") {
+      step.condition = values.waitCondition.value;
+      if (step.condition === "timeout") step.ms = Number(values.ms.value);
+      if (step.condition === "userOperation") step.prompt = values.prompt.value;
+    }
+    if (kind === "assert" || kind === "condition") {
+      const assertionKind = values.assertionKind.value;
+      const expected = values.expected.value;
+      if (assertionKind === "text") {
+        step.assertion = expected ? { kind: "text", equals: expected } : { kind: "text", contains: "" };
+        if (!expected) {
+          errorLabel.textContent = "Enter expected text.";
+          return;
+        }
+      } else if (assertionKind === "value") {
+        if (!expected) {
+          errorLabel.textContent = "Enter the expected value.";
+          return;
+        }
+        step.assertion = { kind: "value", equals: expected };
+      } else if (assertionKind === "count") {
+        const count = Number(expected);
+        if (!Number.isInteger(count) || count < 0) {
+          errorLabel.textContent = "Enter a non-negative integer count.";
+          return;
+        }
+        step.assertion = { kind: "count", equals: count };
+      } else {
+        step.assertion = { kind: assertionKind };
+      }
+      if (kind === "condition") {
+        if (values.trueGroupId.value) step.trueGroupId = values.trueGroupId.value;
+        if (values.falseGroupId.value) step.falseGroupId = values.falseGroupId.value;
+      }
+    }
+    if (kind === "switchTab") step.index = Number(values.tabIndex.value);
+    if (kind === "closeTab" && values.tabIndex.value !== "") step.index = Number(values.tabIndex.value);
+    if (kind === "dialog") step.action = values.dialogAction.value;
+    if (kind === "scroll") step.delta = { x: 0, y: Number(values.ms.value) };
+    if (kind === "upload") {
+      const name = nextFlowVariableName(item.processFlow, "file");
+      item.processFlow.variables ||= [];
+      item.processFlow.variables.push({ name, type: "file", secret: false, source: "input" });
+      step.files = [`{{${name}}}`];
+    }
+    if (kind === "extract") {
+      const name = values.extra.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        errorLabel.textContent = "Enter a valid extraction variable name.";
+        return;
+      }
+      step.into = name;
+      step.prop = "text";
+    }
+    if (kind === "script") {
+      if (!values.extra.value.trim()) {
+        errorLabel.textContent = "Enter script code.";
+        return;
+      }
+      step.code = values.extra.value;
+    }
+    group.steps.push(step);
+    try {
+      await persistProcessFlow(item);
+      close();
+      renderSummaryWorkspace();
+    } catch (error) {
+      errorLabel.textContent = error instanceof Error ? error.message : String(error);
+      item.processFlowError = errorLabel.textContent;
+    }
+  };
+  form.elements.kind.focus();
+}
+
 let processCanvasObserver;
 function bindProcessMap() {
   // Canvas 平移/缩放及分组操作仅属于当前视图；被选中的分组保存在录制项中，
@@ -3241,7 +4256,7 @@ function bindProcessMap() {
   const panel = $("summaryResultPanel"),
     canvas = panel?.querySelector(".process-canvas"),
     item = currentAssistantItem();
-  if (!canvas || !item) return;
+  if (!canvas || canvas.hidden || !item) return;
   const world = canvas.querySelector(".process-canvas-world");
   const placeGroupActions = () => {
     const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
@@ -3341,7 +4356,19 @@ function bindProcessMap() {
     }
     const record = e.target.closest("[data-group-record]"),
       remove = e.target.closest("[data-group-delete]"),
-      insert = e.target.closest("[data-group-insert]");
+      insert = e.target.closest("[data-group-insert]"),
+      addStep = e.target.closest("[data-group-add-step]"),
+      addAfter = e.target.closest("[data-group-add-after]");
+    if (addStep) {
+      e.preventDefault();
+      e.stopPropagation();
+      showManualStepEditor(item, addStep.dataset.groupAddStep);
+    }
+    if (addAfter) {
+      e.preventDefault();
+      e.stopPropagation();
+      void addProcessGroupAfter(item, addAfter.dataset.groupAddAfter);
+    }
     if (record) {
       e.preventDefault();
       e.stopPropagation();
@@ -3514,16 +4541,16 @@ async function beginGroupRecording(item, groupId, mode) {
   state.view = "browser";
   while (state.browserTabs.length > 1) {
     const extra = state.browserTabs[state.browserTabs.length - 1];
-    await F.browser.closeTab(extra.nativeId || extra.id);
+    await window.flowlink.browser.closeTab(extra.nativeId || extra.id);
     state.browserTabs.pop();
   }
   state.activeBrowserTab = state.browserTabs[0].id;
-  await F.browser.switchTab("browser");
+  await window.flowlink.browser.switchTab("browser");
   const page = activeBrowserPage();
   let targetUrl = item.url || "";
   if (item.flowFile) {
     try {
-      const flow = await F.flow.load(item.flowFile);
+      const flow = await window.flowlink.flow.load(item.flowFile);
       targetUrl = flow?.meta?.env?.startUrl || targetUrl;
     } catch {}
   }
@@ -3552,7 +4579,7 @@ async function beginGroupRecording(item, groupId, mode) {
   renderRecordingWorkspace();
   await startBrowserRecording();
 }
-function finishGroupRecording(state, pending, item) {
+async function finishGroupRecording(state, pending, item) {
   // 同步替换或插入步骤、详情和截图范围，再根据更新后的扁平步骤序列重建分组及测试 Flow 状态。
   const group = ensureProcessGroups(item).find((g) => g.id === pending.groupId);
   if (!group) return;
@@ -3570,6 +4597,65 @@ function finishGroupRecording(state, pending, item) {
                   : "",
           )
           .filter(Boolean);
+  if (item.processFlow) {
+    const groupIndex = item.processFlow.steps.findIndex(
+      (step) => step.kind === "group" && step.id === pending.groupId,
+    );
+    if (groupIndex >= 0 && steps.length) {
+      const recordedFlowSteps = Array.isArray(pending.recordedFlowSteps)
+        ? pending.recordedFlowSteps
+        : (pending.recordedDetails || []).map((detail, index) =>
+            stepDetailToFlowStep(
+              detail,
+              `rerecorded-${Date.now()}-${index}`,
+              (Number(detail.tab) || 1) - 1,
+            ),
+          );
+      const oldGroup = item.processFlow.steps[groupIndex];
+      let position = group.start;
+      if (pending.groupMode === "replace") {
+        oldGroup.steps = recordedFlowSteps;
+      } else {
+        const after = pending.groupMode === "after";
+        const newGroup = {
+          kind: "group",
+          id: `group_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+          label: `${after ? "After" : "Before"} ${oldGroup.label}`,
+          steps: recordedFlowSteps,
+        };
+        item.processFlow.steps.splice(groupIndex + (after ? 1 : 0), 0, newGroup);
+        if (after) position += group.count;
+      }
+      if (pending.media) {
+        const screenshots = item.media?.screenshots || [];
+        const inserted = pending.media.screenshots || [];
+        const replacedCount = pending.groupMode === "replace" ? group.count : 0;
+        const updated = [
+          ...screenshots.slice(0, position),
+          ...inserted,
+          ...screenshots.slice(position + replacedCount),
+        ];
+        item.media = { ...(item.media || {}), screenshots: updated };
+      }
+      try {
+        await persistProcessFlow(item);
+      } catch (error) {
+        item.processFlowError = error instanceof Error ? error.message : String(error);
+        console.error("[process] Unable to save re-recorded group:", error);
+      }
+      const currentGroups = ensureProcessGroups(item);
+      const selected = currentGroups.find((candidate) => candidate.start <= position && position < candidate.start + candidate.count);
+      item.selectedGroup = selected?.id || item.processFlow.steps[0]?.id || null;
+    }
+    item.resultTab = "Process";
+    state.focused = item.id;
+    state.view = "analysis";
+    state.stage = "done";
+    state.pending = null;
+    renderRecordingWorkspace();
+    if (window.flowlink?.browser?.hide) window.flowlink.browser.hide();
+    return;
+  }
   if (steps.length) {
     ensureStepDetails(item);
     let position;
@@ -3639,6 +4725,40 @@ function finishGroupRecording(state, pending, item) {
 }
 
 async function deleteProcessGroup(item, groupId) {
+  if (item.processFlow) {
+    const groups = item.processFlow.steps.filter((step) => step.kind === "group");
+    const groupIndex = item.processFlow.steps.findIndex(
+      (step) => step.kind === "group" && step.id === groupId,
+    );
+    if (groupIndex < 0) return;
+    if (groups.length <= 1) {
+      window.alert("A Flow must keep at least one group.");
+      return;
+    }
+    if (
+      !(await confirmWorkspaceAction(
+        `Delete group “${groups.find((group) => group.id === groupId)?.label}” and its steps? Branches pointing to it will end at that branch.`,
+      ))
+    )
+      return;
+    item.processFlow.steps.splice(groupIndex, 1);
+    for (const group of item.processFlow.steps) {
+      if (group.kind !== "group") continue;
+      const last = group.steps.at(-1);
+      if (last?.kind !== "condition") continue;
+      if (last.trueGroupId === groupId) delete last.trueGroupId;
+      if (last.falseGroupId === groupId) delete last.falseGroupId;
+    }
+    item.selectedGroup = null;
+    try {
+      await persistProcessFlow(item);
+      renderSummaryWorkspace();
+    } catch (error) {
+      item.processFlowError = error instanceof Error ? error.message : String(error);
+      renderSummaryWorkspace();
+    }
+    return;
+  }
   const group = ensureProcessGroups(item).find((g) => g.id === groupId);
   if (!group) return;
   if (
@@ -3995,15 +5115,6 @@ async function stopRecordingMedia(state) {
   state.mediaCapture = null;
   return { videoURL, screenshots: media.screenshots };
 }
-function recordingMediaMarkup(item) {
-  const media = item?.media || {},
-    screenshots = media.screenshots || [];
-  const poster = media.posterFile
-    ? `file:///${String(media.posterFile).replace(/\\/g, "/")}`
-    : screenshots[0]?.image || "";
-  return `<div class="recording-media"><section class="recording-video">${media.videoURL ? `<video controls playsinline preload="metadata" aria-label="${escapeHTML(item?.name || "Recording")} video" src="${escapeHTML(media.videoURL)}"></video>` : poster ? `<div class="recording-frame-preview"><img src="${escapeHTML(poster)}" alt="${escapeHTML(item?.name || "Recording")} poster"><span>Recorded video frames</span></div>` : `<div class="recording-frame-preview recording-frame-empty">No recorded video frames found</div>`}<div class="recording-media-name">${escapeHTML(item?.name || "Recording")}${media.videoURL ? ".webm" : " - frame recording"}</div></section><div class="recording-screenshots">${screenshots.map((file) => `<button type="button" class="recording-screenshot-file" data-screenshot-zoom="${escapeHTML(file.image)}" aria-label="Zoom ${escapeHTML(file.name)}"><img src="${file.image}" alt="${escapeHTML(file.name)}"><span>${escapeHTML(file.name)}</span></button>`).join("")}</div></div>`;
-}
-
 // 使用原生指针和键盘调整尺寸，不额外添加布局标签或图标。
 let workspaceResizeObserver;
 function workspaceWidthBounds(layout) {

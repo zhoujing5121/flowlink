@@ -76,6 +76,9 @@ export function renderStep(step: Step, vars: Record<string, string>): Step {
 				clone.promptText = renderTemplateValue(clone.promptText, vars)
 			}
 			break
+		case 'wait':
+			if (clone.prompt !== undefined) clone.prompt = renderTemplateValue(clone.prompt, vars)
+			break
 		case 'group':
 			clone.steps = clone.steps.map((s) => renderStep(s, vars))
 			break
@@ -91,7 +94,7 @@ export function renderStep(step: Step, vars: Record<string, string>): Step {
 		}
 	}
 
-	if (clone.kind === 'assert') {
+	if (clone.kind === 'assert' || clone.kind === 'condition') {
 		const assertion = clone.assertion
 		if (assertion.kind === 'text') {
 			clone.assertion = {

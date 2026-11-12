@@ -1,0 +1,15 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "custom": {
+      "name": "Custom Provider",
+      "baseUrl": "https://your-provider.example/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "your-model-id"
+        }
+      ]
+    }
+  }
+}

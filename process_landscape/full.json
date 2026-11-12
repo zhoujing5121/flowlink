@@ -1,0 +1,3688 @@
+[
+  {
+    "label": "S2C – Source to Contract, incl. Performance Expert Services",
+    "children": [
+      {
+        "label": "SC0 Organizational Development",
+        "children": [
+          {
+            "label": "SC0 Organizational Development",
+            "children": [
+              {
+                "label": "SC0.01 Integration new entitie...",
+                "children": []
+              },
+              {
+                "label": "SC0.02 De-Integration of entit...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "SC1 Demand Management",
+        "children": [
+          {
+            "label": "SC1 Demand Management",
+            "children": [
+              {
+                "label": "SC1.01 Demand Management",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "SC2 Sourcing strategy",
+        "children": [
+          {
+            "label": "SC2.10 Contract Management",
+            "children": [
+              {
+                "label": "SC2.11 Contract Template Manag...",
+                "children": []
+              },
+              {
+                "label": "SC2.12 Contract Lifecycle Mana...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SC2.20 Supplier Management",
+            "children": [
+              {
+                "label": "SC2.21 Supplier Performance Ma...",
+                "children": []
+              },
+              {
+                "label": "SC2.22 Supplier Mentor Process",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SC2.30 Material Field Manageme...",
+            "children": [
+              {
+                "label": "SC2.31 Material Field Manageme...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "SC3 Sourcing Management",
+        "children": [
+          {
+            "label": "SC3 Sourcing Management",
+            "children": [
+              {
+                "label": "SC3.01 Sourcing Management",
+                "children": []
+              },
+              {
+                "label": "SC3.02 Complaint-/Claims Manag...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RP2 Fraud & Error Prevention S...",
+            "children": [
+              {
+                "label": "RP2.01 Supplier Master Data Fr...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "MP1 Supplier Master Data Maint...",
+            "children": [
+              {
+                "label": "MP1.02 Supplier Change (A Segm...",
+                "children": []
+              },
+              {
+                "label": "MP1.03 Supplier Change (B Segm...",
+                "children": []
+              },
+              {
+                "label": "MP1.04 Supplier Change (M Segm...",
+                "children": []
+              },
+              {
+                "label": "MP1.05 Message Output Conditio...",
+                "children": []
+              },
+              {
+                "label": "MP1.06 Supplier Mass Maintenan...",
+                "children": []
+              },
+              {
+                "label": "i-Source Supplier Master Data ...",
+                "children": []
+              },
+              {
+                "label": "MP1.01 Supplier Creation (A+B+...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SC Ensure Service Delivery",
+            "children": [
+              {
+                "label": "SC Ensure Service Delivery",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "SC4 Additional S2C Services (u...",
+        "children": [
+          {
+            "label": "SC4.1 Sustainable Disposal Man...",
+            "children": [
+              {
+                "label": "SC4.11 Scrap Sales Negotiation",
+                "children": []
+              },
+              {
+                "label": "SC4.12 Sales Order for Scrap S...",
+                "children": []
+              },
+              {
+                "label": "SC4.13 Obsoletes Sales Negotia...",
+                "children": []
+              },
+              {
+                "label": "SC4.14 Asset Sale",
+                "children": []
+              },
+              {
+                "label": "SC4.15 Toolings'Disposal",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "P2P – Procure to Pay",
+    "children": [
+      {
+        "label": "P2O",
+        "children": [
+          {
+            "label": "ENx Enablers and Support",
+            "children": [
+              {
+                "label": "ENx.02 OPEX / Experts",
+                "children": []
+              },
+              {
+                "label": "ENx.01 Leadership",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "GNx General",
+            "children": [
+              {
+                "label": "GNx.01 Additional services wit...",
+                "children": []
+              },
+              {
+                "label": "GNx.03 Premium",
+                "children": []
+              },
+              {
+                "label": "GNx.02 Additional services wit...",
+                "children": []
+              },
+              {
+                "label": "GNx.04 Sourcing on Demand",
+                "children": []
+              },
+              {
+                "label": "GNx.05 Procure Pal",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "MP1 Material Master Data",
+            "children": [
+              {
+                "label": "MP1.03 MMD GMMC processing",
+                "children": []
+              },
+              {
+                "label": "MP1.01 MMD Workon processing",
+                "children": []
+              },
+              {
+                "label": "MP1.05 MMD 2nd level support (...",
+                "children": []
+              },
+              {
+                "label": "MP1.04 MMD Workflow processing",
+                "children": []
+              },
+              {
+                "label": "MP1.02 MMD Pilum",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "MP2 e-Catalogue Management",
+            "children": [
+              {
+                "label": "MP2.01 eCat Competence center",
+                "children": []
+              },
+              {
+                "label": "MP2.03 eCat 2nd level support ...",
+                "children": []
+              },
+              {
+                "label": "MP2.02 eCat Workflow Processin...",
+                "children": []
+              },
+              {
+                "label": "MP2.04 eCat PO Changes (PO Cha...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "PO1 PO Creation",
+            "children": [
+              {
+                "label": "PO1.01 POC Creation + Clarific...",
+                "children": []
+              },
+              {
+                "label": "PO1.04 Ordering Center Workflo...",
+                "children": []
+              },
+              {
+                "label": "PO1.03 POC 2nd level support (...",
+                "children": []
+              },
+              {
+                "label": "PO1.02 PO Change App",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "A2A",
+        "children": [
+          {
+            "label": "AB1 Intercompany Charging",
+            "children": [
+              {
+                "label": "AB1.01 Charging without Billin...",
+                "children": []
+              },
+              {
+                "label": "AB1.03 Invoice-Credit Note Bil...",
+                "children": []
+              },
+              {
+                "label": "AB1.04 MCR Charging",
+                "children": []
+              },
+              {
+                "label": "AB1.05 Request for Charging wi...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "AB2 eIntrace",
+            "children": [
+              {
+                "label": "AB2.01 eIntrace Application​",
+                "children": []
+              },
+              {
+                "label": "AB2.02 EIntrace Transfer​",
+                "children": []
+              },
+              {
+                "label": "AB2.03 eIntrace Monitoring​",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "AB3 Invoice Verification",
+            "children": [
+              {
+                "label": "AB3.01 Invoice Posting",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "AB4 Dispute Management",
+            "children": [
+              {
+                "label": "AB4.01 Credit Note Process​",
+                "children": []
+              },
+              {
+                "label": "AB4.02 Invoice/ Credit Note Re...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "AB5 Payment & Clearing",
+            "children": [
+              {
+                "label": "AB5.01 Payment Advice Processi...",
+                "children": []
+              },
+              {
+                "label": "AB5.02 Netting",
+                "children": []
+              },
+              {
+                "label": "AB5.03 Inhouse Cash Netting Pr...",
+                "children": []
+              },
+              {
+                "label": "AB5.04 Inhouse Cash Bank State...",
+                "children": []
+              },
+              {
+                "label": "AB5.05 Payment supporting Docu...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "AB6 Closing & Reporting",
+            "children": [
+              {
+                "label": "AB6.01 Invoice Reconciliation ...",
+                "children": []
+              },
+              {
+                "label": "AB6.02 Reports​",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "ABx Affiliate Business (A2A)",
+            "children": [
+              {
+                "label": "ABx.01 Accounts Reconciliation",
+                "children": []
+              },
+              {
+                "label": "ABx.02 Dispute / Escalation ma...",
+                "children": []
+              },
+              {
+                "label": "ABx.03 General process and mee...",
+                "children": []
+              },
+              {
+                "label": "ABx.04 KPIs related",
+                "children": []
+              },
+              {
+                "label": "ABx.02 Billing&Scope deviation",
+                "children": []
+              },
+              {
+                "label": "ABx.03 Disput Management",
+                "children": []
+              },
+              {
+                "label": "ABx.04 Additional Service",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "I2P",
+        "children": [
+          {
+            "label": "IP1 Invoice Receipt",
+            "children": [
+              {
+                "label": "IP1.01 Non-digital Incoming Do...",
+                "children": []
+              },
+              {
+                "label": "IP1.02 Digital Incoming Docume...",
+                "children": []
+              },
+              {
+                "label": "IP1.03 Image Recognition",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "IP2 Invoice Verification & Pos...",
+            "children": [
+              {
+                "label": "IP2.01 Invoices with PO",
+                "children": []
+              },
+              {
+                "label": "IP2.02 Invoices without PO and...",
+                "children": []
+              },
+              {
+                "label": "IP2.03 Recurring Payments",
+                "children": []
+              },
+              {
+                "label": "IP2.04 Batch Input Processing",
+                "children": []
+              },
+              {
+                "label": "IP2.05 Partial/Down Payments",
+                "children": []
+              },
+              {
+                "label": "IP2.06 Non-Travel related Expe...",
+                "children": []
+              },
+              {
+                "label": "IP2.07 Returns without Self-bi...",
+                "children": []
+              },
+              {
+                "label": "IP2.08 Returns with ERS Self-b...",
+                "children": []
+              },
+              {
+                "label": "IP2.09 ERS Process with Self-b...",
+                "children": []
+              },
+              {
+                "label": "IP2.10 Consignment without Sel...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "IP3 Closing & Reporting",
+            "children": [
+              {
+                "label": "IP3.01 Accrued Liabilities (fo...",
+                "children": []
+              },
+              {
+                "label": "IP3.02 Balance confirmation",
+                "children": []
+              },
+              {
+                "label": "IP3.03 Goods Receipt (GR) / In...",
+                "children": []
+              },
+              {
+                "label": "IP3.04 GR / IR reclassificatio...",
+                "children": []
+              },
+              {
+                "label": "IP3.05 Creditor / Debitor recl...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "IP4 Special Topics",
+            "children": [
+              {
+                "label": "IP4.01 General Inquiries",
+                "children": []
+              },
+              {
+                "label": "IP4.02 Dunning/vendor invoice ...",
+                "children": []
+              },
+              {
+                "label": "IP4.03 Document Retrieval",
+                "children": []
+              },
+              {
+                "label": "IP4.04 Money return flow",
+                "children": []
+              },
+              {
+                "label": "IP4.05 Entity / Country Specif...",
+                "children": []
+              },
+              {
+                "label": "IP4.06 Accounts Payable (AP) w...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "ENx Enablers and Support",
+            "children": [
+              {
+                "label": "ENx.01 Management",
+                "children": []
+              },
+              {
+                "label": "ENx.02 OPEX",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "IPx Invoice-to-Pay (I2P)",
+            "children": [
+              {
+                "label": "IPx.01 Accounts Reconciliation",
+                "children": []
+              },
+              {
+                "label": "IPx.02 Dispute / Escalation ma...",
+                "children": []
+              },
+              {
+                "label": "IPx.03 General process and mee...",
+                "children": []
+              },
+              {
+                "label": "IPx.04 KPIs related",
+                "children": []
+              },
+              {
+                "label": "IPx.05 Payment process",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "GNx General",
+            "children": [
+              {
+                "label": "GNx.01 Additional services wit...",
+                "children": []
+              },
+              {
+                "label": "GNx.02 Additional services wit...",
+                "children": []
+              },
+              {
+                "label": "GNx.03 Audit activities",
+                "children": []
+              },
+              {
+                "label": "GNx.04 Automation and digitali...",
+                "children": []
+              },
+              {
+                "label": "GNx.05 MDM",
+                "children": []
+              },
+              {
+                "label": "GNx.06 Projects",
+                "children": []
+              },
+              {
+                "label": "GNx.07 System testing",
+                "children": []
+              },
+              {
+                "label": "GNx.08 TAX / VAT",
+                "children": []
+              },
+              {
+                "label": "GNx.09 Quality & Incident Mana...",
+                "children": []
+              },
+              {
+                "label": "GNx.10 Training & documentatio...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "S2D – Source to Deliver",
+    "children": [
+      {
+        "label": "PAS-SD2 Warehouse",
+        "children": [
+          {
+            "label": "SD2.03 BSW operations",
+            "children": [
+              {
+                "label": "SD2.03 BSW operations",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD2.05 Rollout WMS",
+            "children": [
+              {
+                "label": "SD2.05 Rollout WMS",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD2.02 Purchase Price Analysis...",
+            "children": [
+              {
+                "label": "SD2.02 Purchase Price Analysis...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD2.01 Footprint",
+            "children": [
+              {
+                "label": "SD2.01 Footprint",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD2.04 Intralogistics services",
+            "children": [
+              {
+                "label": "SD2.04 Intralogistics services",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD2.06 EWM life cycle manageme...",
+            "children": [
+              {
+                "label": "SD2.06 EWM life cycle manageme...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "PAS-SD3 Transport",
+        "children": [
+          {
+            "label": "SD3.04 Freight Cost Clearing",
+            "children": [
+              {
+                "label": "SD3.04 Freight Cost Clearing",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD3.01 & 02 Transport Core (NW...",
+            "children": [
+              {
+                "label": "NWD / NWP",
+                "children": []
+              },
+              {
+                "label": "Transport Core - Others",
+                "children": []
+              },
+              {
+                "label": "LSPM",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD3.03 Transport Operations in...",
+            "children": [
+              {
+                "label": "Operational Service EMEA",
+                "children": []
+              },
+              {
+                "label": "Operational Service Others (Da...",
+                "children": []
+              },
+              {
+                "label": "Operational Service APAC, NA, ...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "PAS-SD4 Foreign Trade",
+        "children": [
+          {
+            "label": "SD4.01 Import Customs",
+            "children": [
+              {
+                "label": "Import Operation",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. FT Expert Services EU",
+            "children": [
+              {
+                "label": "SD4. FT Expert Services EU",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. FT Trade Program Manageme...",
+            "children": [
+              {
+                "label": "SD4. FT Trade Program Manageme...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. FT special customs proced...",
+            "children": [
+              {
+                "label": "SD4. FT special customs proced...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4.02 Export Customs",
+            "children": [
+              {
+                "label": "Export Operation",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. additional / new services...",
+            "children": [
+              {
+                "label": "SD4. additional / new services...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4.03 Trade agreement",
+            "children": [
+              {
+                "label": "FTA and Drawback",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. PSD4 process and IT manag...",
+            "children": [
+              {
+                "label": "SD4. PSD4 process and IT manag...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. FT Expert Services and sp...",
+            "children": [
+              {
+                "label": "SD4. FT Expert Services and sp...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD4. FT Expert Services IN",
+            "children": [
+              {
+                "label": "SD4. FT Expert Services IN",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "PAS-SD6 Planning & digitalizat...",
+        "children": [
+          {
+            "label": "SD6.02 Experts incl Consulting",
+            "children": [
+              {
+                "label": "SD6.02 Experts incl Consulting",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD6.01 Planning as a service",
+            "children": [
+              {
+                "label": "PaaS: PTB",
+                "children": []
+              },
+              {
+                "label": "PaaS: Source/material planning",
+                "children": []
+              },
+              {
+                "label": "PaaS: Others",
+                "children": []
+              },
+              {
+                "label": "PaaS: FC/customer planning",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD6.02 PSD6 incl. PD-Orga",
+            "children": [
+              {
+                "label": "SD6.02 PSD6 incl. PD-Orga",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD6 Supplier Onboarding & Cons...",
+            "children": [
+              {
+                "label": "SD6 Supplier Onboarding & Cons...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "PAS-SD5 Packaging",
+        "children": [
+          {
+            "label": "SD5.02 Empties management",
+            "children": [
+              {
+                "label": "SD5.02 Empties management",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "SD5.01 Packaging design",
+            "children": [
+              {
+                "label": "SD5.01 Packaging design",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "B2C – Bill to Cash",
+    "children": [
+      {
+        "label": "BC1 Credit Management",
+        "children": [
+          {
+            "label": "CM - Credit Worthiness Assessm...",
+            "children": [
+              {
+                "label": "CM - Credit Worthiness Assessm...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CM - Credit Limit Calculation ...",
+            "children": [
+              {
+                "label": "CM - Credit Limit Calculation ...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CM - Credit Limit Maintenance",
+            "children": [
+              {
+                "label": "CM - Credit Limit Maintenance",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CM - Credit Management Monitor...",
+            "children": [
+              {
+                "label": "CM - Credit Management Monitor...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CM - Release of Blocked Orders...",
+            "children": [
+              {
+                "label": "CM - Release of Blocked Orders...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CM - Payment Safeguarding",
+            "children": [
+              {
+                "label": "CM - Payment Safeguarding",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "BC2 Billing",
+        "children": [
+          {
+            "label": "BL - Identify Billing Error",
+            "children": [
+              {
+                "label": "BL - Identify Billing Error",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Resolve Billing Error",
+            "children": [
+              {
+                "label": "BL - Resolve Billing Error",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Manual Billing",
+            "children": [
+              {
+                "label": "BL - Manual Billing",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Validate Order & Issue In...",
+            "children": [
+              {
+                "label": "BL - Validate Order & Issue In...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Print & send paper docume...",
+            "children": [
+              {
+                "label": "BL - Print & send paper docume...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Issue & send digital docu...",
+            "children": [
+              {
+                "label": "BL - Issue & send digital docu...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "BL - Portal Upload (Customer/A...",
+            "children": [
+              {
+                "label": "BL - Portal Upload (Customer/A...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "BC3 Receivables Management",
+        "children": [
+          {
+            "label": "RM - Monitor Open Items",
+            "children": [
+              {
+                "label": "RM - Monitor Open Items",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Analyze & Contact Debitor",
+            "children": [
+              {
+                "label": "RM - Analyze & Contact Debitor",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Dispute Management: Hand ...",
+            "children": [
+              {
+                "label": "RM - Dispute Management: Hand ...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Dispute Management: Coord...",
+            "children": [
+              {
+                "label": "RM - Dispute Management: Coord...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Standard Dunning",
+            "children": [
+              {
+                "label": "RM - Standard Dunning",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Interest Calculation",
+            "children": [
+              {
+                "label": "RM - Interest Calculation",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RM - Legal Dunning",
+            "children": [
+              {
+                "label": "RM - Legal Dunning",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "BC4 Cash Application",
+        "children": [
+          {
+            "label": "CA - Cash Application: payment...",
+            "children": [
+              {
+                "label": "CA - Cash Application: payment...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Cash Application: request...",
+            "children": [
+              {
+                "label": "CA - Cash Application: request...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Cheque Registering",
+            "children": [
+              {
+                "label": "CA - Cheque Registering",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Bill of Exchange Register...",
+            "children": [
+              {
+                "label": "CA - Bill of Exchange Register...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Down Payment",
+            "children": [
+              {
+                "label": "CA - Down Payment",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Direct Debit: Master Data",
+            "children": [
+              {
+                "label": "CA - Direct Debit: Master Data",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Direct Debit: Processing",
+            "children": [
+              {
+                "label": "CA - Direct Debit: Processing",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Direct Debit: Automated P...",
+            "children": [
+              {
+                "label": "CA - Direct Debit: Automated P...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Direct Debit: Manual Paym...",
+            "children": [
+              {
+                "label": "CA - Direct Debit: Manual Paym...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "CA - Customer Refund: Processi...",
+            "children": [
+              {
+                "label": "CA - Customer Refund: Processi...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "B2P – Budget to Perform",
+    "children": [
+      {
+        "label": "FPA - Standard",
+        "children": [
+          {
+            "label": "Business Planning Process",
+            "children": [
+              {
+                "label": "Definition",
+                "children": []
+              },
+              {
+                "label": "Pre-steering",
+                "children": []
+              },
+              {
+                "label": "Planning (w/o subsequent plann...",
+                "children": []
+              },
+              {
+                "label": "Data collection and validation",
+                "children": []
+              },
+              {
+                "label": "Interpretation, Commenting",
+                "children": []
+              },
+              {
+                "label": "Management discussion",
+                "children": []
+              },
+              {
+                "label": "Cost announcements",
+                "children": []
+              },
+              {
+                "label": "Subsequent Planning",
+                "children": []
+              },
+              {
+                "label": "Analysis and approval of subse...",
+                "children": []
+              },
+              {
+                "label": "Other activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Forecasting",
+            "children": [
+              {
+                "label": "Definition",
+                "children": []
+              },
+              {
+                "label": "Pre-steering",
+                "children": []
+              },
+              {
+                "label": "Forecasting",
+                "children": []
+              },
+              {
+                "label": "Data collection and validation",
+                "children": []
+              },
+              {
+                "label": "Interpretation, Commenting",
+                "children": []
+              },
+              {
+                "label": "Management discussion",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Monthly Business Reporting",
+            "children": [
+              {
+                "label": "Definition",
+                "children": []
+              },
+              {
+                "label": "Prepare systems",
+                "children": []
+              },
+              {
+                "label": "Creation and submission of dat...",
+                "children": []
+              },
+              {
+                "label": "Data collection, consolidation...",
+                "children": []
+              },
+              {
+                "label": "Generation of standard reports",
+                "children": []
+              },
+              {
+                "label": "Preparation of management disc...",
+                "children": []
+              },
+              {
+                "label": "Management discussion",
+                "children": []
+              },
+              {
+                "label": "Other activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Business Analysis",
+            "children": [
+              {
+                "label": "Definition",
+                "children": []
+              },
+              {
+                "label": "Receive and coordinate request",
+                "children": []
+              },
+              {
+                "label": "Creation of the solution",
+                "children": []
+              },
+              {
+                "label": "Create report/ result",
+                "children": []
+              },
+              {
+                "label": "Interpretation, commenting",
+                "children": []
+              },
+              {
+                "label": "Management discussion",
+                "children": []
+              },
+              {
+                "label": "Other activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Cost Accounting",
+            "children": [
+              {
+                "label": "Define cost accounting",
+                "children": []
+              },
+              {
+                "label": "Maintain cost accounting",
+                "children": []
+              },
+              {
+                "label": "Execute Cost element and cost ...",
+                "children": []
+              },
+              {
+                "label": "Execute profitability analysis...",
+                "children": []
+              },
+              {
+                "label": "Inventory Valuation",
+                "children": []
+              },
+              {
+                "label": "Other activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Tax and Transferpricing",
+            "children": [
+              {
+                "label": "Transferprice calculation",
+                "children": []
+              },
+              {
+                "label": "Transferprice maintenance",
+                "children": []
+              },
+              {
+                "label": "Transferprice documentation",
+                "children": []
+              },
+              {
+                "label": "Tax Audit, Tax and Legal Respo...",
+                "children": []
+              },
+              {
+                "label": "Other Activities",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "FPA - Other Services",
+        "children": [
+          {
+            "label": "Government auditor request",
+            "children": [
+              {
+                "label": "Regular Requests",
+                "children": []
+              },
+              {
+                "label": "Ad-Hoc Requests",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Additional Financial Services ...",
+            "children": [
+              {
+                "label": "Finance Planning (C/FIF)",
+                "children": []
+              },
+              {
+                "label": "Banking and Finance Support (C...",
+                "children": []
+              },
+              {
+                "label": "Cash and Foreign Exchange (C/F...",
+                "children": []
+              },
+              {
+                "label": "Insurance (C/FII)",
+                "children": []
+              },
+              {
+                "label": "Cash Pooling management",
+                "children": []
+              },
+              {
+                "label": "Managing cash including cash o...",
+                "children": []
+              },
+              {
+                "label": "Functional Governance and hand...",
+                "children": []
+              },
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Support",
+            "children": [
+              {
+                "label": "Detective Controls (non R2S)",
+                "children": []
+              },
+              {
+                "label": "Monitoring Procedures",
+                "children": []
+              },
+              {
+                "label": "Compliance: Auditing support",
+                "children": []
+              },
+              {
+                "label": "Compliance: Attend internal an...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Projects and CIP",
+            "children": [
+              {
+                "label": "Data & Dashboards",
+                "children": []
+              },
+              {
+                "label": "S4 Rollout Projects",
+                "children": []
+              },
+              {
+                "label": "S4 design and build",
+                "children": []
+              },
+              {
+                "label": "global Projects - GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - C/FI",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS / non...",
+                "children": []
+              },
+              {
+                "label": "local automation-/ Projects (p...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other financial activities",
+            "children": [
+              {
+                "label": "General Inquiry",
+                "children": []
+              },
+              {
+                "label": "Consulting, Concept and Steeri...",
+                "children": []
+              },
+              {
+                "label": "non B2R activities",
+                "children": []
+              },
+              {
+                "label": "CTS Controlling",
+                "children": []
+              },
+              {
+                "label": "CTM Controlling",
+                "children": []
+              },
+              {
+                "label": "Warehouse Controlling",
+                "children": []
+              },
+              {
+                "label": "Process Design",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other non-financial activities",
+            "children": [
+              {
+                "label": "PUR activities (non i-Buy)",
+                "children": []
+              },
+              {
+                "label": "HR activities (non HRS)",
+                "children": []
+              },
+              {
+                "label": "LOG activities (non OSD)",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Region, Country, entity specif...",
+            "children": [
+              {
+                "label": "e.g. Welfare fund management",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "CLS - Standard",
+        "children": [
+          {
+            "label": "Accruals & Provisions",
+            "children": [
+              {
+                "label": "Personnel",
+                "children": []
+              },
+              {
+                "label": "Sales (incl. warranty)",
+                "children": []
+              },
+              {
+                "label": "Sundry other provisions",
+                "children": []
+              },
+              {
+                "label": "Tax & local GAAP provisions",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Valuations",
+            "children": [
+              {
+                "label": "Inventory Valuation",
+                "children": []
+              },
+              {
+                "label": "AP, AP, Banks - Foreign Curren...",
+                "children": []
+              },
+              {
+                "label": "Evaluate Financial Assets, Sha...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Account Reconciliation & Subst...",
+            "children": [
+              {
+                "label": "R/3 Sub-Ledger / GL Reconcilia...",
+                "children": []
+              },
+              {
+                "label": "R/3 FI/CO Reconciliation",
+                "children": []
+              },
+              {
+                "label": "R/3 ECPCA Transfers & Reconcil...",
+                "children": []
+              },
+              {
+                "label": "Cross System Reconciliations",
+                "children": []
+              },
+              {
+                "label": "Confirmations (Banks, AR, AP, ...",
+                "children": []
+              },
+              {
+                "label": "Substantiation",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Journal Entry Factory (Posting...",
+            "children": [
+              {
+                "label": "w/o Accruals & Provisions, Tax...",
+                "children": []
+              },
+              {
+                "label": "Journal Entry (/w 4EP - up- & ...",
+                "children": []
+              },
+              {
+                "label": "Journal Entry Intracompany (e....",
+                "children": []
+              },
+              {
+                "label": "Suspense Account Clearing (w/o...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Close Orchestration (Close-as-...",
+            "children": [
+              {
+                "label": "Period-End-Closing schedule (/...",
+                "children": []
+              },
+              {
+                "label": "Financial Statement activities...",
+                "children": []
+              },
+              {
+                "label": "Revenue Recognition (e.g., SAP...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Reporting",
+            "children": [
+              {
+                "label": "Group Reporting IFRS to C/FIR",
+                "children": []
+              },
+              {
+                "label": "Local GAAP Reporting",
+                "children": []
+              },
+              {
+                "label": "Local Institutions: Statistica...",
+                "children": []
+              },
+              {
+                "label": "Supervisory Board",
+                "children": []
+              },
+              {
+                "label": "Reconciliation Internal & Exte...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "External Audit Support / Reque...",
+            "children": [
+              {
+                "label": "Regular Requests",
+                "children": []
+              },
+              {
+                "label": "Ad-Hoc Requests",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Master Data (GL)",
+            "children": [
+              {
+                "label": "R/3 GL accounts",
+                "children": []
+              },
+              {
+                "label": "S/4 GL accounts",
+                "children": []
+              },
+              {
+                "label": "Balance Sheet Structure (local...",
+                "children": []
+              },
+              {
+                "label": "Other Master Data (e.g., inven...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Risk Management",
+            "children": [
+              {
+                "label": "Internal Audit Support (C/AU)",
+                "children": []
+              },
+              {
+                "label": "MP & DC",
+                "children": []
+              },
+              {
+                "label": "Additional Process Controls (e...",
+                "children": []
+              },
+              {
+                "label": "Archiving",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Interface Monitoring & GL Inta...",
+            "children": [
+              {
+                "label": "IDOC / AIF Monitoring",
+                "children": []
+              },
+              {
+                "label": "HR interfaces (e.g., payroll, ...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "CLS - Other Services",
+        "children": [
+          {
+            "label": "Governmental authorities reque...",
+            "children": [
+              {
+                "label": "Regular Requests",
+                "children": []
+              },
+              {
+                "label": "Ad-Hoc Requests",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Additional Financial Services ...",
+            "children": [
+              {
+                "label": "Finance Planning (C/FIF)",
+                "children": []
+              },
+              {
+                "label": "Banking and Finance Support (C...",
+                "children": []
+              },
+              {
+                "label": "Cash and Foreign Exchange (C/F...",
+                "children": []
+              },
+              {
+                "label": "Insurance (C/FII)",
+                "children": []
+              },
+              {
+                "label": "Managing cash including cash o...",
+                "children": []
+              },
+              {
+                "label": "Functional Governance and hand...",
+                "children": []
+              },
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Support",
+            "children": [
+              {
+                "label": "Detective Controls (non R2S)",
+                "children": []
+              },
+              {
+                "label": "Monitoring Procedures",
+                "children": []
+              },
+              {
+                "label": "Compliance: Auditing support",
+                "children": []
+              },
+              {
+                "label": "Compliance: Attend internal an...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Projects and CIP",
+            "children": [
+              {
+                "label": "Data & Dashboards",
+                "children": []
+              },
+              {
+                "label": "S4 Rollout Projects",
+                "children": []
+              },
+              {
+                "label": "S4 design and build",
+                "children": []
+              },
+              {
+                "label": "global Projects - GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - C/FI",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS / non...",
+                "children": []
+              },
+              {
+                "label": "local automation-/ Projects (p...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other financial activities",
+            "children": [
+              {
+                "label": "General Inquiry",
+                "children": []
+              },
+              {
+                "label": "Consulting, Concept and Steeri...",
+                "children": []
+              },
+              {
+                "label": "Process Design",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "CBS - Standard",
+        "children": [
+          {
+            "label": "Electronic Payment",
+            "children": [
+              {
+                "label": "Payment Cycle Management",
+                "children": []
+              },
+              {
+                "label": "Prep payment run",
+                "children": []
+              },
+              {
+                "label": "Set-up payment run parameters",
+                "children": []
+              },
+              {
+                "label": "Payment proposal validation",
+                "children": []
+              },
+              {
+                "label": "Execute final payment run",
+                "children": []
+              },
+              {
+                "label": "Approval",
+                "children": []
+              },
+              {
+                "label": "File Upload to Bank",
+                "children": []
+              },
+              {
+                "label": "Bank Confirmation",
+                "children": []
+              },
+              {
+                "label": "Payment Error handling",
+                "children": []
+              },
+              {
+                "label": "Regional Specific Payments e.g...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manual Payment",
+            "children": [
+              {
+                "label": "Manual Payment Request Evaluat...",
+                "children": []
+              },
+              {
+                "label": "Manual Payment data input in e...",
+                "children": []
+              },
+              {
+                "label": "Manual Payment Approval",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Petty Cash",
+            "children": [
+              {
+                "label": "Petty Cash",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Bank Management",
+            "children": [
+              {
+                "label": "Bank Account mgmt / confirmati...",
+                "children": []
+              },
+              {
+                "label": "Bank account statement process...",
+                "children": []
+              },
+              {
+                "label": "Bank Reconciliation",
+                "children": []
+              },
+              {
+                "label": "Management of power of attorne...",
+                "children": []
+              },
+              {
+                "label": "Regional Specific Services (e....",
+                "children": []
+              },
+              {
+                "label": "Bank on-/offboarding",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Expert Service",
+            "children": [
+              {
+                "label": "Global CBS Projects",
+                "children": []
+              },
+              {
+                "label": "Compliance Initiative",
+                "children": []
+              },
+              {
+                "label": "Local CBS Projects",
+                "children": []
+              },
+              {
+                "label": "Cunsulting",
+                "children": []
+              },
+              {
+                "label": "Smart Pay",
+                "children": []
+              },
+              {
+                "label": "Funds Transfer activities",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "CBS - Other Services",
+        "children": [
+          {
+            "label": "Governmental authorities reque...",
+            "children": [
+              {
+                "label": "Regular Requests",
+                "children": []
+              },
+              {
+                "label": "Ad-Hoc Requests",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Additional Financial Services ...",
+            "children": [
+              {
+                "label": "Finance Planning (C/FIF)",
+                "children": []
+              },
+              {
+                "label": "Banking and Finance Support (C...",
+                "children": []
+              },
+              {
+                "label": "Cash and Foreign Exchange (C/F...",
+                "children": []
+              },
+              {
+                "label": "Insurance (C/FII)",
+                "children": []
+              },
+              {
+                "label": "Cash Pooling management",
+                "children": []
+              },
+              {
+                "label": "Netting",
+                "children": []
+              },
+              {
+                "label": "Managing cash including cash o...",
+                "children": []
+              },
+              {
+                "label": "Functional Governance and hand...",
+                "children": []
+              },
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Support",
+            "children": [
+              {
+                "label": "Detective Controls (non R2S)",
+                "children": []
+              },
+              {
+                "label": "Monitoring Procedures",
+                "children": []
+              },
+              {
+                "label": "Compliance: Auditing support",
+                "children": []
+              },
+              {
+                "label": "Compliance: Attend internal an...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Projects and CIP",
+            "children": [
+              {
+                "label": "Data & Dashboards",
+                "children": []
+              },
+              {
+                "label": "S4 Rollout Projects",
+                "children": []
+              },
+              {
+                "label": "S4 design and build",
+                "children": []
+              },
+              {
+                "label": "global Projects - GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - C/FI",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS / non...",
+                "children": []
+              },
+              {
+                "label": "local automation-/ Projects (p...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other financial activities",
+            "children": [
+              {
+                "label": "General Inquiry",
+                "children": []
+              },
+              {
+                "label": "Consulting, Concept and Steeri...",
+                "children": []
+              },
+              {
+                "label": "non B2R activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other non-financial activities",
+            "children": [
+              {
+                "label": "PUR activities (non i-Buy)",
+                "children": []
+              },
+              {
+                "label": "HR activities (non HRS)",
+                "children": []
+              },
+              {
+                "label": "LOG activities (non OSD)",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Region, Country, entity specif...",
+            "children": [
+              {
+                "label": "e.g. Welfare fund management",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "FAMS - Standard",
+        "children": [
+          {
+            "label": "Masterdata",
+            "children": [
+              {
+                "label": "Asset master data creation",
+                "children": []
+              },
+              {
+                "label": "Asset master data change",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Acquisition & Capitalization",
+            "children": [
+              {
+                "label": "Validation of Shopping Cart",
+                "children": []
+              },
+              {
+                "label": "Cost Object Maintenance",
+                "children": []
+              },
+              {
+                "label": "Manual trigger capitalization ...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Disposition",
+            "children": [
+              {
+                "label": "Asset transfer within legal en...",
+                "children": []
+              },
+              {
+                "label": "Asset sale (incl. Sale between...",
+                "children": []
+              },
+              {
+                "label": "Asset scrapping (incl. Scrappi...",
+                "children": []
+              },
+              {
+                "label": "Asset split / merge",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Closing & Reporting",
+            "children": [
+              {
+                "label": "Posting Settlements",
+                "children": []
+              },
+              {
+                "label": "Asset Depreciation",
+                "children": []
+              },
+              {
+                "label": "Asset Account Reconciliations",
+                "children": []
+              },
+              {
+                "label": "Asset Year End Transactions",
+                "children": []
+              },
+              {
+                "label": "Asset Labelling",
+                "children": []
+              },
+              {
+                "label": "Asset Report",
+                "children": []
+              },
+              {
+                "label": "Credit Note Year After Capital...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Stocktaking",
+            "children": [
+              {
+                "label": "Asset stocktaking",
+                "children": []
+              },
+              {
+                "label": "Asset Inventory Difference",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Leasing",
+            "children": [
+              {
+                "label": "IFRS16 Leasing",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "FAMS - Other Services",
+        "children": [
+          {
+            "label": "Projects and CIP",
+            "children": [
+              {
+                "label": "Data & Dashboards",
+                "children": []
+              },
+              {
+                "label": "S4 Rollout Projects",
+                "children": []
+              },
+              {
+                "label": "S4 design and build",
+                "children": []
+              },
+              {
+                "label": "global Projects - GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS",
+                "children": []
+              },
+              {
+                "label": "global Projects - C/FI",
+                "children": []
+              },
+              {
+                "label": "global Projects - non GS / non...",
+                "children": []
+              },
+              {
+                "label": "local automation-/ Projects (p...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Other financial activities",
+            "children": [
+              {
+                "label": "General Inquiry",
+                "children": []
+              },
+              {
+                "label": "Consulting, Concept and Steeri...",
+                "children": []
+              },
+              {
+                "label": "non B2R activities",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "TAX - Standard",
+        "children": [
+          {
+            "label": "Direct taxes",
+            "children": [
+              {
+                "label": "TCE checks",
+                "children": []
+              },
+              {
+                "label": "Corporate income tax (preparat...",
+                "children": []
+              },
+              {
+                "label": "Withholding tax (preparation a...",
+                "children": []
+              },
+              {
+                "label": "Plastic tax (preparation and f...",
+                "children": []
+              },
+              {
+                "label": "Other tax returns (preparation...",
+                "children": []
+              },
+              {
+                "label": "Preparation and correspondence...",
+                "children": []
+              },
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Indirect taxes (e.g., VAT, GST...",
+            "children": [
+              {
+                "label": "TCE checks",
+                "children": []
+              },
+              {
+                "label": "Local Value-Added Tax (prepara...",
+                "children": []
+              },
+              {
+                "label": "Foreign Value-Added Tax (prepa...",
+                "children": []
+              },
+              {
+                "label": "Other tax returns (preparation...",
+                "children": []
+              },
+              {
+                "label": "Preparation and correspondence...",
+                "children": []
+              },
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Foreign trade",
+            "children": [
+              {
+                "label": "Intrastat (preparation and fil...",
+                "children": []
+              },
+              {
+                "label": "Extrastat (preparation and fil...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Tax special topics",
+            "children": [
+              {
+                "label": "Tax-related projects e.g., im...",
+                "children": []
+              },
+              {
+                "label": "Transfer prices",
+                "children": []
+              },
+              {
+                "label": "Consulting / Advicing",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Others",
+            "children": [
+              {
+                "label": "Others",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "S4 - Standard",
+        "children": [
+          {
+            "label": "S4 deploy",
+            "children": [
+              {
+                "label": "S4 deploy",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "S4 run and support",
+            "children": [
+              {
+                "label": "S4 run and support",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "R3 deploy and support",
+            "children": [
+              {
+                "label": "R3 deploy and support",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "H2R – Hire to Retire, incl. HR-Services & Travel-to Expenses",
+    "children": [
+      {
+        "label": "T2E",
+        "children": [
+          {
+            "label": "Post-trip",
+            "children": [
+              {
+                "label": "Reimburse Travel Expense",
+                "children": []
+              },
+              {
+                "label": "Process Expense Posting and Pa...",
+                "children": []
+              },
+              {
+                "label": "Process Receipt Scanning",
+                "children": []
+              },
+              {
+                "label": "Manage Posting, Payment and Cl...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Supporting Processes",
+            "children": [
+              {
+                "label": "Process support requests",
+                "children": []
+              },
+              {
+                "label": "Manage Change Requests",
+                "children": []
+              },
+              {
+                "label": "Manage Risk and Detective Cont...",
+                "children": []
+              },
+              {
+                "label": "Manage Complaint",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Pre-Trip",
+            "children": [
+              {
+                "label": "Credit Card maintenance",
+                "children": []
+              },
+              {
+                "label": "etap trip assessment",
+                "children": []
+              },
+              {
+                "label": "Visa application",
+                "children": []
+              },
+              {
+                "label": "Book Business Trip",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "On-trip",
+            "children": [
+              {
+                "label": "Modify and Cancel business tri...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Data Management",
+        "children": [
+          {
+            "label": "Update Employment Data",
+            "children": [
+              {
+                "label": "Update Employment Data",
+                "children": []
+              },
+              {
+                "label": "Manage Associate Inquiry",
+                "children": []
+              },
+              {
+                "label": "Manage Contract Change",
+                "children": []
+              },
+              {
+                "label": "Manage Employee Data Reporting...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-20 Update Employme...",
+                "children": []
+              },
+              {
+                "label": "Manage Associate Certificates",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Associate Inquiry",
+            "children": [
+              {
+                "label": "Manage Associate Inquiry",
+                "children": []
+              },
+              {
+                "label": "Create Associate Inquiry / Com...",
+                "children": []
+              },
+              {
+                "label": "Create Associate Inquiry or Co...",
+                "children": []
+              },
+              {
+                "label": "Provide Additional Information",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Associate Certificates",
+            "children": [
+              {
+                "label": "Manage Associate Certificates",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-110 Manage Employe...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Promotion and Demotion",
+            "children": [
+              {
+                "label": "Manage Promotion and Demotion",
+                "children": []
+              },
+              {
+                "label": "Manage Promotion",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-50 Manage Promotio...",
+                "children": []
+              },
+              {
+                "label": "Update Promotion and Demotion ...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Associate Data Reportin...",
+            "children": [
+              {
+                "label": "Manage Associate Data Reportin...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-130 Manage Employe...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Update Personal Data",
+            "children": [
+              {
+                "label": "Update Personal Data",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-10 Update Personal...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Site Access",
+            "children": [
+              {
+                "label": "Update Personal Data",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-10 Update Personal...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Payroll",
+        "children": [
+          {
+            "label": "Pre Payroll",
+            "children": [
+              {
+                "label": "Pre Payroll",
+                "children": []
+              },
+              {
+                "label": "Execute Pre-payroll Checks and...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-10-40 Pre-payroll Che...",
+                "children": []
+              },
+              {
+                "label": "Maintain Master Data for Payro...",
+                "children": []
+              },
+              {
+                "label": "Schedule and Set up Planning f...",
+                "children": []
+              },
+              {
+                "label": "Calculate and Maintain Movemen...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-10-30 Calculate and m...",
+                "children": []
+              },
+              {
+                "label": "PCC",
+                "children": []
+              },
+              {
+                "label": "Garnishment",
+                "children": []
+              },
+              {
+                "label": "Controls of contributions",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Recurring Activities",
+            "children": [
+              {
+                "label": "Recurring Activities",
+                "children": []
+              },
+              {
+                "label": "Manage Accruals",
+                "children": []
+              },
+              {
+                "label": "Test Payroll Systems (Quality ...",
+                "children": []
+              },
+              {
+                "label": "Reporting",
+                "children": []
+              },
+              {
+                "label": "Manage Document Archiving",
+                "children": []
+              },
+              {
+                "label": "Contracts",
+                "children": []
+              },
+              {
+                "label": "Unemployment certificates",
+                "children": []
+              },
+              {
+                "label": "Refund claim with Social Secur...",
+                "children": []
+              },
+              {
+                "label": "Manage MP and audit activities",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Run Payroll",
+            "children": [
+              {
+                "label": "Run Payroll and Create Pay-res...",
+                "children": []
+              },
+              {
+                "label": "Manage Additional and Off-cycl...",
+                "children": []
+              },
+              {
+                "label": "Produce Pay Slip",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-20-40 Run Payroll Che...",
+                "children": []
+              },
+              {
+                "label": "Execution and review",
+                "children": []
+              },
+              {
+                "label": "Run Payroll",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-20-10 Run Payroll / C...",
+                "children": []
+              },
+              {
+                "label": "Execute Payroll Checks and Con...",
+                "children": []
+              },
+              {
+                "label": "Wage type reporter in PH1 (to ...",
+                "children": []
+              },
+              {
+                "label": "Bank tranfers",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Post Payroll",
+            "children": [
+              {
+                "label": "Social Security Contribution",
+                "children": []
+              },
+              {
+                "label": "Execute Payments",
+                "children": []
+              },
+              {
+                "label": "Manage Document Archiving",
+                "children": []
+              },
+              {
+                "label": "Post Payroll",
+                "children": []
+              },
+              {
+                "label": "Execute Post-payroll Checks an...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-30-40 Post Payroll Ch...",
+                "children": []
+              },
+              {
+                "label": "Nominative social declaration",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-30-30 Execute Payroll...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-30-10 Execute Payment...",
+                "children": []
+              },
+              {
+                "label": "Execute Payroll Postings",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Time and Attendance Management",
+        "children": [
+          {
+            "label": "Evaluating and Validating Time",
+            "children": [
+              {
+                "label": "Evaluating and Validating Time",
+                "children": []
+              },
+              {
+                "label": "Request Payout of Time Account...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Recording of Movement Data",
+            "children": [
+              {
+                "label": "Recording of Movement Data",
+                "children": []
+              },
+              {
+                "label": "Manage Unplanned Absences",
+                "children": []
+              },
+              {
+                "label": "Correct Absence Entitlements",
+                "children": []
+              },
+              {
+                "label": "Manage Planned Short Term Abse...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Process Recurring Activities",
+            "children": [
+              {
+                "label": "Process Recurring Activities",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-40-30 Test Payroll sy...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-40-10 Manage accruals",
+                "children": []
+              },
+              {
+                "label": "HR-CP-50-40-40 Manage MP and a...",
+                "children": []
+              },
+              {
+                "label": "Maternity, injury, parental le...",
+                "children": []
+              },
+              {
+                "label": "SSF ticket management (daily d...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Time and Attendance Expert ser...",
+            "children": [
+              {
+                "label": "Application ownership and oper...",
+                "children": []
+              },
+              {
+                "label": "T&A System projects & digitali...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Assigning Master Data and Work...",
+            "children": [
+              {
+                "label": "Assigning Master Data and Work...",
+                "children": []
+              },
+              {
+                "label": "Set Up Time Accounts and Entit...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Trial run",
+            "children": [
+              {
+                "label": "Trial run",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Pre T&A",
+            "children": [
+              {
+                "label": "Quality check",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Onboarding",
+        "children": [
+          {
+            "label": "Manage Hiring",
+            "children": [
+              {
+                "label": "Manage Hire and Rehire",
+                "children": []
+              },
+              {
+                "label": "Create Employment Contract",
+                "children": []
+              },
+              {
+                "label": "Manage No-Show",
+                "children": []
+              },
+              {
+                "label": "Create Hiring and Rehiring Eve...",
+                "children": []
+              },
+              {
+                "label": "Reboarding (incl. HR Part)",
+                "children": []
+              },
+              {
+                "label": "Manage Return From Leave of Ab...",
+                "children": []
+              },
+              {
+                "label": "Initiate Leave of Absence",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-10-10 Create Employme...",
+                "children": []
+              },
+              {
+                "label": "Manage Hire Date Correction",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-70 Manage Temporar...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Preboarding Phase",
+            "children": [
+              {
+                "label": "Execute Pre-Day 1 Onboarding",
+                "children": []
+              },
+              {
+                "label": "HR-CP-70-10-10 Execute Pre-Day...",
+                "children": []
+              },
+              {
+                "label": "Verify Applicant Background",
+                "children": []
+              },
+              {
+                "label": "FR-Onboarding",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "First Day",
+            "children": [
+              {
+                "label": "Manage First Working Day",
+                "children": []
+              },
+              {
+                "label": "Manage Efiling",
+                "children": []
+              },
+              {
+                "label": "Distribute Encryption Key",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Transfer",
+            "children": [
+              {
+                "label": "Manage Transfer",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-40 Manage Transfer...",
+                "children": []
+              },
+              {
+                "label": "Create Transfer within Legal E...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-30 Manage Transfer...",
+                "children": []
+              },
+              {
+                "label": "Update Data for Transfer withi...",
+                "children": []
+              },
+              {
+                "label": "Manage Transfer between Legal ...",
+                "children": []
+              },
+              {
+                "label": "Manage Single Transfer between...",
+                "children": []
+              },
+              {
+                "label": "Manage Mass Transfer between L...",
+                "children": []
+              },
+              {
+                "label": "Create Transfer between Legal ...",
+                "children": []
+              },
+              {
+                "label": "Update Data for Transfer betwe...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "First Two Weeks",
+            "children": [
+              {
+                "label": "Manage Post-Day 1 Onboarding",
+                "children": []
+              },
+              {
+                "label": "HP-CP-70-10-30 Manage Post-Day...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Preparation of Onboarding Proc...",
+            "children": [
+              {
+                "label": "Preparation of Onboarding Proc...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Ongoing Onboarding and Closure",
+            "children": [
+              {
+                "label": "Manage Probation",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-60 Manage Probatio...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Recruiting",
+        "children": [
+          {
+            "label": "Recruiting Expert services",
+            "children": [
+              {
+                "label": "Consultance e.g. internal mobi...",
+                "children": []
+              },
+              {
+                "label": "Employer branding for corporat...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Selection",
+            "children": [
+              {
+                "label": "Select candidate",
+                "children": []
+              },
+              {
+                "label": "HR-CP-60-10-30 Select Candidat...",
+                "children": []
+              },
+              {
+                "label": "close recruiting process incl....",
+                "children": []
+              },
+              {
+                "label": "Close Recruiting Process",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Sourcing & Pre-Selection",
+            "children": [
+              {
+                "label": "Sourcing & Pre-Selection",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Initiating Recruiting",
+            "children": [
+              {
+                "label": "Initiating Recruiting",
+                "children": []
+              },
+              {
+                "label": "Create Job Requisition",
+                "children": []
+              },
+              {
+                "label": "Start Admission Process",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Sourcing and Pre-Selection",
+            "children": [
+              {
+                "label": "Sourcing and Pre-Selection",
+                "children": []
+              },
+              {
+                "label": "Conduct Active Sourcing",
+                "children": []
+              },
+              {
+                "label": "Perform Talent Search",
+                "children": []
+              },
+              {
+                "label": "Personnel Marketing / Attracti...",
+                "children": []
+              },
+              {
+                "label": "Support candidate and managers",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Occupational Employee Benefit ...",
+        "children": [
+          {
+            "label": "Retirement",
+            "children": [
+              {
+                "label": "Retirement",
+                "children": []
+              },
+              {
+                "label": "Administer Company Pension Pla...",
+                "children": []
+              },
+              {
+                "label": "Manage Retirement Payout",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Data Protection and Rnf...",
+            "children": [
+              {
+                "label": "Manage Retirement Payout",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Death and Disability",
+            "children": [
+              {
+                "label": "Death and Disability",
+                "children": []
+              },
+              {
+                "label": "Administer Life Insurance",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Fringe Benefits",
+        "children": [
+          {
+            "label": "Mobility Benefits",
+            "children": [
+              {
+                "label": "Mobility Benefits",
+                "children": []
+              },
+              {
+                "label": "Administer Bike Leasing",
+                "children": []
+              },
+              {
+                "label": "Renew Company Car",
+                "children": []
+              },
+              {
+                "label": "Invoices Car Controlling",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Service Awards",
+            "children": [
+              {
+                "label": "Administer Bosch Jubilee",
+                "children": []
+              },
+              {
+                "label": "Service Awards",
+                "children": []
+              },
+              {
+                "label": "HR-CP-40-50-10 Bosch Jubilee A...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Benefits Portfolio",
+            "children": [
+              {
+                "label": "Benefits Portfolio",
+                "children": []
+              },
+              {
+                "label": "HR-CP-40-30-10 Health Insuranc...",
+                "children": []
+              },
+              {
+                "label": "Update Benefit Enrollment",
+                "children": []
+              },
+              {
+                "label": "Claim Benefit",
+                "children": []
+              },
+              {
+                "label": "Manage Salary Advances",
+                "children": []
+              },
+              {
+                "label": "Manage Car Allowance",
+                "children": []
+              },
+              {
+                "label": "HR-CP-40-30-20 Life Insurance ...",
+                "children": []
+              },
+              {
+                "label": "Enroll Health Cash Plan",
+                "children": []
+              },
+              {
+                "label": "Process Compensation and Benef...",
+                "children": []
+              },
+              {
+                "label": "Enroll Health Care Plan",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Offboarding",
+        "children": [
+          {
+            "label": "Execute Termination",
+            "children": [
+              {
+                "label": "Execute Termination",
+                "children": []
+              },
+              {
+                "label": "Manage Termination - Voluntary",
+                "children": []
+              },
+              {
+                "label": "Manage Termination - Involunta...",
+                "children": []
+              },
+              {
+                "label": "Manage Termination - Death of ...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-40-10 Manage Terminat...",
+                "children": []
+              },
+              {
+                "label": "Manage Termination - Blue Coll...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-40-20 Manage Terminat...",
+                "children": []
+              },
+              {
+                "label": "Severance and final settlments",
+                "children": []
+              },
+              {
+                "label": "Manage Termination - Retiremen...",
+                "children": []
+              },
+              {
+                "label": "Execute Termination in System",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Manage Offboarding",
+            "children": [
+              {
+                "label": "HR-CP-70-30-10 Manage Offboard...",
+                "children": []
+              },
+              {
+                "label": "Manage Offboarding",
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Cash Compensation",
+        "children": [
+          {
+            "label": "One Time and Recognition Pay",
+            "children": [
+              {
+                "label": "Manage One Time Payments",
+                "children": []
+              },
+              {
+                "label": "Manage Recurring Payments and ...",
+                "children": []
+              },
+              {
+                "label": "Manage Reimbursements",
+                "children": []
+              },
+              {
+                "label": "Manage One Time Payments and D...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-90-40-10 Manage One Time...",
+                "children": []
+              },
+              {
+                "label": "Manage Reimbursement",
+                "children": []
+              },
+              {
+                "label": "HR-CP-20-30-80 Manage One Time...",
+                "children": []
+              },
+              {
+                "label": "One Time and Recognition Pay",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Incentive Schemes (STI and LTI...",
+            "children": [
+              {
+                "label": "Administer Incentive Payments",
+                "children": []
+              },
+              {
+                "label": "Calculate Incentive Payments",
+                "children": []
+              },
+              {
+                "label": "Forecast Incentive Payments",
+                "children": []
+              },
+              {
+                "label": "PO-CPrP",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Annual Salary Review (ASR) and...",
+            "children": [
+              {
+                "label": "Execute Salary Review",
+                "children": []
+              },
+              {
+                "label": "Administer Salary Review",
+                "children": []
+              },
+              {
+                "label": "ASR",
+                "children": []
+              },
+              {
+                "label": "Annual Salary Review (ASR) and...",
+                "children": []
+              },
+              {
+                "label": "Participate Yearly Salary Surv...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-90-10-60 Yearly Compensa...",
+                "children": []
+              },
+              {
+                "label": "Create and Distribute Annual S...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-90-10-30 Execute Salary ...",
+                "children": []
+              },
+              {
+                "label": "HR-CP-90-10-50 Administer Off ...",
+                "children": []
+              },
+              {
+                "label": "Individual salary changes",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "Career Banding and Job Evaluat...",
+            "children": [
+              {
+                "label": "HR-CP-90-50-10 Career Banding ...",
+                "children": []
+              },
+              {
+                "label": "Conduct Career Banding and Job...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "R2S – Risk to Secure",
+    "children": [
+      {
+        "label": "R2S",
+        "children": [
+          {
+            "label": "RS1 Data Protection and Inform...",
+            "children": [
+              {
+                "label": "RS1.01 ISP Legal Framework Pla...",
+                "children": []
+              },
+              {
+                "label": "RS1.02 ISP Legal Framework Imp...",
+                "children": []
+              },
+              {
+                "label": "RS1.03 ISP Control Monitoring ...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RS2 Access Management Service",
+            "children": [
+              {
+                "label": "RS2.01 Access Management Suppo...",
+                "children": []
+              },
+              {
+                "label": "RS2.02 Access Management Suppo...",
+                "children": []
+              }
+            ]
+          },
+          {
+            "label": "RS3 Risk Management Services",
+            "children": [
+              {
+                "label": "RS32 Recurring RM Services GS ...",
+                "children": []
+              },
+              {
+                "label": "RS32 Recurring RM Services GB",
+                "children": []
+              },
+              {
+                "label": "RS32.Recurring RM Services GS ...",
+                "children": []
+              },
+              {
+                "label": "RS32 Recurring RM Services GS...",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "Strategy and Service Portfolio Management",
+    "children": []
+  },
+  {
+    "label": "Key Account Management",
+    "children": []
+  },
+  {
+    "label": "Business Excellence",
+    "children": []
+  },
+  {
+    "label": "Finance and Controlling",
+    "children": []
+  },
+  {
+    "label": "Human Resource Management",
+    "children": []
+  },
+  {
+    "label": "Technology and Enabling",
+    "children": []
+  },
+  {
+    "label": "Risk and Quality Management",
+    "children": []
+  }
+]

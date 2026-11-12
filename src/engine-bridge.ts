@@ -11,10 +11,14 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { WebContents } from 'electron'
-import { chromium, type Browser, type Page } from 'playwright-core'
+import type { Browser, Page } from 'playwright-core'
+
+import { perf } from './perf.js'
 
 export class EngineBridge {
 	private browser: Browser | null = null
+	/** playwright-core 延迟到首次附着才加载，避免拖慢主进程冷启动。 */
+	private chromiumModule: Promise<typeof import('playwright-core')> | null = null
 	private readonly pages = new Map<string, Page>()
 	private readonly tabIdsByPage = new WeakMap<Page, string>()
 
@@ -34,16 +38,22 @@ export class EngineBridge {
 		// CDP 连接断开后不能继续复用；在实际需要页面时再重连，使应用启动
 		// 不必依赖 Playwright 立即附着成功。
 		if (this.browser?.isConnected()) return this.browser
+		const timing = perf('ensureBrowser')
+		this.chromiumModule ??= import('playwright-core')
+		const { chromium } = await this.chromiumModule
 		const port = await this.cdpPort()
 		this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+		timing.mark(`connect(port=${port})`)
 		return this.browser
 	}
 
 	/** 把某个标签页的 webContents 映射成 Playwright Page（按标记匹配，缓存复用） */
 	async pageFor(tabId: string, webContents: WebContents): Promise<Page> {
+		const timing = perf(`pageFor(${tabId})`)
 		const cached = this.pages.get(tabId)
 		if (cached && !cached.isClosed()) {
 			this.tabIdsByPage.set(cached, tabId)
+			timing.mark('cache')
 			return cached
 		}
 
@@ -63,6 +73,7 @@ export class EngineBridge {
 						.evaluate((name) => Boolean((window as unknown as Record<string, unknown>)[name]), marker)
 						.catch(() => false)
 					if (hit) {
+						timing.mark(`discovery attempts=${attempt + 1}`)
 						this.pages.set(tabId, page)
 						this.tabIdsByPage.set(page, tabId)
 						return page
@@ -75,6 +86,7 @@ export class EngineBridge {
 						}
 						await session.detach().catch(() => {})
 						if (info.targetInfo?.targetId === String(webContents.id)) {
+							timing.mark(`discovery(targetId) attempts=${attempt + 1}`)
 							this.pages.set(tabId, page)
 							this.tabIdsByPage.set(page, tabId)
 							return page

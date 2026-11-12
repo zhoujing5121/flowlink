@@ -7,6 +7,9 @@ FlowLink is a Windows desktop application for recording browser workflows, stori
 - Record browser actions inside the Electron app
 - Create task profiles and keep multiple recordings per task
 - Replay flows with ordered steps, assertions, variables, and waits
+- Record tab opens/switches and direct navigation, and parameterize recorded text inputs in Reference
+- Record HTML5 drag-and-drop as replayable drag steps; SSO/login redirects are detected automatically and recorded as optional steps that replay skips when the redirect already happened
+- Edit Process groups with manual waits and assertion-based branches (maximum three visits per group per replay)
 - Open replay tabs through native Electron views and start every Test entry with a fresh single-tab browser
 - Capture element evidence, screenshots, dialogs, downloads, and frame/tab context
 - Resolve elements through multiple candidates and stable fingerprints
@@ -75,6 +78,10 @@ The package script uses `electron-packager`, then creates:
 6. Run the recording to replay it in the embedded browser. Native tab creation and its first navigation replay as one `openTab` action.
 7. Inspect screenshots, step results, downloads, and execution logs.
 
+In Process, add groups and manual steps to a saved flow. Conditions must be the final step in a group and branch to existing groups; a user-operation wait pauses replay until Continue is selected. Recorded text inputs appear in Reference as variables, with password values kept secret.
+
+Deleting a recording removes its Flow and recording artifacts. Deleting a task removes all of its recordings and files; closing a new taskflow before saving discards recordings created in that draft.
+
 ## Project layout
 
 ```text
@@ -134,7 +141,7 @@ FlowLink now writes a FlowForge-compatible evidence sidecar (`flowforge-recordin
 
 ### Pi Coding Agent (optional)
 
-FlowLink integrates Pi in-process using `@earendil-works/pi-coding-agent` (not the Pi CLI). The SDK is loaded only when the Pi feature is first used, not during app startup. Configure the provider/model in `config/pi-settings.json`; copy `config/pi-auth.example.json` to `config/pi-auth.json` and add the matching provider API key for development. Packaged builds read credentials from the app's user data directory.
+FlowLink integrates Pi in-process using `@earendil-works/pi-coding-agent` (not the Pi CLI). The SDK is loaded only when the Pi feature is first used, not during app startup. Configure the provider/model in `config/pi-settings.json`; copy `config/pi-auth.example.json` to `config/pi-auth.json` and add the matching provider API key for development. For an OpenAI-compatible private endpoint, set the provider to `custom` and copy `config/models.example.json` to `config/models.json`, then set its endpoint and model ID. The local `models.json` and credentials file are Git-ignored. Packaged builds read credentials from the app's user data directory.
 
 To route Pi requests through a proxy, set `HTTPS_PROXY` (and optionally `HTTP_PROXY` / `NO_PROXY`) in the environment before launching FlowLink. For example, in PowerShell:
 
@@ -144,4 +151,6 @@ $env:HTTP_PROXY = $env:HTTPS_PROXY
 npm start
 ```
 
-Proxy credentials can be included in the proxy URL if required; keep authenticated proxy URLs out of source control. The Pi bridge applies the environment proxy to Node requests on first use; Chromium browser traffic has separate proxy settings. The AI pane offers post-recording advice, selected-material refinement advice, and replay-failure diagnosis. It creates a separate refined material only when the user explicitly requests one; the original recording is preserved. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.
+Alternatively, pass a proxy option at launch. For a packaged build, use `FlowLink.exe --pi-system-proxy` to resolve the Windows system proxy/PAC for the configured model endpoint, or `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` to specify a proxy directly. An explicit `--pi-proxy=...` takes precedence if both options are present. Supported explicit schemes are `http`, `https`, and `socks5`.
+
+In PowerShell development mode, use `npm start -- -PiSystemProxy` or `npm start -- -PiProxy "http://127.0.0.1:7890"`; `npm run dev -- -PiSystemProxy` also enables DevTools. Proxy credentials can be included in the proxy URL if required; avoid sharing or saving authenticated proxy URLs. These options apply to Pi's Node requests only; Chromium browser traffic has separate proxy settings. The AI pane offers post-recording advice and replay-failure diagnosis; `@` mentions attach recordings of the current task to a request, and the Refine button generates a refined material from one or more analyzed recordings via preset options plus free text. After a recording stops, FlowLink also auto-generates a sanitized `REFINED…` twin (disable with `autoRefine: false` in `config/pi-settings.json`). Refined materials are always saved as new recordings; the original recording is preserved. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.

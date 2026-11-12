@@ -36,6 +36,7 @@ Make precise, end-to-end changes while preserving the recorder/executor contract
 - Put replay artifact files through `ArtifactWriter`.
 - Add IPC channels in `src/main.ts` and expose them only through `src/preload.ts`.
 - Keep long-lived rendering state synchronized in `renderer/bridge.js`.
+- Define UI structure in `renderer/index.html`, including `<template>` elements for repeated items (e.g. `recordingLayoutTemplate`); generate HTML from JavaScript only when the structure genuinely depends on runtime data — fill templates, do not author static markup in JS.
 
 ## Validation
 

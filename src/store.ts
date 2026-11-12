@@ -25,6 +25,8 @@ export interface RecordingMeta {
 	flowFile: string
 	/** 该 flow 的 artifacts 根目录（绝对路径） */
 	artifactsDir: string
+	/** 视频帧捕获目录（绝对路径）；独立于 recorder 写入的 Flow artifacts */
+	captureDir?: string
 	createdAt: string
 	steps: number
 	videoFile?: string
@@ -133,7 +135,7 @@ export class TaskStore {
 		return task
 	}
 
-	/** 只移除任务记录；Flow 文件和产物目录独立管理，不随之删除。 */
+	/** 只移除任务元数据；调用方负责先清理该任务拥有的文件。 */
 	async remove(code: string): Promise<void> {
 		await this.ensureLoaded()
 		this.tasks.delete(code)
@@ -151,8 +153,8 @@ export class TaskStore {
 				name: '',
 				description: '',
 				serviceLines: ['', '', '', ''],
-				versions: [{ name: 'V1', enabled: false }],
-				version: 'r1',
+				versions: [{ name: 'v1.0.0', enabled: false }],
+				version: 'v1.0.0',
 				category: '',
 				status: 'Ready',
 				enabled: false,
@@ -167,7 +169,7 @@ export class TaskStore {
 		return task
 	}
 
-	/** 只移除一条录制的元数据，不删除对应 Flow 文件或产物。 */
+	/** 只移除一条录制的元数据；调用方负责先清理该录制拥有的文件。 */
 	async removeRecording(code: string, recordingId: string): Promise<Task | undefined> {
 		await this.ensureLoaded()
 		const task = this.tasks.get(code)

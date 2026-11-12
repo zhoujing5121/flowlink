@@ -4,10 +4,12 @@
  * IPC. Workflow changes must be explicitly applied after schema validation.
  */
 
-import { app } from "electron";
+import { app, session } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
+
+import { perfSinceAppStart } from "./perf.js";
 
 export interface PiPromptOptions {
   prompt: string;
@@ -26,22 +28,37 @@ interface PiSettings {
   model?: string;
   thinkingLevel?: "off" | "low" | "medium" | "high";
   timeoutMs?: number;
+  autoRefine?: boolean;
 }
 
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const DEFAULT_PROVIDER = "opencode-go";
 const DEFAULT_MODEL = "kimi-k3";
 interface PiWorkerResponse {
+  type: "prompt-result";
   id: number;
   ok: boolean;
   text?: string;
   error?: string;
 }
 
+interface PiWorkerProxyRequest {
+  type: "resolve-proxy";
+  requestId: number;
+  url: string;
+}
+
+type PiWorkerMessage = PiWorkerResponse | PiWorkerProxyRequest;
+
+type PiProxyOptions =
+  | { mode: "environment" }
+  | { mode: "system" }
+  | { mode: "explicit"; url: string };
+
 interface PendingPiRequest {
   resolve: (response: PiWorkerResponse) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 let piWorker: Worker | undefined;
@@ -70,6 +87,7 @@ function readSettings(): Required<PiSettings> {
     model: DEFAULT_MODEL,
     thinkingLevel: "medium",
     timeoutMs: 120_000,
+    autoRefine: true,
   };
 
   const settingsPath = getSettingsPath();
@@ -102,9 +120,19 @@ function readSettings(): Required<PiSettings> {
         Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs! >= 5_000
           ? Math.min(parsed.timeoutMs!, 600_000)
           : defaults.timeoutMs,
+      autoRefine: typeof parsed.autoRefine === "boolean" ? parsed.autoRefine : defaults.autoRefine,
     };
   } catch {
     throw new Error(`Cannot parse Pi settings file: ${settingsPath}`);
+  }
+}
+
+/** 录制停止后的自动细化开关（config/pi-settings.json `autoRefine`，缺省开启）。 */
+export function isAutoRefineEnabled(): boolean {
+  try {
+    return readSettings().autoRefine;
+  } catch {
+    return true;
   }
 }
 
@@ -114,7 +142,7 @@ function validateAuthFile(provider: string): void {
   if (!existsSync(authPath)) {
     throw new Error(
       `Pi credentials file not found: ${authPath}. ` +
-        "Create pi-auth.json and configure your OpenCode Go API key.",
+        "Create pi-auth.json and configure the API key for the selected provider.",
     );
   }
 
@@ -144,6 +172,20 @@ function validateAuthFile(provider: string): void {
   }
 }
 
+function getPiProxyOptions(): PiProxyOptions {
+  const explicitArg = process.argv.find((arg) => arg.startsWith("--pi-proxy="));
+  if (explicitArg !== undefined) {
+    const url = explicitArg.slice("--pi-proxy=".length).trim();
+    if (!url) throw new Error("--pi-proxy requires a proxy URL.");
+    return { mode: "explicit", url };
+  }
+  if (process.argv.includes("--pi-proxy")) {
+    throw new Error("Use --pi-proxy=<URL> to specify a Pi proxy.");
+  }
+  if (process.argv.includes("--pi-system-proxy")) return { mode: "system" };
+  return { mode: "environment" };
+}
+
 function rejectPiWorkerRequests(worker: Worker, error: Error): void {
   if (piWorker !== worker) return;
   piWorker = undefined;
@@ -157,10 +199,15 @@ function rejectPiWorkerRequests(worker: Worker, error: Error): void {
 function getPiWorker(): Worker {
   if (piWorker) return piWorker;
 
+  perfSinceAppStart("pi:worker-spawned");
   const worker = new Worker(new URL("./pi-agent-worker.js", import.meta.url));
   piWorker = worker;
   worker.unref();
-  worker.on("message", (response: PiWorkerResponse) => {
+  worker.on("message", (response: PiWorkerMessage) => {
+    if (response.type === "resolve-proxy") {
+      void resolvePiSystemProxy(worker, response);
+      return;
+    }
     const request = pendingPiRequests.get(response.id);
     if (!request) return;
     clearTimeout(request.timer);
@@ -179,10 +226,39 @@ function getPiWorker(): Worker {
   return worker;
 }
 
+async function resolvePiSystemProxy(
+  worker: Worker,
+  request: PiWorkerProxyRequest,
+): Promise<void> {
+  try {
+    const target = new URL(request.url);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      throw new Error("Pi provider URL must use HTTP or HTTPS.");
+    }
+    const proxyRules = await session.defaultSession.resolveProxy(target.href);
+    if (piWorker === worker) {
+      worker.postMessage({
+        type: "proxy-resolution-result",
+        requestId: request.requestId,
+        proxyRules,
+      });
+    }
+  } catch {
+    if (piWorker === worker) {
+      worker.postMessage({
+        type: "proxy-resolution-result",
+        requestId: request.requestId,
+        error: "Could not resolve the Windows system proxy for the Pi provider.",
+      });
+    }
+  }
+}
+
 function sendPiWorkerRequest(
   prompt: string,
   cwd: string,
   settings: Required<PiSettings>,
+  proxy: PiProxyOptions,
   timeoutMs: number,
 ): Promise<PiWorkerResponse> {
   const worker = getPiWorker();
@@ -198,6 +274,7 @@ function sendPiWorkerRequest(
     pendingPiRequests.set(id, { resolve, reject, timer });
     try {
       worker.postMessage({
+        type: "prompt",
         id,
         prompt,
         cwd,
@@ -206,6 +283,7 @@ function sendPiWorkerRequest(
         provider: settings.provider,
         model: settings.model,
         thinkingLevel: settings.thinkingLevel,
+        proxy,
       });
     } catch (error) {
       clearTimeout(timer);
@@ -214,6 +292,54 @@ function sendPiWorkerRequest(
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+function sendPiWorkerPrewarm(
+  settings: Required<PiSettings>,
+): Promise<PiWorkerResponse> {
+  const worker = getPiWorker();
+  const id = ++nextPiRequestId;
+  worker.ref();
+
+  // 预热没有面向用户的超时：worker 崩溃时由 error/exit 回调统一收尾。
+  return new Promise((resolve, reject) => {
+    pendingPiRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({
+        type: "prewarm",
+        id,
+        authPath: getAuthPath(),
+        configDir: getConfigDirectory(),
+        provider: settings.provider,
+        model: settings.model,
+      });
+    } catch (error) {
+      pendingPiRequests.delete(id);
+      if (pendingPiRequests.size === 0) worker.unref();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+let piPrewarmDone = false;
+
+/**
+ * Idle prewarm: load the Pi SDK and fill the runtime cache (keyed by
+ * authPath/provider/model) so the first real prompt only pays session
+ * creation plus the provider round trip. Never contacts the provider;
+ * Pi being unconfigured or invalid is a normal state and stays silent.
+ */
+export async function prewarmPi(): Promise<void> {
+  if (piPrewarmDone) return;
+  try {
+    const settings = readSettings();
+    validateAuthFile(settings.provider);
+    const response = await sendPiWorkerPrewarm(settings);
+    if (response.ok) piPrewarmDone = true;
+  } catch {
+    // Settings changes between prewarm and first prompt naturally miss the
+    // runtime cache (different key) and re-create; no invalidation needed.
+  }
 }
 
 export function disposePiWorker(): void {
@@ -264,6 +390,7 @@ export async function runPiPrompt(
   try {
     const settings = readSettings();
     validateAuthFile(settings.provider);
+    const proxy = getPiProxyOptions();
     const timeoutMs = Math.max(
       5_000,
       Math.min(options.timeoutMs ?? settings.timeoutMs, 600_000),
@@ -273,6 +400,7 @@ export async function runPiPrompt(
       prompt,
       options.cwd,
       settings,
+      proxy,
       timeoutMs,
     );
     return response.ok

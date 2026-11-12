@@ -5,3 +5,4 @@ release/
 *.tmp
 .DS_Store
 config/pi-auth.json
+config/models.json

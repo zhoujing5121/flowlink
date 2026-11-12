@@ -4,13 +4,13 @@
  * 失败一律走 classifyError 落语义错误码，绝不把裸 timeout 抛给上层；
  * artifact 只在失败（或 screenshotMode='all'）时落盘，避免每步都写磁盘。
  */
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright-core'
+import type { Browser, BrowserContext, Locator, Page } from 'playwright-core'
 
 import type { ElementRef, Flow } from '../../schema/src/index.js'
 import { makeId } from '../../schema/src/index.js'
 import { resolve, type ResolveResult } from '../../resolver/src/index.js'
 
-import { runAction, type ActionDeps } from './actions.js'
+import { runAction, sameSitePath, OPTIONAL_NAV_WAIT_MS, type ActionDeps } from './actions.js'
 import { ArtifactWriter } from './artifacts.js'
 import { classifyError, StepFailure, type FailurePhase } from './errors.js'
 import {
@@ -30,7 +30,7 @@ import {
 import { PageManager, resolveStepPageIndex } from './tabs.js'
 import { defaultVariables, renderStep } from './template.js'
 import { NAME_KEEPALIVE_SOURCE, rebaseUrl } from './url.js'
-import { runAssertion, sleep, verifyExpect, type VerifyDeps } from './verify.js'
+import { evaluateAssertion, runAssertion, sleep, verifyExpect, type VerifyDeps } from './verify.js'
 import type {
 	PlayOptions,
 	RunReport,
@@ -492,6 +492,17 @@ export async function runFlowInBrowserContext(
 		}
 
 		const flat = flattenSteps(flow.steps)
+		const groupStartIndices = new Map<string, number>()
+		let nextGroupStart = 0
+		for (const step of flow.steps) {
+			if (step.kind === 'group') {
+				groupStartIndices.set(step.id, nextGroupStart)
+				nextGroupStart += flattenSteps([step]).length
+			} else {
+				nextGroupStart += 1
+			}
+		}
+		const groupVisitCounts = new Map<string, number>()
 
 		// 仅当首个可执行步骤不是 navigate 时才导航到 startUrl，避免覆盖显式导航目标。
 		// flow 第一步不是 navigate 时，先按 env.startUrl 打开页面（同样吃 baseUrl 重定基）
@@ -546,7 +557,15 @@ export async function runFlowInBrowserContext(
 
 		// 每个展开后的动作都对应一条结果和详情；group 仅用于组织 IR，
 		// 本身不单独作为步骤写入报告。
-		for (const item of flat) {
+		for (let flatCursor = 0; flatCursor < flat.length; flatCursor++) {
+			const item = flat[flatCursor]!
+			const groupVisitCount =
+				item.groupId && groupStartIndices.get(item.groupId) === flatCursor
+					? (groupVisitCounts.get(item.groupId) ?? 0) + 1
+					: undefined
+			if (item.groupId && groupVisitCount !== undefined) {
+				groupVisitCounts.set(item.groupId, groupVisitCount)
+			}
 			// 中止只影响尚未执行的步骤；崩溃后也逐项报告 skip，维持结果与剩余步骤一一对应。
 			if (opts.abortSignal?.aborted) {
 				const stepResult: StepResult = {
@@ -573,6 +592,28 @@ export async function runFlowInBrowserContext(
 				continue
 			}
 
+			// 可选导航（机器发起的认证跳转）：先等一小段，看浏览器是否已自行离开录制时
+			// 记录的 previousUrl。已离开 → 重定向自己发生了（可能已串到链上更靠后的
+			// URL），本步跳过；仍在原地（含 previousUrl 缺失的保守回退）→ 正常执行导航。
+			// 等待期间不监听 abortSignal：最多多等 OPTIONAL_NAV_WAIT_MS，由下方既有中止路径兜底。
+			if (item.step.kind === 'navigate' && item.step.isOptional && item.step.previousUrl) {
+				const optionalStart = Date.now()
+				await sleep(OPTIONAL_NAV_WAIT_MS)
+				if (!sameSitePath(page.url(), item.step.previousUrl)) {
+					pushLog(`可选导航：浏览器已在 ${safePageUrl(page)}（${item.stepId} 的重定向已自行发生），跳过`)
+					const stepResult: StepResult = {
+						stepId: item.stepId,
+						kind: item.step.kind,
+						status: 'skip',
+						ms: Date.now() - optionalStart,
+					}
+					steps.push(stepResult)
+					opts.onStep?.(stepResult)
+					continue
+				}
+				pushLog(`可选导航：仍在 ${item.step.previousUrl}，执行 ${item.step.url}`)
+			}
+
 			const stepStart = Date.now()
 			const stepLog: string[] = []
 			const stepLogPush = (msg: string): void => {
@@ -590,8 +631,15 @@ export async function runFlowInBrowserContext(
 			let phase: FailurePhase = 'framework'
 			let beforeShot: Buffer | undefined
 			let expectNote: string | undefined
+			let branchCursor: number | undefined
 
 			try {
+				if (groupVisitCount !== undefined && groupVisitCount > 3) {
+					throw new StepFailure(
+						'FLOW_LOOP_LIMIT',
+						`group "${item.groupId}" 已访问超过每次运行允许的 3 次`,
+					)
+				}
 				stepIndexRef.current = item.index
 
 				// ---- 目标标签页：step.page 优先；switchTab 用自己的 index；都没写则沿用当前 ----
@@ -706,6 +754,42 @@ export async function runFlowInBrowserContext(
 						timeoutMs,
 					)
 					stepLogPush(`dialog ${rendered.action} ✓ ${handled.info}`)
+				} else if (rendered.kind === 'condition') {
+					phase = 'expect'
+					const outcome = await evaluateAssertion(
+						verifyDeps,
+						rendered.assertion,
+						rendered.target,
+					)
+					const targetGroupId = outcome.matches
+						? rendered.trueGroupId
+						: rendered.falseGroupId
+					stepLogPush(`condition ${outcome.matches ? 'true' : 'false'}: ${outcome.note}`)
+					branchCursor =
+						targetGroupId === undefined
+							? flat.length
+							: groupStartIndices.get(targetGroupId)
+					if (branchCursor === undefined) {
+						throw new StepFailure(
+							'NOT_ACTIONABLE',
+							`condition 引用了不存在的 group "${targetGroupId}"`,
+						)
+					}
+					expectNote = `condition=${outcome.matches}`
+				} else if (rendered.kind === 'wait' && rendered.condition === 'userOperation') {
+					phase = 'action'
+					if (!opts.waitForUserOperation) {
+						throw new StepFailure(
+							'NOT_ACTIONABLE',
+							'userOperation wait 需要宿主提供用户确认回调',
+						)
+					}
+					await opts.waitForUserOperation({
+						stepId: item.stepId,
+						prompt: rendered.prompt ?? rendered.label ?? '请完成当前操作，然后继续回放。',
+						signal: opts.abortSignal,
+					})
+					stepLogPush('用户已确认操作完成')
 				} else if (rendered.kind === 'assert') {
 					phase = 'expect'
 					stepLogPush(`assert ${rendered.assertion.kind}`)
@@ -863,7 +947,14 @@ export async function runFlowInBrowserContext(
 			steps.push(stepResult)
 			details.push(detail)
 			opts.onStep?.(stepResult)
-			if (opts.stopOnFailure && detail.status === 'fail') break
+			if (
+				detail.status === 'fail' &&
+				(opts.stopOnFailure || detail.error?.code === 'FLOW_LOOP_LIMIT')
+			) break
+			if (branchCursor !== undefined) {
+				if (branchCursor >= flat.length) break
+				flatCursor = branchCursor - 1
+			}
 		}
 		observedPageCount = pages.count
 		observedCurrentPageIndex = pages.currentIndex
@@ -1000,6 +1091,9 @@ export async function executeRun(
 		opts.onLog?.(`[${flow.id}] ${msg}`)
 	}
 
+	// Chromium 只在独立（非 Electron）启动时才需要；动态导入避免把
+	// playwright-core 挂到使用方的启动路径上。
+	const { chromium } = await import('playwright-core')
 	const browser = await chromium.launch({ headless: opts.headless ?? true })
 	let outcome: FlowContextRunOutcome | undefined
 	try {

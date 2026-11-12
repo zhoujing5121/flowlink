@@ -37,6 +37,7 @@ export type ErrorCode =
 	| 'BROWSER_CRASH'
 	/** 追加：`{{var}}` 缺变量（编排失败，不是页面失败） */
 	| 'VARIABLE_MISSING'
+	| 'FLOW_LOOP_LIMIT'
 
 export interface StepResult {
 	stepId: string
@@ -144,6 +145,12 @@ export interface PlayOptions {
 	highlightSteps?: boolean
 	/** 追加：宿主可借此信号中止回放；被中止后剩余步骤标记为 skip，run 判失败。 */
 	abortSignal?: AbortSignal
+	/** 人工操作 wait：宿主提示用户后等待其显式继续。 */
+	waitForUserOperation?: (input: {
+		stepId: string
+		prompt: string
+		signal?: AbortSignal
+	}) => Promise<void>
 	/** 追加：非 headless 回放成功结束后，浏览器保持打开的时长（ms），默认 1200 */
 	keepOpenMs?: number
 	/** 追加：非 headless 回放失败后，浏览器保持打开的时长（ms），默认 15000 */

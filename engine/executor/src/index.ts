@@ -65,7 +65,7 @@ export {
 } from './run.js'
 export type { ArtifactLayout } from './artifacts.js'
 export { executeRun } from './run.js'
-export { EXPECT_WAIT_MS, domSignatureOf, pollUntil, runAssertion, verifyExpect } from './verify.js'
+export { EXPECT_WAIT_MS, domSignatureOf, evaluateAssertion, pollUntil, runAssertion, verifyExpect } from './verify.js'
 export type { VerifyDeps } from './verify.js'
 export type { ActionDeps, ActionResult } from './actions.js'
 export type { RunOutcome } from './run.js'

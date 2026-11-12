@@ -170,7 +170,7 @@ export interface RawEvent {
 /* ------------------------------------------------------------------ */
 
 export type CoalescedActionKind =
-	'navigate' | 'click' | 'input' | 'select' | 'key' | 'scroll' | 'hover' | 'unknown'
+	'navigate' | 'click' | 'input' | 'select' | 'key' | 'scroll' | 'hover' | 'drag' | 'unknown'
 
 /** 一个可落成 Step 的动作（500ms 缓冲合流之后） */
 export interface CoalescedAction {
@@ -178,6 +178,9 @@ export interface CoalescedAction {
 	/** 动作时间（取合并后最后一条事件的 ts） */
 	ts: number
 	facts?: RawElementFacts
+	/** drag：起点/终点元素事实（其余 kind 只用 facts；drag 必有 from/to） */
+	from?: RawElementFacts
+	to?: RawElementFacts
 	frameIndex?: number
 	frameUrl?: string
 	/** 在哪个标签页（由 RawEvent 透传；合成 switchTab 时用来决定切页） */
@@ -284,6 +287,14 @@ export interface RecordOptions {
 	pages?: Page[]
 	/** Stable Electron tab IDs in the same order as page + pages. */
 	tabIds?: string[]
+	/** Mutable host event buffer used to capture native tab switches and address-bar navigation. */
+	hostEvents?: ReadonlyArray<{
+		action: string
+		ts: number
+		tabId: string
+		url?: string
+		previousUrl?: string
+	}>
 	/**
 	 * 只往指定 page 注入采集脚本，不在 context 上 addInitScript。
 	 * Electron 的 CDP context 会同时包含产品 UI 和内嵌页，必须开这个，否则会录到壳层点击。
@@ -291,6 +302,12 @@ export interface RecordOptions {
 	attachOnly?: boolean
 	/** 页面已经停在 startUrl 时跳过 goto（内嵌浏览器由产品自己导航） */
 	skipNavigate?: boolean
+
+	/**
+	 * 主机名 → 系统名别名：完整主机名精确匹配（大小写不敏感），命中后收敛为同一 systemId。
+	 * 编程调用方专用 API（应用侧不提供配置文件，始终使用裸主机名行为）。
+	 */
+	systemAliases?: Record<string, string>
 
 	/** 事件合流窗口，默认 500ms */
 	bufferMs?: number
@@ -356,6 +373,7 @@ export interface RecordedDownload {
 export type PlannedItem =
 	| { kind: 'action'; action: CoalescedAction }
 	| { kind: 'switchTab'; ts: number; index: number; pageIndex: number }
+	| { kind: 'openTab'; ts: number; index: number; pageIndex: number; url?: string }
 	| {
 			kind: 'dialog'
 			ts: number
