@@ -127,7 +127,16 @@ class LibraryBuilder {
 	}
 }
 
-const BASE_FIELDS = ['label', 'timeout', 'page', 'isOptional', 'pageUrl', 'systemName']
+const BASE_FIELDS = [
+	'label',
+	'timeout',
+	'page',
+	'isOptional',
+	'pageUrl',
+	'systemName',
+	'reviewRequired',
+	'reviewReason',
+]
 const STEP_SCALAR_FIELDS: Record<string, string[]> = {
 	navigate: ['url', 'navigationType', 'previousUrl'],
 	click: ['button', 'clickCount', 'modifiers', 'position'],

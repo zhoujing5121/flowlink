@@ -58,7 +58,7 @@ import {
 const NAME_KEEPALIVE_SOURCE = 'globalThis.__name = globalThis.__name || ((fn) => fn); true'
 import { coalesceEvents, type PendingDragSlot } from './coalesce.js'
 import { compileAuthMatchers, isAuthUrl, AUTO_NAVIGATION_TYPES } from './classify.js'
-import { buildElementRef, deriveCandidates } from './element.js'
+import { backfillRoleName, buildElementRef, deriveCandidates, SCORE } from './element.js'
 import { appearedNodes, inferExpect, pickExpectTarget, urlPattern } from './expect.js'
 import { describeStorageState, loadProfile, saveProfile, type ProfileShape, type StorageState } from './profile.js'
 import { resolveSystem } from './systems.js'
@@ -724,12 +724,14 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			}
 
 			const described = locator ? await describeElement(locator).catch(() => EMPTY_DESCRIPTION) : {}
-			const merged = {
+			// ariaSnapshot 拿不到 role/name 时用原生可访问名近似回填（文本 → name，
+			// tag → 隐式 role），role+name 语义候选才有机会生成与进指纹。
+			const merged = backfillRoleName({
 				...facts,
 				uid,
 				role: described.role ?? baseFacts.role ?? facts.attributes['role'],
 				accessibleName: described.name ?? baseFacts.accessibleName,
-			}
+			})
 
 			// closed shadow：目标实际是 host，内层元素既不可定位也不可快照，
 			// 只能记 host + 相对 padding box 的偏移，回放靠 host.click({position})。
@@ -846,7 +848,12 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 				if (!facts) return undefined
 				const iframeLocator = parent.locator(`[data-rr-uid="${uid}"]`)
 				const described = await describeElement(iframeLocator).catch(() => EMPTY_DESCRIPTION)
-				const merged = { ...facts, uid, role: described.role, accessibleName: described.name }
+				const merged = backfillRoleName({
+					...facts,
+					uid,
+					role: described.role,
+					accessibleName: described.name,
+				})
 				const derived = deriveCandidates(merged)
 				const result = await validateCandidates(parent, derived, uid)
 				const ref = buildElementRef({
@@ -988,6 +995,27 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			}
 		}
 
+		/**
+		 * 方案 D：幸存候选全是结构性定位（无 testid/role/label/text，只剩 css 路径/xpath
+		 * 级别）时写 reviewRequired——录制当场暴露回放脆弱性，而不是回放失败后考古。
+		 * 字段由 BaseStepSchema 既有提供（此前无代码写入），零 schema 变化、零回放行为变化。
+		 */
+		const markWeakTargetReview = (step: Step): void => {
+			// group 是 REFINED 流程的结构容器（不承载动作），BaseStep 的复核标记不适用。
+			if (step.kind === 'group') return
+			const refs: ElementRef[] = []
+			if ('target' in step && step.target) refs.push(step.target)
+			if (step.kind === 'drag') {
+				refs.push(step.from)
+				if (step.to.target) refs.push(step.to.target)
+			}
+			if (!refs.length) return
+			const weak = refs.some((ref) => ref.candidates.every((c) => c.score >= SCORE.cssHref))
+			if (!weak) return
+			step.reviewRequired = true
+			step.reviewReason = '元素缺少语义候选（无 testid/role/label/text），仅靠结构定位，回放脆弱'
+		}
+
 		/* ---------- expect 推断：把「新出现的元素」变回 ElementRef ---------- */
 
 		const takeExpect = async (
@@ -1017,7 +1045,12 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			const facts = await readFactsByUid(frame, uid)
 			if (!facts) return undefined
 			const described = await describeElement(locator).catch(() => EMPTY_DESCRIPTION)
-			const merged = { ...facts, uid, role: described.role, accessibleName: described.name }
+			const merged = backfillRoleName({
+				...facts,
+				uid,
+				role: described.role,
+				accessibleName: described.name,
+			})
 			const derived = deriveCandidates(merged)
 			const result = await validateCandidates(frame, derived, uid)
 			return buildElementRef({
@@ -1343,6 +1376,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 				const step = await buildStep(action)
 				if (!step) continue
+				markWeakTargetReview(step)
 
 				// expect：只在同一标签页内比较签名（跨页比较会误判成 urlChange）
 				//

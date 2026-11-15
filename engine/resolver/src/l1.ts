@@ -3,7 +3,9 @@
  *
  * 解析约定：
  * - 按 candidates 的既定优先顺序逐个尝试；候选 score 越小越先尝试；
- * - 单个候选多命中时才比较几何位置，分差不足则拒绝猜测并继续尝试后续候选；
+ * - 单个候选多命中时先剔除不可见的隐藏副本（模板 / 通知堆叠），
+ *   仅剩一个可见项即直接采用；多个可见才比较几何位置，分差不足则拒绝猜测
+ *   并继续尝试后续候选；
  * - 唯一命中但不可见时记为 HIDDEN，供上层决定是否等待或降级。
  */
 import type { Candidate, ElementRef, Rect } from '../../schema/src/index.js'
@@ -36,12 +38,31 @@ export interface L1Failure {
 	detail: string[]
 }
 
-/** 从页面取所有匹配元素的视口矩形（一次 evaluate，避免 N 次 boundingBox） */
-async function rectsOf(locator: Locator): Promise<Rect[]> {
+/** 单个命中的矩形 + 可见性（一次 evaluate 取齐，避免 N 次 boundingBox/isVisible） */
+interface RectWithVisibility {
+	rect: Rect
+	visible: boolean
+}
+
+/**
+ * 从页面取所有匹配元素的视口矩形与可见性。
+ * 可见性语义与录制端 validateCandidate / hash.ts 的 isVisible 一致：
+ * `checkVisibility`（含透明度与 CSS 判定），off-screen 但已渲染仍算可见。
+ */
+async function rectsOf(locator: Locator): Promise<RectWithVisibility[]> {
 	return locator.evaluateAll((els) =>
 		els.map((el) => {
 			const r = el.getBoundingClientRect()
-			return { x: r.x, y: r.y, width: r.width, height: r.height }
+			const anyEl = el as Element & { checkVisibility?: (o?: object) => boolean }
+			let visible = false
+			if (typeof anyEl.checkVisibility === 'function') {
+				try {
+					visible = anyEl.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+				} catch {
+					visible = el.getClientRects().length > 0
+				}
+			} else visible = el.getClientRects().length > 0
+			return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, visible }
 		}),
 	)
 }
@@ -106,15 +127,28 @@ export async function resolveL1(
 		}
 
 		// 多命中只在当前候选内评分；若无法安全选出唯一项，继续按原顺序尝试下一候选。
-		let rects: Rect[]
+		let rects: RectWithVisibility[]
 		try {
 			rects = await rectsOf(locator)
 		} catch (err) {
 			failure.detail.push(`${label}: 取矩形失败（${(err as Error).message}）`)
 			continue
 		}
-		const indexed = rects.map((rect, index) => ({ index, rect }))
-		const ranked = rankMatches(indexed, (it) => it.rect, observed, viewport)
+		const indexed = rects.map((entry, index) => ({ index, ...entry }))
+		// 与录制端同一语义：隐藏副本（模板 / 堆叠通知）不参与竞争，先按可见性预过滤。
+		const visibleOnes = indexed.filter((it) => it.visible)
+		if (visibleOnes.length === 1) {
+			const only = visibleOnes[0]!
+			log(`L1 ${label} → ${count} 命中但仅 1 个可见，采用可见项`)
+			return { locator: locator.nth(only.index), score: 100, candidate, matchedCount: count }
+		}
+		if (visibleOnes.length === 0) {
+			failure.sawHidden = true
+			failure.detail.push(`${label}: ${count} 命中但全部不可见`)
+			log(`L1 ${label} → ${count} 命中全部不可见`)
+			continue
+		}
+		const ranked = rankMatches(visibleOnes, (it) => it.rect, observed, viewport)
 		const picked = pickWinner(ranked, opts.ambiguityThreshold)
 		const top = ranked[0]
 

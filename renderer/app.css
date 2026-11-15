@@ -5461,7 +5461,8 @@ body {
   position: relative;
 }
 
-.service-picker-trigger {
+.service-picker-trigger,
+.type-picker-trigger {
   width: 100%;
   height: 48px;
   padding: 0 80px 0 16px;
@@ -5474,31 +5475,43 @@ body {
   line-height: 24px;
 }
 
-.service-picker-trigger > span {
+/* Instruction 字段网格列更窄：右内边距收紧到指示箭头所需 */
+.type-picker-trigger {
+  padding-right: 36px;
+}
+
+.service-picker-trigger > span,
+.type-picker-trigger > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.service-picker-trigger.is-empty {
+.service-picker-trigger.is-empty,
+.type-picker-trigger.is-empty {
   color: var(--placeholder);
 }
 
-.service-picker-trigger[aria-invalid="true"] {
+.service-picker-trigger[aria-invalid="true"],
+.type-picker-trigger[aria-invalid="true"] {
   border-bottom-color: #d50000;
 }
 
-.service-picker-trigger:disabled {
+.service-picker-trigger:disabled,
+.type-picker-trigger:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
 
-.service-picker-popup {
+.service-picker-popup,
+.type-picker-popup {
   overflow: hidden;
 }
 
 .service-picker-toolbar,
-.service-picker-option {
+.service-picker-option,
+.type-picker-toolbar,
+.type-picker-option {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5507,7 +5520,8 @@ body {
   width: 100%;
 }
 
-.service-picker-toolbar {
+.service-picker-toolbar,
+.type-picker-toolbar {
   border-bottom: 1px solid var(--line);
 }
 
@@ -5522,7 +5536,19 @@ body {
   background: transparent;
 }
 
-.service-picker-toolbar button {
+.type-picker-toolbar input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.service-picker-toolbar button,
+.type-picker-toolbar button {
   width: 24px;
   height: 24px;
   display: grid;
@@ -5531,36 +5557,43 @@ body {
   color: var(--placeholder);
 }
 
-.service-picker-toolbar button svg {
+.service-picker-toolbar button svg,
+.type-picker-toolbar button svg {
   position: static;
   width: 16px;
   height: 16px;
 }
 
-.service-picker-options {
+.service-picker-options,
+.type-picker-options {
   max-height: 208px;
   overflow: auto;
 }
 
-.service-picker-option:hover {
+.service-picker-option:hover,
+.type-picker-option:hover {
   background: var(--surface);
 }
 
-.service-picker-option[aria-selected="true"] {
+.service-picker-option[aria-selected="true"],
+.type-picker-option[aria-selected="true"] {
   color: var(--blue);
 }
 
-.service-picker-option span {
+.service-picker-option span,
+.type-picker-option span {
   overflow-wrap: anywhere;
 }
 
-.service-picker-option .service-picker-check {
+.service-picker-option .service-picker-check,
+.type-picker-option .type-picker-check {
   display: none;
   flex: 0 0 16px;
   color: var(--blue);
 }
 
-.service-picker-option .service-picker-check svg {
+.service-picker-option .service-picker-check svg,
+.type-picker-option .type-picker-check svg {
   width: 16px;
   height: 16px;
   position: static;
@@ -5571,11 +5604,13 @@ body {
   stroke-linejoin: round;
 }
 
-.service-picker-option[aria-selected="true"] .service-picker-check {
+.service-picker-option[aria-selected="true"] .service-picker-check,
+.type-picker-option[aria-selected="true"] .type-picker-check {
   display: flex;
 }
 
-.service-picker-empty {
+.service-picker-empty,
+.type-picker-empty {
   margin: 0;
   padding: 8px 16px;
   color: var(--placeholder);
@@ -5585,6 +5620,27 @@ body {
 .service-line-select svg {
   position: absolute;
   right: 12px;
+  top: 12px;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  fill: none;
+  stroke: #595e62;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Instruction 操作类型选择器：与 Service Level 同款交互，容器挂在字段网格内 */
+.step-type-picker {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.step-type-picker > svg {
+  position: absolute;
+  right: 8px;
   top: 12px;
   width: 24px;
   height: 24px;

@@ -114,7 +114,10 @@ async function waitForLoadState(scope: Scope, timeoutMs: number): Promise<void> 
 		.catch(() => undefined)
 }
 
-/** 轮询候选是否至少出现一个（count>0），用于吸收 SPA 首屏/异步渲染的空窗 */
+/**
+ * 轮询候选是否至少出现一个**可见**命中（count>0 不算就绪：模板/通知堆叠里的
+ * 隐藏副本会让"存在但全隐藏"看起来像就绪），用于吸收 SPA 首屏/异步渲染的空窗。
+ */
 async function waitForAnyCandidate(
 	scope: Scope,
 	target: ElementRef,
@@ -125,14 +128,29 @@ async function waitForAnyCandidate(
 	if (timeoutMs <= 0) return
 	while (Date.now() < deadline) {
 		for (const candidate of sortCandidates(target.candidates)) {
-			const n = await candidateLocator(scope, candidate)
-				.count()
-				.catch(() => 0)
-			if (n > 0) return
+			const visible = await candidateLocator(scope, candidate)
+				.evaluateAll((els) =>
+					els.some((el) => {
+						const anyEl = el as Element & { checkVisibility?: (o?: object) => boolean }
+						if (typeof anyEl.checkVisibility === 'function') {
+							try {
+								return anyEl.checkVisibility({
+									checkOpacity: true,
+									checkVisibilityCSS: true,
+								})
+							} catch {
+								return el.getClientRects().length > 0
+							}
+						}
+						return el.getClientRects().length > 0
+					}),
+				)
+				.catch(() => false)
+			if (visible) return
 		}
 		await new Promise((resolve) => setTimeout(resolve, 150))
 	}
-	log(`等待元素出现超时（${timeoutMs}ms）：所有候选 count=0`)
+	log(`等待元素出现超时（${timeoutMs}ms）：所有候选无可见命中`)
 }
 
 /**

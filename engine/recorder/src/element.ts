@@ -60,6 +60,20 @@ const FINGERPRINT_ATTRS = new Set([
 	'aria-describedby',
 ])
 
+/**
+ * 指纹属性 deny 名单（按名）：框架内部标记不是元素身份，进指纹只会污染。
+ * 与 resolver/hash.ts 的 STABLE_ATTR_POLICY 同步（跨包回归测试兜底一致性）。
+ */
+const FINGERPRINT_ATTR_DENY = new Set([
+	'class',
+	'style',
+	'data-rr-uid',
+	'data-bind', // knockout：值是多行框架内部标记
+	'data-reactid',
+])
+/** deny 前缀：vue scoped（data-v-*）、angular（ng-*） */
+const FINGERPRINT_ATTR_DENY_PREFIX = ['data-v-', 'ng-']
+
 /** testid 属性 → 优先级（第一个是 Playwright 的 testIdAttributeName 默认值） */
 const TESTID_ATTRS = ['data-testid', 'data-test-id', 'data-test'] as const
 
@@ -137,12 +151,14 @@ export function buildObservedFacts(input: RawElementFacts): ObservedFacts {
 /* 指纹                                                                */
 /* ------------------------------------------------------------------ */
 
-/** 只留「稳定标识」属性，并剔除看起来是动态值的（uuid / 长数字 / 时间戳） */
+/** 只留「稳定标识」属性，并剔除看起来是动态值的（uuid / 长数字 / 时间戳 / 含换行） */
 export function pickFingerprintAttrs(attributes: Record<string, string>): Record<string, string> {
 	const out: Record<string, string> = {}
 	for (const [name, value] of Object.entries(attributes)) {
-		if (name === 'data-rr-uid' || name === 'class' || name === 'style') continue
-		if (!FINGERPRINT_ATTRS.has(name) && !name.startsWith('data-')) continue
+		const lower = name.toLowerCase()
+		if (FINGERPRINT_ATTR_DENY.has(lower)) continue
+		if (FINGERPRINT_ATTR_DENY_PREFIX.some((prefix) => lower.startsWith(prefix))) continue
+		if (!FINGERPRINT_ATTRS.has(lower) && !lower.startsWith('data-')) continue
 		if (!value) continue
 		if (isDynamicValue(value)) continue
 		out[name] = value
@@ -177,15 +193,77 @@ export function stableHashOf(input: {
 	return createHash('sha1').update(payload).digest('hex')
 }
 
-/** 动态值判定：uuid / 很长的十六进制 / 4 位以上数字 / 时间戳样式 */
+/** 动态值判定：uuid / 很长的十六进制 / 4 位以上数字 / 时间戳样式 / 含换行符 */
 export function isDynamicValue(value: string): boolean {
 	if (!value) return false
+	if (value.includes('\n')) return true // knockout data-bind 等多行框架标记
 	if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(value)) return true
 	if (/^[0-9a-f]{16,}$/i.test(value)) return true
 	if (/\d{4,}/.test(value)) return true
 	// 形如 "2024-01-02T10:00:00" / "item-1712345678901"
 	if (/^\d{10,}$/.test(value)) return true
 	return false
+}
+
+/* ------------------------------------------------------------------ */
+/* 语义身份回填（ariaSnapshot 失败时的兜底）                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 隐式 role 的近似映射（tag → ARIA 隐式 role）。
+ * 与 resolver/hash.ts 页内 `implicitRole` 语义对齐的文档化副本（resolver 不能被
+ * recorder 反向依赖）；无映射的标签返回 undefined（generic，不生成 role 候选）。
+ */
+export function implicitRoleOfTag(
+	tag: string,
+	attributes: Record<string, string>,
+): string | undefined {
+	const t = tag.toLowerCase()
+	if (t === 'a') return attributes['href'] !== undefined ? 'link' : undefined
+	if (t === 'button') return 'button'
+	if (t === 'select') return attributes['multiple'] !== undefined ? 'listbox' : 'combobox'
+	if (t === 'textarea') return 'textbox'
+	if (t === 'img') return 'img'
+	if (t === 'option') return 'option'
+	if (t === 'li') return 'listitem'
+	if (t === 'ul' || t === 'ol') return 'list'
+	if (/^h[1-6]$/.test(t)) return 'heading'
+	if (t === 'table') return 'table'
+	if (t === 'tr') return 'row'
+	if (t === 'td') return 'cell'
+	if (t === 'th') return 'columnheader'
+	if (t === 'nav') return 'navigation'
+	if (t === 'main') return 'main'
+	if (t === 'header') return 'banner'
+	if (t === 'footer') return 'contentinfo'
+	if (t === 'form') return 'form'
+	if (t === 'dialog') return 'dialog'
+	if (t === 'input') {
+		const type = (attributes['type'] ?? 'text').toLowerCase()
+		if (type === 'checkbox') return 'checkbox'
+		if (type === 'radio') return 'radio'
+		if (type === 'submit' || type === 'button' || type === 'reset') return 'button'
+		if (type === 'search') return 'searchbox'
+		if (type === 'range') return 'slider'
+		if (type === 'number') return 'spinbutton'
+		if (type === 'file') return 'button'
+		return 'textbox'
+	}
+	return undefined
+}
+
+/**
+ * ariaSnapshot 失败时的语义兜底：原生可访问名的近似（tag→隐式 role；文本→name）。
+ * 只补缺不覆盖：已有 role/accessibleName（ariaSnapshot 拿到的真值）原样保留。
+ * 必须在 `deriveCandidates(merged)` 之前调用——role+name 候选的生成依赖这两个字段。
+ */
+export function backfillRoleName(facts: RawElementFacts): RawElementFacts {
+	const role =
+		facts.role ?? facts.attributes['role'] ?? implicitRoleOfTag(facts.tag, facts.attributes)
+	const name =
+		facts.accessibleName ??
+		(facts.text && facts.text.length <= MAX_TEXT_CANDIDATE ? facts.text : undefined)
+	return { ...facts, role, accessibleName: name }
 }
 
 /* ------------------------------------------------------------------ */

@@ -1502,12 +1502,14 @@
     </template>
     <template id="processGroupActionsTemplate">
       <div class="canvas-group-actions" hidden>
+        <!-- hide buttons
         <button data-group-add-step>Add step</button>
         <button data-group-add-after>Add group after</button>
         <button data-group-rename>Rename</button>
         <button data-group-move="up">Move up</button>
         <button data-group-move="down">Move down</button>
         <button data-group-merge>Merge into next</button>
+        -->
         <button data-group-record>Re-record</button>
         <button data-group-insert="before">Add recording before</button>
         <button data-group-insert="after">Add recording after</button>
@@ -1672,7 +1674,39 @@
             >操作内容<textarea data-step-field="text"></textarea
           ></label>
           <div class="step-field-grid">
-            <label>操作类型<select data-step-field="type"></select></label>
+            <label>操作类型<span class="step-type-picker">
+                <button
+                  type="button"
+                  class="type-picker-trigger"
+                  data-step-field="type"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                >
+                  <span>请选择</span></button
+                ><svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m5 9 7 7 7-7" />
+                </svg>
+                <div class="popup type-picker-popup" hidden>
+                  <div class="type-picker-toolbar">
+                    <input
+                      type="search"
+                      placeholder="搜索"
+                      aria-label="搜索操作类型选项"
+                      autocomplete="off"
+                    />
+                    <button type="button" aria-label="清空搜索">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m6 6 12 12M18 6 6 18" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div
+                    class="type-picker-options"
+                    role="listbox"
+                    aria-label="操作类型选项"
+                  ></div>
+                </div>
+              </span></label>
             <label>目标<input data-step-field="target" /></label>
             <label>填写内容<input data-step-field="value" /></label>
           </div>

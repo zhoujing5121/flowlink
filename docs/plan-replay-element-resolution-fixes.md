@@ -1,6 +1,9 @@
 # 修改方案:回放元素解析可靠性修复(基于 5 次真实回放失败的解剖)
 
-> 性质:实施方案文档(尚未实现)。依据 2026-11-15 对本机全部回放报告的解剖结论。
+> 性质:实施方案文档。**2026-11-15 已实施 A/B/D(PR1 全部)与 A4;方案 C 刻意不做**——
+> 回放保持失败即结束,由用户在 Test 面板手动点「Run remaining steps with AI」转交给
+> browser-use 接管(既有 `playback:aiContinue` 链路),不向 `playOnPage` 注入 L4 repair。
+> 依据 2026-11-15 对本机全部回放报告的解剖结论。
 > 基线 commit:`2f24788`(master)+ 工作区未提交的登录分支/参数化改动。
 > 原则:**不改 schemaVersion、不动 `observed` 不可变契约、不破坏 recorder/executor 现有导出**。
 

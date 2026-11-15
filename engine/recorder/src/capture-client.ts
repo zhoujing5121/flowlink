@@ -323,9 +323,10 @@ export type ValidationResult = 'ok' | 'ambiguous' | 'missing'
 
 /**
  * 校验一个候选：
- * 1. `count() === 1`（唯一）
- * 2. 可见（`isVisible()`）
- * 3. **命中的确实是我们的元素**（比对 uid 标记，防止「唯一但不是它」）
+ * 1. 「可见元素中唯一」——多命中时隐藏副本（模板 / 通知堆叠）不参与唯一性判定，
+ *    与回放端 L1/L2 的可见性预过滤同一语义（录放不漂移）；
+ * 2. 可见（`isVisible()` / `checkVisibility`）；
+ * 3. **命中的确实是我们的元素**（比对 uid 标记，防止「唯一但不是它」）。
  *
  * 第 3 步是关键：PW 的 `getByRole('button', {name:'提交'})` 唯一命中时也可能指向另一个
  * 长得一样的按钮，只判 count 会把「录错元素」写进 IR。
@@ -344,7 +345,36 @@ export async function validateCandidate(
 		return 'missing'
 	}
 	if (count === 0) return 'missing'
-	if (count > 1) return 'ambiguous'
+	if (count > 1) {
+		// 隐藏副本（模板 / 堆叠通知）不参与唯一性判定：
+		// 真实页面上「可见元素中唯一」就是可回放的唯一性。off-screen 但已渲染的元素
+		// 仍算可见（与 resolver/hash.ts 的 isVisible 语义一致）。
+		const flags = await locator
+			.evaluateAll(
+				(els, want) =>
+					els.map((el) => {
+						const anyEl = el as Element & { checkVisibility?: (o?: object) => boolean }
+						let visible = false
+						if (typeof anyEl.checkVisibility === 'function') {
+							try {
+								visible = anyEl.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+							} catch {
+								visible = el.getClientRects().length > 0
+							}
+						} else visible = el.getClientRects().length > 0
+						return { visible, owned: el.getAttribute('data-rr-uid') === want }
+					}),
+				uid,
+			)
+			.catch(() => undefined)
+		if (flags) {
+			const visibleOnes = flags.filter((f) => f.visible)
+			if (visibleOnes.length === 1 && visibleOnes[0]!.owned) return 'ok'
+			if (visibleOnes.length === 1 && !visibleOnes[0]!.owned) return 'ambiguous' // 唯一可见的是别的元素
+			if (visibleOnes.length === 0) return 'missing' // 全部隐藏
+		}
+		return 'ambiguous' // 多个可见（或读不到可见性）：仍拒绝，保守性不降级
+	}
 	try {
 		if (!(await locator.isVisible())) return 'missing'
 	} catch {

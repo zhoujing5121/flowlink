@@ -748,6 +748,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#categoryField")) closePopup("category");
   if (!e.target.closest(".form-select")) closePopup("service");
   if (!e.target.closest(".service-line-control")) closeServicePickers();
+  if (!e.target.closest(".step-type-picker")) closeStepTypePickers();
 });
 
 function validateProfileServices() {
@@ -1101,21 +1102,157 @@ const STEP_ELEMENT_KINDS = new Set([
 ]);
 const STEP_VALUE_KINDS = new Set(["input", "select"]);
 
-function fillStepTypeOptions(select, rawValue) {
+/** Instruction 操作类型选择器：与 Profile 的 Service Level 选择器同款交互（搜索 + 选中标记）。
+ *  行由模板克隆生成，无法在启动时绑定，改为每次填充时接线；aria-controls 用行号生成唯一 id。 */
+function closeStepTypePickers() {
+  document
+    .querySelectorAll(".type-picker-trigger[aria-expanded='true']")
+    .forEach((trigger) => {
+      const popup = document.getElementById(
+        trigger.getAttribute("aria-controls") || "",
+      );
+      if (popup) popup.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+    });
+}
+
+function wireStepTypePicker(row, index, rawValue) {
+  const trigger = row.querySelector(".type-picker-trigger");
+  const popup = row.querySelector(".type-picker-popup");
+  if (!trigger || !popup) return;
+  const popupId = `step-type-popup-${index}`;
+  popup.id = popupId;
+  trigger.setAttribute("aria-controls", popupId);
+  trigger.dataset.stepIndex = index;
+  const search = popup.querySelector("input[type=search]");
+  const clearButton = popup.querySelector(".type-picker-toolbar button");
+  const list = popup.querySelector(".type-picker-options");
   const kinds = Object.keys(STEP_KIND_TEXT);
-  if (select.options.length !== kinds.length) {
-    select.replaceChildren(
-      ...kinds.map((kind) => new Option(STEP_KIND_TEXT[kind], kind)),
-    );
-  }
   const normalized = normalizeStepKind(String(rawValue || ""));
-  if (kinds.includes(normalized)) {
-    select.value = normalized;
-    return;
-  }
-  // 历史草稿值不在受支持列表：保留为临时选项交由用户改选（编辑是本地草稿，不静默改数据）
-  if (rawValue) select.append(new Option(`${rawValue}（不受支持）`, rawValue));
-  select.value = rawValue || "";
+  // 当前值在选中后会变化：用可变变量跟踪，避免重开弹层时用闭包里的初始值渲染
+  let currentKind = kinds.includes(normalized) ? normalized : "";
+  let currentRaw = String(rawValue || "");
+
+  const close = () => {
+    popup.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  };
+  const renderOptions = () => {
+    list.replaceChildren(
+      ...kinds.map((kind) => {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "type-picker-option";
+        option.dataset.typeValue = kind;
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(kind === currentKind));
+        const label = document.createElement("span");
+        label.textContent = STEP_KIND_TEXT[kind];
+        const check = document.createElement("span");
+        check.className = "type-picker-check";
+        check.setAttribute("aria-hidden", "true");
+        check.innerHTML =
+          '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>';
+        option.append(label, check);
+        return option;
+      }),
+    );
+  };
+  const filterOptions = () => {
+    const query = search.value.trim().toLowerCase();
+    let visible = 0;
+    list.querySelectorAll(".type-picker-option").forEach((option) => {
+      const match =
+        option.textContent.toLowerCase().includes(query) ||
+        option.dataset.typeValue.toLowerCase().includes(query);
+      option.hidden = !match;
+      if (match) visible++;
+    });
+    let empty = list.querySelector(".type-picker-empty");
+    if (visible) {
+      empty?.remove();
+      return;
+    }
+    if (!empty) {
+      empty = document.createElement("p");
+      empty.className = "type-picker-empty";
+      list.append(empty);
+    }
+    empty.textContent = "无匹配选项";
+  };
+  const showValue = (kind, raw) => {
+    trigger.dataset.value = kind || raw || "";
+    trigger.querySelector("span").textContent = kind
+      ? STEP_KIND_TEXT[kind]
+      : raw
+        ? `${raw}（不受支持）`
+        : "请选择";
+    trigger.classList.toggle("is-empty", !kind && !raw);
+  };
+
+  renderOptions();
+  showValue(currentKind, currentRaw);
+
+  trigger.onclick = () => {
+    const opening = popup.hidden;
+    closeStepTypePickers();
+    if (!opening) return;
+    search.value = "";
+    renderOptions();
+    showValue(currentKind, currentRaw);
+    filterOptions();
+    popup.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    search.focus();
+  };
+  search.oninput = filterOptions;
+  search.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      return;
+    }
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (search.value) {
+      search.value = "";
+      filterOptions();
+    } else {
+      close();
+      trigger.focus();
+    }
+  };
+  popup.onkeydown = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+    trigger.focus();
+  };
+  clearButton.onclick = () => {
+    search.value = "";
+    filterOptions();
+    search.focus();
+  };
+  list.onclick = (e) => {
+    const option = e.target.closest("[data-type-value]");
+    if (!option) return;
+    const kind = option.dataset.typeValue;
+    currentKind = kind;
+    currentRaw = "";
+    showValue(kind, "");
+    list
+      .querySelectorAll(".type-picker-option")
+      .forEach((node) =>
+        node.setAttribute("aria-selected", String(node === option)),
+      );
+    close();
+    // 复用 Instruction 的通用编辑管道：触发一次冒泡 input，让 bindStepEditor
+    // 更新草稿、启停字段并重建 Test 流。
+    trigger.value = kind;
+    trigger.dispatchEvent(new Event("input", { bubbles: true }));
+    trigger.focus();
+  };
 }
 
 function applyStepFieldStates(row, rawType) {
@@ -1159,9 +1296,7 @@ function fillInstructionPanel(panel, item) {
         textarea.dataset.stepIndex = index;
         textarea.setAttribute("aria-label", code + " 操作内容");
         textarea.value = text;
-        const typeSelect = step.querySelector('[data-step-field="type"]');
-        typeSelect.dataset.stepIndex = index;
-        fillStepTypeOptions(typeSelect, detail.type);
+        wireStepTypePicker(step, index, detail.type);
         for (const field of ["target", "value"]) {
           const input = step.querySelector('[data-step-field="' + field + '"]');
           input.dataset.stepIndex = index;

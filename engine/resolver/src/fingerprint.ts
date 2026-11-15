@@ -127,8 +127,15 @@ export async function resolveL2(
 
 	const observed = target.observed.rect
 	const viewport = target.observed.viewport
+	// 可见性预过滤：隐藏副本（模板 / 堆叠通知）的矩形失真，先剔除再排序。
+	// 全池不可见时保留原池：下方 winner 可见性检查会按 HIDDEN 失败，语义不变。
+	const visiblePool = pool.filter((c) => c.visible)
+	const effective = visiblePool.length > 0 ? visiblePool : pool
+	if (visiblePool.length > 0 && visiblePool.length < pool.length) {
+		log(`L2 预过滤：${pool.length} 个精确候选中 ${pool.length - visiblePool.length} 个不可见，已剔除`)
+	}
 	// 几何分数只负责多个精确候选间的消歧；分差不足就拒绝选择，不降低字段匹配标准。
-	const ranked = rankMatches(pool, (c) => c.rect, observed, viewport)
+	const ranked = rankMatches(effective, (c) => c.rect, observed, viewport)
 	const picked = pickWinner(ranked, opts.ambiguityThreshold)
 
 	if (picked.ambiguous) {
@@ -138,7 +145,7 @@ export async function resolveL2(
 			level: 'L2',
 			strategy,
 			scores: [a?.score ?? 0, b?.score ?? 0],
-			matched: pool.length,
+			matched: effective.length,
 		})
 	}
 
@@ -173,14 +180,14 @@ export async function resolveL2(
 
 	log(
 		`L2 ${strategy} 命中：uid=${winner.item.uid} score=${winner.score} ` +
-			`（候选池 ${pool.length}）`,
+			`（候选池 ${effective.length}${effective.length < pool.length ? `，自 ${pool.length} 剔除隐藏副本` : ''}）`,
 	)
 
 	return {
 		locator,
 		score: winner.score,
 		strategy,
-		matched: pool.length,
+		matched: effective.length,
 		release: strip,
 	}
 }

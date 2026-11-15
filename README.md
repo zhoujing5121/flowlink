@@ -12,7 +12,7 @@ FlowLink is a Windows desktop application for recording browser workflows, stori
 - Edit Process groups with manual waits and assertion-based branches (maximum three visits per group per replay)
 - Open replay tabs through native Electron views and start every Test entry with a fresh single-tab browser
 - Capture element evidence, screenshots, dialogs, downloads, and frame/tab context
-- Resolve elements through multiple candidates and stable fingerprints
+- Resolve elements through multiple candidates and stable fingerprints, with one shared "unique among visible elements" semantic on both record and replay sides (hidden template copies no longer turn a semantic match into an ambiguity failure); steps left with only structural selectors are flagged for review at record time
 - Re-record flows and review execution artifacts
 - Replay the required flow prefix before re-recording or inserting a process node, then continue from the resulting browser state
 - Persist tasks and recordings in the Electron user-data directory

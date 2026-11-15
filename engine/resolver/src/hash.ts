@@ -13,8 +13,10 @@
  *
  * 属性策略（与 recorder/src/element.ts:43-55,132-177 一致）：
  *   - allow：FINGERPRINT_ATTRS 白名单 + 任意 `data-*`；
- *   - deny：`class` / `style` / `data-rr-*`（自身打的标记）；
- *   - 空值丢弃；看起来像动态值（uuid / 16+ hex / 4+ 连续数字）的丢弃。
+ *   - deny：`class` / `style` / `data-rr-*`（自身打的标记），以及框架内部标记
+ *     `data-bind`（knockout，值常带换行）/ `data-reactid` / `data-v-*`（vue scoped）/
+ *     `ng-*`——它们是框架状态，不是元素身份；
+ *   - 空值丢弃；看起来像动态值（uuid / 16+ hex / 4+ 连续数字 / 含换行符）的丢弃。
  *
  * 不把 class 计入的原因：测试页 /basic 的 #volatile-class-btn 每秒都会更换 class，
  * 但 id / data-testid / aria-label 稳定 —— 这正是 L2 要能命中而「按 class 生成 css」会挂的场景。
@@ -45,20 +47,24 @@ export interface StableAttrPolicy {
 	allowExact: readonly string[]
 	allowPrefix: readonly string[]
 	denyExact: readonly string[]
+	/** 按前缀禁用（vue scoped `data-v-*`、angular `ng-*` 等框架内部标记） */
+	denyPrefix: readonly string[]
 }
 
 export const STABLE_ATTR_POLICY: StableAttrPolicy = {
 	allowExact: FINGERPRINT_ATTRS,
 	allowPrefix: ['data-'],
-	denyExact: ['class', 'style'],
+	denyExact: ['class', 'style', 'data-bind', 'data-reactid'],
+	denyPrefix: ['data-v-', 'ng-'],
 }
 
 /** 元素上「不是内容」的标签，指纹遍历时直接跳过 */
 export const NON_CONTENT_TAGS = ['script', 'style', 'head', 'meta', 'link', 'noscript', 'template']
 
-/** 动态值判定（与 recorder 的 isDynamicValue 一致）：uuid / 长 hex / 4 位以上数字 / 时间戳 */
+/** 动态值判定（与 recorder 的 isDynamicValue 一致）：uuid / 长 hex / 4 位以上数字 / 时间戳 / 含换行 */
 export function isDynamicValue(value: string): boolean {
 	if (!value) return false
+	if (value.includes('\n')) return true
 	if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(value)) return true
 	if (/^[0-9a-f]{16,}$/i.test(value)) return true
 	if (/\d{4,}/.test(value)) return true
@@ -72,6 +78,7 @@ export function isStableAttr(name: string, policy: StableAttrPolicy = STABLE_ATT
 	// 先排除运行时标记和显式禁用项，再检查白名单；被拒绝的属性不能因前缀而重新放行。
 	if (lower.startsWith('data-rr-')) return false // 自己打的标记不参与指纹
 	if (policy.denyExact.includes(lower)) return false
+	if (policy.denyPrefix.some((prefix) => lower.startsWith(prefix))) return false
 	if (policy.allowExact.includes(lower)) return true
 	return policy.allowPrefix.some((prefix) => lower.startsWith(prefix))
 }
@@ -199,6 +206,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 
 	const isDynamicValue = (value: string): boolean => {
 		if (!value) return false
+		if (value.indexOf('\n') >= 0) return true
 		if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(value)) return true
 		if (/^[0-9a-f]{16,}$/i.test(value)) return true
 		if (/\d{4,}/.test(value)) return true
@@ -210,6 +218,9 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		const lower = name.toLowerCase()
 		if (lower.indexOf('data-rr-') === 0) return false
 		if (policy.denyExact.indexOf(lower) >= 0) return false
+		for (const prefix of policy.denyPrefix) {
+			if (lower.indexOf(prefix) === 0) return false
+		}
 		if (policy.allowExact.indexOf(lower) >= 0) return true
 		for (const prefix of policy.allowPrefix) {
 			if (lower.indexOf(prefix) === 0) return true
@@ -341,6 +352,17 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return el.getClientRects().length > 0
 	}
 
+	/**
+	 * 元素原始属性表（键小写归一）。B3：全等比较对 flow 提供的 key 直接读原始值，
+	 * 绕过策略过滤——策略只决定「新录制收什么属性」，不能让旧 flow 指纹里
+	 * （旧策略收下的）data-bind 等属性在回放侧失配。
+	 */
+	const rawAttrMap = (el: Element): Record<string, string> => {
+		const out: Record<string, string> = {}
+		for (const attr of Array.from(el.attributes)) out[attr.name.toLowerCase()] = attr.value
+		return out
+	}
+
 	const matches = (el: Element): boolean => {
 		const tag = el.tagName.toLowerCase()
 		if (tag !== arg.tag.toLowerCase()) return false
@@ -351,7 +373,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		// 目标提供了哪些稳定属性就逐项要求全等；不以其他相似属性补偿缺失或不一致。
 		const wantKeys = Object.keys(arg.attrs)
 		if (wantKeys.length > 0) {
-			const live = stableAttrs(el)
+			const live = rawAttrMap(el)
 			for (const key of wantKeys) {
 				if (live[key] !== arg.attrs[key]) return false
 			}
