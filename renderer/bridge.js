@@ -355,18 +355,28 @@
 		if (frames) boundsObserver.observe(frames)
 	}
 
+	/**
+	 * 隐藏原生浏览器视图。同时失效已上报的矩形缓存：reportBrowserBounds 有
+	 * 「几何未变即跳过」的去重，若不在隐藏时清空 lastBrowserBoundsKey，
+	 * 「隐藏 → 同尺寸恢复」场景永远不会重新上报，视图将停留在隐藏状态。
+	 */
+	function hideNativeBrowser() {
+		lastBrowserBoundsKey = ''
+		return F.browser.hide()
+	}
+
 	/** 把 #browserFrames 的屏幕矩形上报给主进程 */
 	function reportBrowserBounds() {
 		// Bounds 使用屏幕坐标，而非工作区局部坐标。忽略隐藏或尺寸为零的界面，
 		// 并跳过未变化的矩形，避免布局观察器连续触发时发送冗余 IPC。
 		const frames = $('browserFrames')
 		if (!frames) {
-			F.browser.hide()
+			hideNativeBrowser()
 			return
 		}
 		const rect = frames.getBoundingClientRect()
 		if (rect.width < 2 || rect.height < 2) {
-			F.browser.hide()
+			hideNativeBrowser()
 			return
 		}
 		const state = recordingSession()
@@ -392,7 +402,7 @@
 	confirmWorkspaceAction = async function (message) {
 		// 原生内容会覆盖渲染器对话框；显示确认框前先隐藏原生视图，
 		// 确认结束后重新测量位置并恢复覆盖层。
-		await F.browser.hide().catch(() => undefined)
+		await hideNativeBrowser().catch(() => undefined)
 		try {
 			return await showWorkspaceConfirmation(message)
 		} finally {
@@ -480,7 +490,7 @@
 		state.focused = reRecordTarget || null
 		state.allExplicit = false
 		if (reRecordTarget) {
-			F.browser.hide()
+			hideNativeBrowser()
 			if (state.browserElement) state.browserElement.hidden = true
 		}
 		renderRecordingWorkspace()
@@ -597,7 +607,7 @@
 				state.stage = 'done'
 				state.view = 'analysis'
 				state.allExplicit = false
-				F.browser.hide()
+				hideNativeBrowser()
 				renderRecordingWorkspace()
 				if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped and only fallback steps were available. Review the captured material and advise what evidence is missing for reliable replay. Do not generate a replacement material yet.' })
 				return
@@ -688,7 +698,7 @@
 			item.resultTab = 'Process'
 			state.view = 'analysis'
 			state.allExplicit = false
-			F.browser.hide()
+			hideNativeBrowser()
 			state.browserElement.hidden = true
 			renderRecordingWorkspace()
 			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped. Review the initial recording, captured steps, target evidence, navigation and cross-tab/system transitions. Give actionable advice for improving replay reliability. Do not generate a refined material until the user explicitly asks.' })
@@ -807,7 +817,7 @@
 			state.view = 'analysis'
 			state.focused = item.id
 			item.resultTab = 'Process'
-			F.browser.hide()
+			hideNativeBrowser()
 			renderRecordingWorkspace()
 			alert('Unable to prepare group recording: ' + (err?.message || String(err)))
 		} finally {
@@ -1692,7 +1702,7 @@
 				return
 			}
 		}
-		F.browser.hide()
+		hideNativeBrowser()
 		boundsObserver?.disconnect()
 		boundsObserver = null
 		await _origCloseDrawer()

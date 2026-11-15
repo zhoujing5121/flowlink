@@ -103,6 +103,12 @@ async function bestEffortNetworkIdle(page: Page, timeoutMs: number): Promise<voi
 export const OPTIONAL_NAV_WAIT_MS = 800
 
 /**
+ * 可选元素步骤回放：目标元素"最多等多久判定为不出现然后跳过"（毫秒）。
+ * 与 OPTIONAL_NAV_WAIT_MS 同语义，但用于带 target 的步骤（登录组容忍）。
+ */
+export const OPTIONAL_ELEMENT_WAIT_MS = 2_000
+
+/**
  * 比较 URL 的 origin + pathname 是否一致（忽略 query 与 hash）。
  * SSO 往返携带每次运行都不同的 state/nonce 查询参数，完整比对必然误判；
  * hash 路由 SPA 不覆盖（已知限制）。解析失败按不相等处理。

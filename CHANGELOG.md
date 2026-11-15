@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **Recording:** Single-select dropdowns record as `select_N` Reference variables with the recorded value as default (multi-select keeps inline values), so replay-time dropdown choices are editable like text inputs.
+- **Executor:** `isOptional` now applies to element steps too: when the target does not appear within a short wait, the step reports `skip` instead of failing, letting tolerant login groups absorb a remembered SSO session.
 - **Pi:** AI takeover after a failed Test run: a one-click "Run remaining steps with AI" action hands the failed step and all remaining steps to a `@browser_use/pi` agent attached to the embedded browser (failure scene preserved); steps complete with an AI badge, progress lands in the AI pane chat, secrets flow through the SDK's redacting `sensitiveData` channel, and guardrails (domain allowlist from the flow, per-step retry, 10-minute budget, Stop) bound the run. The source Flow is never modified.
 - **Pi:** Maintain every Pi prompt (session system prompt, auto-refine and refine generation, AI-pane advice) in `config/prompts.json` with `{{placeholder}}` templates; generation prompts now require business-stage grouping (2–6 labeled top-level groups) and plain-language step labels a non-technical user understands.
 - **UI:** Make Service Levels 1–4 required cascading dropdowns backed by the process landscape.
@@ -34,6 +36,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **UI:** The Manual/Automated badge on Process canvas steps now marks step origin: recorded steps and steps added by users in the editor show Manual, while REFINED (AI-refined) flow steps show Automated.
+- **UI:** Process, Instruction, and Test step text prefers the step's own label (AI-refined flows carry business-language labels) and otherwise renders Chinese phrases per operation type (点击 / 填写 / 选择 / 上传 …) instead of raw English kind names; the Instruction operation type is now a dropdown of the supported step types and fields without meaning for a type (target/value) are disabled.
+- **Pi:** Auto-refined (`REFINED…`) workflows with a login segment now keep it as a gate condition plus a tolerant sign-in group (optional credential steps closed by an assert), so replays adapt to logged-in, expired, and remembered-SSO states; recorded value parameters (`input_N`/`select_N`/`password`/`file_N`) are preserved as templates, unknown variable references fail the generation, and unused variables no longer linger on the Reference page.
 - **Startup:** The app prewarms the recording engine (CDP/Playwright attach) and the Pi runtime in the background after launch or when the AI pane opens, and no longer loads Playwright during cold start, cutting Record-click and first-AI-message latency; `[perf]` log lines now quantify cold start, Record start, and Pi prompt timings.
 - **Recording:** Every session logs one `[perf] recording-session` summary (events received, batch failures, events requeued or dropped, capture reinjection attempts, popups never captured, pages attached/detached) to make stability issues measurable.
 - **Recording:** Clicking Record no longer reloads the start URL when the embedded browser is already on it (hash differences ignored); the recording baseline is the current page, so use the browser toolbar reload first if a freshly loaded page is required.
@@ -46,6 +51,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Fixed
 
+- **UI:** The embedded browser stays visible during replay: `playback:run` now restores the browser surface after the pre-replay tab reset (whose hide was never undone because unchanged bounds were deduplicated away), and hiding the browser invalidates the reported-rect cache so a same-size restore always re-reports.
 - **Recording:** Event batches whose processing fails are retried once and otherwise kept in the evidence stream with their event IDs named in the warning, instead of being lost silently.
 - **Recording:** A drag whose start and drop land in different capture flush windows (~500 ms apart) now records as one drag step instead of staying evidence-only.
 - **Recording:** A tab that crashes or is closed mid-recording no longer breaks the session; its actions are skipped with a warning while the remaining tabs keep recording, and popups that cannot be captured are retried and reported.

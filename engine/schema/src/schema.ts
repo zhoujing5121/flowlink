@@ -147,7 +147,10 @@ const BaseStepSchema = z.object({
 	timeout: z.number().int().positive().optional(),
 	/**
 	 * 回放自适应步骤：效果已自行发生时可以跳过（报告为 skip，不算失败）。
-	 * 目前仅录制器对机器发起的认证跳转 navigate 步骤设置。
+	 * navigate 由录制器对机器发起的认证跳转设置（浏览器已自行重定向则跳过）；
+	 * 元素步骤（input/select/click/hover/upload/wait-element 等）可由 AI 细化或
+	 * 手动设置：目标元素在短窗口内未出现则跳过，用于登录组容忍
+	 * （如 SSO 记住会话时凭据字段缺失）。
 	 */
 	isOptional: z.boolean().optional(),
 	expect: ExpectSchema.optional(),

@@ -3118,13 +3118,19 @@ body {
 }
 
 .reference-dialog {
-  width: 440px;
+  width: 480px;
   max-width: calc(100vw - 32px);
   padding: 24px;
   border: 0;
   background: #fff;
   color: #101416;
   box-shadow: 0 8px 24px #0004;
+}
+
+.btn.reference-dialog-btn {
+    flex-basis: unset !important;
+    max-width: unset !important;
+    width: 132px !important;
 }
 
 .process-step-dialog {

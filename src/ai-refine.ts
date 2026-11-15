@@ -11,6 +11,8 @@ import {
 	loadFlow,
 	makeId,
 	parseFlow,
+	parseTemplate,
+	type Assertion,
 	type ElementRef,
 	type Expect,
 	type Flow,
@@ -27,6 +29,8 @@ export interface ElementLibraryEntry {
 	id: string
 	ref: ElementRef
 	origin: string
+	/** 首见该元素的步骤所在页面 URL；供模型区分登录页/目标页元素 */
+	pageUrl?: string
 	summary: string
 }
 
@@ -82,7 +86,7 @@ function elementKey(ref: ElementRef): string {
 	return `${ref.fingerprint?.stableHash ?? ''}\u0000${first?.kind ?? ''}\u0000${value}`
 }
 
-function elementSummary(id: string, ref: ElementRef): string {
+function elementSummary(id: string, ref: ElementRef, pageUrl?: string): string {
 	const tag = ref.observed?.tag || 'element'
 	const name = ref.fingerprint?.accessibleName || ref.observed?.text || ref.description || ''
 	const first = ref.candidates?.[0]
@@ -94,19 +98,26 @@ function elementSummary(id: string, ref: ElementRef): string {
 				: `${first.kind} ${first.value.role}${first.value.name ? ` "${truncateText(first.value.name, 40)}"` : ''}`
 	}
 	const fingerprint = ref.fingerprint?.stableHash ? 'fingerprint ok' : 'fingerprint missing'
-	return `${id} · ${tag}${name ? ` "${truncateText(name, 40)}"` : ''} · ${locator} · ${fingerprint}`
+	const page = pageUrl ? ` · page ${truncateText(pageUrl, 80)}` : ''
+	return `${id} · ${tag}${name ? ` "${truncateText(name, 40)}"` : ''} · ${locator} · ${fingerprint}${page}`
 }
 
 class LibraryBuilder {
 	private library: ElementLibraryEntry[] = []
 	private byKey = new Map<string, string>()
 
-	add(ref: ElementRef, origin: string): { $ref: string } {
+	add(ref: ElementRef, origin: string, pageUrl?: string): { $ref: string } {
 		const key = elementKey(ref)
 		const existing = this.byKey.get(key)
 		if (existing) return { $ref: existing }
 		const id = `e${this.library.length + 1}`
-		this.library.push({ id, ref: structuredClone(ref), origin, summary: elementSummary(id, ref) })
+		this.library.push({
+			id,
+			ref: structuredClone(ref),
+			origin,
+			...(pageUrl !== undefined ? { pageUrl } : {}),
+			summary: elementSummary(id, ref, pageUrl),
+		})
 		this.byKey.set(key, id)
 		return { $ref: id }
 	}
@@ -116,7 +127,7 @@ class LibraryBuilder {
 	}
 }
 
-const BASE_FIELDS = ['label', 'timeout', 'page']
+const BASE_FIELDS = ['label', 'timeout', 'page', 'isOptional', 'pageUrl', 'systemName']
 const STEP_SCALAR_FIELDS: Record<string, string[]> = {
 	navigate: ['url', 'navigationType', 'previousUrl'],
 	click: ['button', 'clickCount', 'modifiers', 'position'],
@@ -138,7 +149,12 @@ const STEP_SCALAR_FIELDS: Record<string, string[]> = {
 	closeTab: ['index'],
 }
 
-function projectExpect(expect: Expect, lib: LibraryBuilder, where: string): Record<string, unknown> {
+function projectExpect(
+	expect: Expect,
+	lib: LibraryBuilder,
+	where: string,
+	pageUrl?: string,
+): Record<string, unknown> {
 	if (expect.kind === 'urlChange') return { kind: expect.kind, pattern: expect.pattern }
 	if (expect.kind === 'domSignature')
 		return {
@@ -153,7 +169,7 @@ function projectExpect(expect: Expect, lib: LibraryBuilder, where: string): Reco
 		}
 	const out: Record<string, unknown> = {
 		kind: expect.kind,
-		target: lib.add(expect.target, `${where}.expect.target`),
+		target: lib.add(expect.target, `${where}.expect.target`, pageUrl),
 	}
 	if (expect.kind === 'textChange') out.to = expect.to
 	return out
@@ -177,17 +193,17 @@ function projectStep(step: Step, lib: LibraryBuilder, flowId: string): unknown {
 	for (const field of STEP_SCALAR_FIELDS[step.kind] ?? [])
 		if (source[field] !== undefined) out[field] = source[field]
 	if (source.target !== undefined)
-		out.target = lib.add(source.target as ElementRef, `${flowId}/${step.id}.target`)
+		out.target = lib.add(source.target as ElementRef, `${flowId}/${step.id}.target`, step.pageUrl)
 	if (source.from !== undefined)
-		out.from = lib.add(source.from as ElementRef, `${flowId}/${step.id}.from`)
+		out.from = lib.add(source.from as ElementRef, `${flowId}/${step.id}.from`, step.pageUrl)
 	if (source.to !== undefined && typeof source.to === 'object') {
 		const to = { ...(source.to as Record<string, unknown>) }
 		if (to.target !== undefined)
-			to.target = lib.add(to.target as ElementRef, `${flowId}/${step.id}.to.target`)
+			to.target = lib.add(to.target as ElementRef, `${flowId}/${step.id}.to.target`, step.pageUrl)
 		out.to = to
 	}
 	if (source.expect !== undefined && source.expect !== null) {
-		out.expect = projectExpect(source.expect as Expect, lib, `${flowId}/${step.id}`)
+		out.expect = projectExpect(source.expect as Expect, lib, `${flowId}/${step.id}`, step.pageUrl)
 	}
 	return out
 }
@@ -420,6 +436,52 @@ export function mergeVariables(flows: Flow[], piVariables?: unknown): Variable[]
 	return [...merged.values()]
 }
 
+/**
+ * 收集输出步骤引用/定义的全部模板变量名（生成后置守卫的数据源）。
+ * - defined：extract 步骤的 into —— 运行时变量，必须排除在"未定义引用"校验外，
+ *   否则 `{{运行时变量}}` 会被误报为引用了不存在的录制变量；
+ * - used：所有值携带字段里的 {{name}} 引用；模板语法非法让 parseTemplate 抛错，
+ *   生成整体失败（绝不静默吞掉）。
+ */
+export function collectTemplateRefs(steps: Step[]): { used: Set<string>; defined: Set<string> } {
+	const used = new Set<string>()
+	const defined = new Set<string>()
+	const use = (value: string | undefined): void => {
+		if (value === undefined) return
+		for (const name of parseTemplate(value)) used.add(name)
+	}
+	const visitAssertion = (assertion: Assertion): void => {
+		if (assertion.kind === 'text') {
+			use(assertion.equals)
+			use(assertion.contains)
+		} else if (assertion.kind === 'value') {
+			use(assertion.equals)
+		}
+	}
+	const visit = (step: Step): void => {
+		if (step.kind === 'group') {
+			for (const child of step.steps) visit(child)
+			return
+		}
+		if (step.kind === 'input') use(step.value)
+		else if (step.kind === 'select') {
+			if (typeof step.value === 'string') use(step.value)
+			else for (const item of step.value) use(item)
+		} else if (step.kind === 'upload') {
+			for (const file of step.files) use(file)
+		} else if (step.kind === 'dialog') use(step.promptText)
+		else if (step.kind === 'navigate') use(step.url)
+		else if (step.kind === 'wait') use(step.prompt)
+		else if (step.kind === 'key') use(step.key)
+		if (step.kind === 'assert' || step.kind === 'condition') visitAssertion(step.assertion)
+		if (step.kind === 'extract') defined.add(step.into)
+		if (step.expect?.kind === 'urlChange') use(step.expect.pattern)
+		if (step.expect?.kind === 'textChange') use(step.expect.to)
+	}
+	for (const step of steps) visit(step)
+	return { used, defined }
+}
+
 /* ---------------- 提示词组装（模板来自 config/prompts.json） ---------------- */
 
 export function buildAutoSanitizePrompt(
@@ -522,6 +584,21 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		}
 		const steps = rehydrateSteps(parsed.steps, projection.library)
 		const variables = mergeVariables(flows, parsed.variables)
+		// 参数保护守卫（不依赖模型自觉）：
+		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
+		// 2) 剪除输出中不再被引用的变量，避免 Reference 页出现死参数；
+		// 3) 源流程有 secret 变量而输出不再使用 → 追加一条 risk。
+		const { used, defined } = collectTemplateRefs(steps)
+		for (const name of used) {
+			if (!defined.has(name) && !variables.some((v) => v.name === name)) {
+				throw new Error(`生成的步骤引用了不存在的变量 {{${name}}}；源流程未改动`)
+			}
+		}
+		const usedOrDefined = new Set([...used, ...defined])
+		const prunedVariables = variables.filter((v) => usedOrDefined.has(v.name))
+		const secretDropped =
+			flows.some((f) => (f.variables ?? []).some((v) => v.secret)) &&
+			!prunedVariables.some((v) => v.secret)
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
 				? parsed.title.trim()
@@ -535,7 +612,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				createdAt: new Date().toISOString(),
 				title,
 				steps,
-				variables,
+				variables: prunedVariables,
 				stats: undefined,
 				selfHealed: [],
 			},
@@ -549,9 +626,16 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 			rationale: Array.isArray(parsed.rationale)
 				? parsed.rationale.filter((item): item is string => typeof item === 'string')
 				: [],
-			risks: Array.isArray(parsed.risks)
-				? parsed.risks.filter((item): item is string => typeof item === 'string')
-				: [],
+			risks: [
+				...(Array.isArray(parsed.risks)
+					? parsed.risks.filter((item): item is string => typeof item === 'string')
+					: []),
+				...(secretDropped
+					? [
+							'源流程包含密码变量 {{password}}，但生成结果不再引用它：凭据步骤可能被删除，请人工确认登录段是否完整',
+						]
+					: []),
+			],
 		}
 	} catch (error) {
 		return { ok: false, error: error instanceof Error ? error.message : String(error) }

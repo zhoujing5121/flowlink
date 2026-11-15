@@ -1294,6 +1294,13 @@ function registerIpc(): void {
 		// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态。
 		await resetBrowserTabs(flow.meta.env.startUrl)
 		const seedPages = await attachPlaybackPages()
+		// Test 运行由用户主动触发，浏览器 surface 必然位于 Test 布局。resetBrowserTabs
+		// 会隐藏视图，而渲染端的 bounds 上报有几何去重、回放期间布局不变时不会重报；
+		// 这里显式恢复可见（与 createNativeBrowserTab 同语义），避免整个回放期间
+		// 浏览器区域空白。
+		browserSurfaceVisible = true
+		ensureBrowserBounds()
+		syncBrowserVisibility()
 
 		playAbortController = new AbortController()
 		playPromise = playOnPage({

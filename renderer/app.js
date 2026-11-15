@@ -891,16 +891,38 @@ const leaveGroupSeed = [
 
 const referenceOperation = leaveGroupSeed.flatMap((group) => group.steps);
 
+/** 操作类型 → 展示文本映射：无 label 的步骤按此合成可读文本（如 REFINED 的步骤已有业务语言 label 则优先用 label） */
+const STEP_KIND_TEXT = {
+  navigate: "打开页面",
+  click: "点击",
+  input: "填写",
+  select: "选择",
+  upload: "上传",
+  hover: "悬停",
+  key: "按键",
+  scroll: "滚动",
+  drag: "拖拽",
+  wait: "等待",
+  assert: "校验",
+  condition: "条件判断",
+  extract: "提取",
+  dialog: "处理弹窗",
+  openTab: "打开标签页",
+  switchTab: "切换标签页",
+  closeTab: "关闭标签页",
+  script: "执行脚本",
+};
+
 function testStepLabel(step, index) {
   if (!step) return `Step ${index + 1}`;
-  const kind = step.kind || "action";
+  if (step.label?.trim()) return step.label.trim();
+  if (step.text?.trim()) return step.text.trim();
+  const kindText = STEP_KIND_TEXT[step.kind] || step.kind || "操作";
   const target = step.target?.candidates?.[0]?.value;
   const targetText =
     typeof target === "string" ? target : target?.name || target?.role || "";
-  const extra = step.url
-    ? step.url
-    : step.value || step.text || targetText || "";
-  return `${kind}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
+  const extra = step.url ? step.url : step.value || targetText || "";
+  return `${kindText}${extra ? ` · ${String(extra).replace(/^(?:https?:\/\/)/, "")}` : ""}`;
 }
 
 function testStepNode(step, index, result) {
@@ -953,13 +975,21 @@ function fillResultPanel(panel, active, item) {
   else if (active === "Record") fillRecordPanel(panel, item);
 }
 
-function canvasStepNode(group, text, index) {
+function canvasStepNode(group, text, index, refinedFlow) {
   const step = rowTemplate("canvasStepTemplate").cloneNode(true);
   step.dataset.canvasStepIndex = group.start + index;
   step.querySelector("[data-step-code]").textContent =
     group.number + "-" + String(index + 1).padStart(3, "0");
   step.querySelector("[data-step-text]").textContent = text;
-  const manual = group.flowSteps?.[index]?.execution === "manual";
+  // 徽标表达步骤来源：REFINED 流程的步骤默认 Automation（AI 细化生成）；
+  // 原始录制的步骤默认 Manual（人工录制）；用户在编辑器新增的步骤（manual_ 前缀
+  // id）与显式标 execution: manual 的步骤始终 Manual。execution 字段的回放语义
+  // （暂停等人工确认）不受此展示逻辑影响。
+  const flowStep = group.flowSteps?.[index];
+  const manual =
+    flowStep?.execution === "manual" ||
+    String(flowStep?.id || "").startsWith("manual_") ||
+    !refinedFlow;
   const icon = step.querySelector(".execution-mode-icon");
   icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
   icon.title = manual ? "Manual" : "Automated";
@@ -994,7 +1024,9 @@ function fillProcessPanel(panel, item) {
       heading.textContent = group.number + " · " + group.name;
       section.querySelector(".canvas-group-nodes").replaceChildren(
         ...(group.steps.length
-          ? group.steps.map((text, index) => canvasStepNode(group, text, index))
+          ? group.steps.map((text, index) =>
+              canvasStepNode(group, text, index, item.summary === true),
+            )
           : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
       );
       return section;
@@ -1052,6 +1084,48 @@ function fillProcessPanel(panel, item) {
   }
 }
 
+/** Instruction 各输入框的适用范围：无目标 / 无填写值的操作类型禁用对应字段，避免误导 */
+const STEP_ELEMENT_KINDS = new Set([
+  "click",
+  "input",
+  "select",
+  "hover",
+  "upload",
+  "extract",
+  "assert",
+  "condition",
+  "key",
+  "scroll",
+  "wait",
+  "drag",
+]);
+const STEP_VALUE_KINDS = new Set(["input", "select"]);
+
+function fillStepTypeOptions(select, rawValue) {
+  const kinds = Object.keys(STEP_KIND_TEXT);
+  if (select.options.length !== kinds.length) {
+    select.replaceChildren(
+      ...kinds.map((kind) => new Option(STEP_KIND_TEXT[kind], kind)),
+    );
+  }
+  const normalized = normalizeStepKind(String(rawValue || ""));
+  if (kinds.includes(normalized)) {
+    select.value = normalized;
+    return;
+  }
+  // 历史草稿值不在受支持列表：保留为临时选项交由用户改选（编辑是本地草稿，不静默改数据）
+  if (rawValue) select.append(new Option(`${rawValue}（不受支持）`, rawValue));
+  select.value = rawValue || "";
+}
+
+function applyStepFieldStates(row, rawType) {
+  const kind = normalizeStepKind(String(rawType || ""));
+  const targetField = row.querySelector('[data-step-field="target"]');
+  const valueField = row.querySelector('[data-step-field="value"]');
+  if (targetField) targetField.disabled = !STEP_ELEMENT_KINDS.has(kind);
+  if (valueField) valueField.disabled = !STEP_VALUE_KINDS.has(kind);
+}
+
 function fillInstructionPanel(panel, item) {
   const container = panel.querySelector('[data-result-tab="Instruction"]');
   if (!item) {
@@ -1085,11 +1159,15 @@ function fillInstructionPanel(panel, item) {
         textarea.dataset.stepIndex = index;
         textarea.setAttribute("aria-label", code + " 操作内容");
         textarea.value = text;
-        for (const field of ["type", "target", "value"]) {
+        const typeSelect = step.querySelector('[data-step-field="type"]');
+        typeSelect.dataset.stepIndex = index;
+        fillStepTypeOptions(typeSelect, detail.type);
+        for (const field of ["target", "value"]) {
           const input = step.querySelector('[data-step-field="' + field + '"]');
           input.dataset.stepIndex = index;
           input.value = detail[field];
         }
+        applyStepFieldStates(step, detail.type);
         section.appendChild(step);
       });
       return section;
@@ -3446,23 +3524,26 @@ function processStepLabel(step, index, groups = []) {
     step.target?.candidates?.[0]?.value?.name ||
     step.target?.candidates?.[0]?.value ||
     "";
-  if (step.kind === "input") return `Input · ${target || "field"}`;
+  if (step.label?.trim()) return step.label.trim();
+  const kindText = STEP_KIND_TEXT[step.kind] || step.kind;
+  if (step.kind === "input" || step.kind === "select")
+    return `${kindText} · ${target || "字段"}`;
   if (step.kind === "click" || step.kind === "hover")
-    return `${step.kind === "click" ? "Click" : "Hover"} · ${target || `Step ${index + 1}`}`;
-  if (step.kind === "navigate") return `Navigate · ${step.url}`;
-  if (step.kind === "openTab") return `Open tab${step.url ? ` · ${step.url}` : ""}`;
-  if (step.kind === "switchTab") return `Switch to tab ${step.index + 1}`;
+    return `${kindText} · ${target || `步骤 ${index + 1}`}`;
+  if (step.kind === "navigate") return `${kindText} · ${step.url}`;
+  if (step.kind === "openTab") return `${kindText}${step.url ? ` · ${step.url}` : ""}`;
+  if (step.kind === "switchTab") return `${kindText} ${step.index + 1}`;
   if (step.kind === "wait") {
-    if (step.condition === "timeout") return `Wait · ${step.ms ?? 1000} ms`;
-    if (step.condition === "userOperation") return "Wait · user operation";
-    if (step.condition === "networkIdle") return "Wait · network idle";
-    return `Wait · element present${target ? ` · ${target}` : ""}`;
+    if (step.condition === "timeout") return `${kindText} · ${step.ms ?? 1000} 毫秒`;
+    if (step.condition === "userOperation") return `${kindText} · 用户操作`;
+    if (step.condition === "networkIdle") return `${kindText} · 网络空闲`;
+    return `${kindText} · 元素出现${target ? ` · ${target}` : ""}`;
   }
   if (step.kind === "condition") {
-    const name = (id) => groups.find((group) => group.id === id)?.label || id || "End";
-    return `Condition · ${step.assertion.kind} · true → ${name(step.trueGroupId)} · false → ${name(step.falseGroupId)}`;
+    const name = (id) => groups.find((group) => group.id === id)?.label || id || "结束";
+    return `${kindText} · ${step.assertion.kind} · 是 → ${name(step.trueGroupId)} · 否 → ${name(step.falseGroupId)}`;
   }
-  return `${step.kind}${target ? ` · ${target}` : ""}`;
+  return `${kindText}${target ? ` · ${target}` : ""}`;
 }
 
 function ensureProcessGroups(item) {
@@ -3716,7 +3797,7 @@ function normalizeStepKind(type) {
     return "navigate";
   if (type === "input" || type === "填写" || type === "输入") return "input";
   if (type === "select" || type === "选择") return "select";
-  if (type === "click") return "click";
+  if (type === "click" || type === "点击") return "click";
   if (type === "key") return "key";
   if (type === "hover") return "hover";
   if (type === "scroll") return "scroll";
@@ -3724,7 +3805,7 @@ function normalizeStepKind(type) {
   if (type === "openTab") return "openTab";
   if (type === "closeTab") return "closeTab";
   if (type === "dialog") return "dialog";
-  if (type === "upload") return "upload";
+  if (type === "upload" || type === "上传") return "upload";
   if (type === "wait") return "wait";
   if (type === "assert") return "assert";
   if (type === "extract") return "extract";
@@ -3811,6 +3892,10 @@ function bindStepEditor() {
         ?.querySelector(".step-row-text");
       if (summary) summary.textContent = e.target.value;
     } else item.stepDetails[index][field] = e.target.value;
+    if (field === "type") {
+      const row = e.target.closest(".instruction-step");
+      if (row) applyStepFieldStates(row, e.target.value);
+    }
     item.nodeUpdates = true;
     rebuildItemTestFlow(item);
     renderAIPanel();
@@ -4094,7 +4179,7 @@ function bindReferenceFiles() {
   };
   const dialog = panel.querySelector("#referenceDialog");
   const showChooser = () => {
-    dialog.innerHTML = `<h2 id="referenceDialogTitle">Add to Reference</h2><p>Choose what to add.</p><div class="reference-dialog-actions"><button type="button" class="btn secondary" data-reference-add-variable ${item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add variable</span></button><button type="button" class="btn secondary" data-reference-upload>${designIcon("plus")}<span>Upload files</span></button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div>`;
+    dialog.innerHTML = `<h2 id="referenceDialogTitle">Add to Reference</h2><p>Choose what to add.</p><div class="reference-dialog-actions"><button type="button" class="btn secondary reference-dialog-btn" data-reference-add-variable ${item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add variable</span></button><button type="button" class="btn secondary reference-dialog-btn" data-reference-upload>${designIcon("plus")}<span>Upload files</span></button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div>`;
     dialog.showModal();
   };
   $("referenceAdd").onclick = showChooser;

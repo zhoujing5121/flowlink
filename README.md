@@ -78,7 +78,9 @@ The package script uses `electron-packager`, then creates:
 6. Run the recording to replay it in the embedded browser. Native tab creation and its first navigation replay as one `openTab` action.
 7. Inspect screenshots, step results, downloads, and execution logs.
 
-In Process, add groups and manual steps to a saved flow. Conditions must be the final step in a group and branch to existing groups; a user-operation wait pauses replay until Continue is selected. Recorded text inputs appear in Reference as variables, with password values kept secret.
+In Process, add groups and manual steps to a saved flow. Conditions must be the final step in a group and branch to existing groups; a user-operation wait pauses replay until Continue is selected. Recorded text inputs and single-select dropdowns appear in Reference as variables (edit their values before replay), with password values kept secret.
+
+When a recording contains a login segment, its `REFINED…` twin restructures it into a gate group plus a tolerant sign-in group: a condition on a target-page element sends an already-logged-in replay straight to the business steps, while optional credential steps are skipped when they do not apply (for example a remembered SSO session that only asks for the account). A failed sign-in still fails the run at a closing assertion instead of silently continuing.
 
 Deleting a recording removes its Flow and recording artifacts. Deleting a task removes all of its recordings and files; closing a new taskflow before saving discards recordings created in that draft.
 

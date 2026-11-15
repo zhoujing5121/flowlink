@@ -8,9 +8,15 @@ import type { Browser, BrowserContext, Locator, Page } from 'playwright-core'
 
 import type { ElementRef, Flow } from '../../schema/src/index.js'
 import { makeId } from '../../schema/src/index.js'
-import { resolve, type ResolveResult } from '../../resolver/src/index.js'
+import { resolve, ElementNotFoundError, type ResolveResult } from '../../resolver/src/index.js'
 
-import { runAction, sameSitePath, OPTIONAL_NAV_WAIT_MS, type ActionDeps } from './actions.js'
+import {
+	runAction,
+	sameSitePath,
+	OPTIONAL_NAV_WAIT_MS,
+	OPTIONAL_ELEMENT_WAIT_MS,
+	type ActionDeps,
+} from './actions.js'
 import { ArtifactWriter } from './artifacts.js'
 import { classifyError, StepFailure, type FailurePhase } from './errors.js'
 import {
@@ -434,7 +440,13 @@ export async function runFlowInBrowserContext(
 
 		const resolveTarget = async (
 			target: ElementRef,
-			opts2: { requireVisible?: boolean; allowAi?: boolean; flash?: boolean } = {},
+			opts2: {
+				requireVisible?: boolean
+				allowAi?: boolean
+				flash?: boolean
+				/** 覆盖本步的元素出现等待预算（缺省沿用 PlayOptions.elementWaitMs） */
+				elementWaitMs?: number
+			} = {},
 		): Promise<ResolveResult> => {
 			// spike A / lead 约束 4：closed shadow 目标不要走 AI —— aria snapshot 里根本没有它，
 			// 只可能白白消耗调用额度；直接按 host + position 降级。
@@ -454,7 +466,9 @@ export async function runFlowInBrowserContext(
 					// iframe 的 urlPattern 段也要按回放环境重定基（录制 5199 / 回放 5173）
 					...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
 					// 元素出现等待预算（默认交给 resolver 的 5000ms）
-					...(opts.elementWaitMs !== undefined ? { elementWaitMs: opts.elementWaitMs } : {}),
+					...((opts2.elementWaitMs ?? opts.elementWaitMs) !== undefined
+						? { elementWaitMs: opts2.elementWaitMs ?? opts.elementWaitMs }
+						: {}),
 				},
 			})
 			// 给业务人员看：动作前高亮目标 + 停顿（只在非 headless 时由调用方开启）
@@ -612,6 +626,38 @@ export async function runFlowInBrowserContext(
 					continue
 				}
 				pushLog(`可选导航：仍在 ${item.step.previousUrl}，执行 ${item.step.url}`)
+			}
+
+			// 可选元素步骤：目标在短窗口内不出现 → 跳过（不算失败）。
+			// 与 navigate 的可选分支同语义；用于登录组容忍（如 SSO 记住会话时凭据字段缺失）。
+			// 非 ElementNotFoundError 不吞：落到正常执行路径按原语义失败。
+			if (
+				item.step.kind !== 'navigate' &&
+				(item.step as { isOptional?: boolean }).isOptional === true &&
+				'target' in item.step &&
+				item.step.target
+			) {
+				const optionalStart = Date.now()
+				try {
+					await resolveTarget(item.step.target, {
+						requireVisible: true,
+						allowAi: false,
+						elementWaitMs: OPTIONAL_ELEMENT_WAIT_MS,
+					})
+				} catch (err) {
+					if (err instanceof ElementNotFoundError) {
+						pushLog(`可选步骤：${item.stepId} 的目标元素未出现，跳过`)
+						const stepResult: StepResult = {
+							stepId: item.stepId,
+							kind: item.step.kind,
+							status: 'skip',
+							ms: Date.now() - optionalStart,
+						}
+						steps.push(stepResult)
+						opts.onStep?.(stepResult)
+						continue
+					}
+				}
 			}
 
 			const stepStart = Date.now()

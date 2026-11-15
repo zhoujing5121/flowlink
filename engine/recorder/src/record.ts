@@ -238,6 +238,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	/** 上传文件占位变量序号：file_1 / file_2 … */
 	let uploadSeq = 0
 	let inputSeq = 0
+	/** 下拉框取值占位变量序号：select_1 / select_2 … */
+	let selectSeq = 0
 	/** 每个标签页最近一次签名（expect 推断的兜底 before） */
 	const lastSigByPage = new Map<number, PageSignature>()
 	/** 页面签名时间线：多标签页各自打点，按 pageIndex 过滤使用 */
@@ -940,12 +942,19 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 						: action.value !== undefined
 							? [action.value]
 							: []
-					return {
-						kind: 'select',
-						id,
-						target,
-						value: values.length > 1 ? values : (values[0] ?? ''),
+					if (values.length === 1) {
+						const name = `select_${++selectSeq}`
+						variables.set(name, {
+							name,
+							type: 'string',
+							defaultValue: values[0] ?? '',
+							secret: false,
+							source: 'input',
+						})
+						return { kind: 'select', id, target, value: `{{${name}}}` }
 					}
+					// 多选语义模糊，保持内联（renderStep 对数组逐项渲染模板，将来要参数化也兼容）
+					return { kind: 'select', id, target, value: values }
 				}
 				case 'key': {
 					const key = action.key ?? 'Enter'
