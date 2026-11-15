@@ -38,13 +38,7 @@ npm run start
 npm run dev
 ```
 
-以上命令都会通过 `scripts/start.ps1` 在启动 Electron 前将控制台输入输出切换为 UTF-8，避免 Windows 终端中的中文诊断日志出现乱码。如果已经在 PowerShell 中工作，也可以直接调用启动脚本，让编码设置先于任何输出管道生效：
-
-```powershell
-& .\scripts\start.ps1
-```
-
-开发模式使用 `& .\scripts\start.ps1 -Dev`。该设置仅影响当前控制台会话，不会修改 PowerShell 配置文件或系统区域设置。
+以上命令都会运行 `scripts/start.mjs`——纯 Node 启动器（先构建再启动 Electron），在任意 shell（包括 agent 与非 PowerShell 终端）中都能正常工作，支持 `--dev`、`--pi-system-proxy`、`--pi-proxy=<url>` 参数（兼容旧拼写 `-Dev`/`-PiSystemProxy`/`-PiProxy`）。Windows 下启动器会尽力把当前控制台的代码页切换为 UTF-8（仅影响当前控制台会话），中文诊断日志在终端和重定向输出中都不会乱码。
 
 构建会生成：
 
@@ -141,6 +135,6 @@ artifacts\<flowId>\runs\<runId>\
 
 FlowLink 按需加载 Pi SDK，不会在应用启动时初始化。Pi 的服务商和模型配置位于 `config/pi-settings.json`，开发环境凭据位于 `config/pi-auth.json`。对于兼容 OpenAI 的企业内部服务，将 provider 设置为 `custom`，把 `config/models.example.json` 复制为 `config/models.json`，并在其中填写服务地址和准确的模型 ID；凭据文件中的 provider 键也使用 `custom`。这样企业服务商 ID 和服务地址只保存在本地 `models.json`，不会出现在 Pi settings 中。`config/models.json` 和 API 密钥文件已从 Git 跟踪中排除。所有 Pi 提示词——会话系统提示词、自动细化与按指令生成的提示词、AI 面板建议提示词——统一在 `config/prompts.json` 中以 `{{占位符}}` 模板维护；生成类提示词要求按业务阶段分组（2–6 个带标签的顶层组），且步骤描述使用非技术用户能看懂的日常语言。
 
-启动时可以为 Pi 配置代理：打包版使用 `FlowLink.exe --pi-system-proxy` 解析 Windows 系统代理/PAC，或使用 `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` 指定代理。开发环境可运行 `npm start -- -PiSystemProxy` 或 `npm start -- -PiProxy "http://127.0.0.1:7890"`。显式代理优先于系统代理；支持 `http`、`https` 和 `socks5`。也可继续使用 `HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY` 环境变量。以上设置只影响 Pi 请求，不会配置内嵌 Chromium 浏览器的网络代理。不要提交带认证信息的代理 URL。
+启动时可以为 Pi 配置代理：打包版使用 `FlowLink.exe --pi-system-proxy` 解析 Windows 系统代理/PAC，或使用 `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` 指定代理。开发环境可运行 `npm start -- --pi-system-proxy` 或 `npm start -- --pi-proxy "http://127.0.0.1:7890"`（PowerShell 拼写 `-PiSystemProxy`/`-PiProxy` 同样可用）。显式代理优先于系统代理；支持 `http`、`https` 和 `socks5`。也可继续使用 `HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY` 环境变量。以上设置只影响 Pi 请求，不会配置内嵌 Chromium 浏览器的网络代理。不要提交带认证信息的代理 URL。
 
 AI 助手面板提供录制后建议、回放失败诊断，并支持用 `@` 提及当前任务的录制来发起请求。选中已分析的录制并点击 Refine，可选择预设优化项并补充说明后生成细化材料；录制停止后也会自动生成一份 `REFINED…` 孪生录制（在 `config/pi-settings.json` 中设置 `autoRefine: false` 可关闭）。所有细化结果都以新录制保存，原始录制保持不变。Test 运行失败后，AI 面板还提供「Run remaining steps with AI」：browser-use agent 附着内嵌浏览器原地完成剩余步骤（步骤带 AI 徽标、密钥全程脱敏、域名受录制证据约束、随时可停），不修改源录制。

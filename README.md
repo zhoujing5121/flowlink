@@ -38,13 +38,7 @@ Development mode opens Electron DevTools:
 npm run dev
 ```
 
-Both commands use `scripts/start.ps1` to select UTF-8 console input/output before launching Electron, keeping Chinese diagnostic logs readable in Windows terminals. When working in an existing PowerShell session, you can also apply the encoding before any output piping by invoking the launcher directly:
-
-```powershell
-& .\scripts\start.ps1
-```
-
-Use `& .\scripts\start.ps1 -Dev` for development mode. The setting is scoped to the current console session; no PowerShell profile or system locale is changed.
+Both commands run `scripts/start.mjs`, a plain Node launcher (build first, then start Electron) that works in any shell — including agents and non-PowerShell terminals. It accepts `--dev`, `--pi-system-proxy`, and `--pi-proxy=<url>` (the legacy spellings `-Dev`/`-PiSystemProxy`/`-PiProxy` are also accepted). On Windows the launcher switches the current console's code page to UTF-8 (best effort, scoped to this console session), so Chinese diagnostic logs stay readable both in the terminal and in redirected output.
 
 The build command generates:
 
@@ -155,4 +149,4 @@ npm start
 
 Alternatively, pass a proxy option at launch. For a packaged build, use `FlowLink.exe --pi-system-proxy` to resolve the Windows system proxy/PAC for the configured model endpoint, or `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` to specify a proxy directly. An explicit `--pi-proxy=...` takes precedence if both options are present. Supported explicit schemes are `http`, `https`, and `socks5`.
 
-In PowerShell development mode, use `npm start -- -PiSystemProxy` or `npm start -- -PiProxy "http://127.0.0.1:7890"`; `npm run dev -- -PiSystemProxy` also enables DevTools. Proxy credentials can be included in the proxy URL if required; avoid sharing or saving authenticated proxy URLs. These options apply to Pi's Node requests only; Chromium browser traffic has separate proxy settings. The AI pane offers post-recording advice and replay-failure diagnosis; `@` mentions attach recordings of the current task to a request, and the Refine button generates a refined material from one or more analyzed recordings via preset options plus free text. After a recording stops, FlowLink also auto-generates a sanitized `REFINED…` twin (disable with `autoRefine: false` in `config/pi-settings.json`). Refined materials are always saved as new recordings; the original recording is preserved. When a Test run fails, the AI pane also offers "Run remaining steps with AI": a browser-use agent attached to the embedded browser completes the remaining steps in place (AI badge per step, secrets redacted, domain-bounded, stoppable at any time) without modifying the source recording. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.
+In development, use `npm start -- --pi-system-proxy` or `npm start -- --pi-proxy "http://127.0.0.1:7890"` (the PowerShell spellings `-PiSystemProxy`/`-PiProxy` also work); `npm run dev -- --pi-system-proxy` also enables DevTools. Proxy credentials can be included in the proxy URL if required; avoid sharing or saving authenticated proxy URLs. These options apply to Pi's Node requests only; Chromium browser traffic has separate proxy settings. The AI pane offers post-recording advice and replay-failure diagnosis; `@` mentions attach recordings of the current task to a request, and the Refine button generates a refined material from one or more analyzed recordings via preset options plus free text. After a recording stops, FlowLink also auto-generates a sanitized `REFINED…` twin (disable with `autoRefine: false` in `config/pi-settings.json`). Refined materials are always saved as new recordings; the original recording is preserved. When a Test run fails, the AI pane also offers "Run remaining steps with AI": a browser-use agent attached to the embedded browser completes the remaining steps in place (AI badge per step, secrets redacted, domain-bounded, stoppable at any time) without modifying the source recording. See `docs/FLOWFORGE_MERGE.md` for the full workflow and validation checklist.
