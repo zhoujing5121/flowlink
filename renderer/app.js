@@ -1050,15 +1050,21 @@ function fillProcessPanel(panel, item) {
     actions.dataset.groupActions = group.id;
     actions.hidden = item.selectedGroup !== group.id;
     const setEditState = (button, extraReason = "") => {
+      // 模板可能隐藏部分操作按钮（当前 Add step / Add after / Rename / Move / Merge
+      // 被注释掉）：接线必须容忍按钮缺失。此前在 null.dataset 上直接抛错，会把
+      // renderSummaryWorkspace 从 fillProcessPanel 中间打断——bindProcessMap
+      // （画布居中/缩放）不再执行、AI 面板不再刷新，后续每次重渲染都在同一点
+      // 抛错，整个结果面板表现为卡死。
+      if (!button) return;
       const reason = editBlockedReason || extraReason;
       button.disabled = Boolean(reason);
       button.title = reason;
     };
     const addStep = actions.querySelector("[data-group-add-step]");
-    addStep.dataset.groupAddStep = group.id;
+    if (addStep) addStep.dataset.groupAddStep = group.id;
     setEditState(addStep);
     const addAfter = actions.querySelector("[data-group-add-after]");
-    addAfter.dataset.groupAddAfter = group.id;
+    if (addAfter) addAfter.dataset.groupAddAfter = group.id;
     setEditState(addAfter);
     setEditState(actions.querySelector("[data-group-rename]"));
     setEditState(

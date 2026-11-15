@@ -54,6 +54,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Fixed
 
+- **UI:** Opening a workflow no longer freezes the Process tab: wiring of group action buttons now tolerates buttons hidden in the template (a hidden "Add step" button crashed the render midway, which also skipped the canvas centering — content stuck at the far left — and broke every later re-render of the results panel).
 - **Replay:** Element resolution no longer fails with `AMBIGUOUS` when the page also contains hidden copies of the target (framework templates, stacked notifications): recorder-side candidate validation and replay-side L1/L2 resolution now share a "unique among visible elements" rule — several matches with exactly one visible resolve to that element, while several visible matches still require the geometric separation threshold; element wait readiness likewise requires a visible hit instead of any hit.
 - **UI:** The embedded browser stays visible during replay: `playback:run` now restores the browser surface after the pre-replay tab reset (whose hide was never undone because unchanged bounds were deduplicated away), and hiding the browser invalidates the reported-rect cache so a same-size restore always re-reports.
 - **Recording:** Event batches whose processing fails are retried once and otherwise kept in the evidence stream with their event IDs named in the warning, instead of being lost silently.
