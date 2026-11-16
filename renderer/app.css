@@ -4179,6 +4179,19 @@ body {
   height: 100%;
 }
 
+/* 非活动 taskflow 的布局副本靠 hidden 属性隐藏；上面的 author display 规则
+ * （尤其 .is-test 的 display:grid !important）会覆盖 UA 的
+ * [hidden]{display:none}，导致"隐藏"布局仍占满高度、把活动布局挤出视口
+ * （表现为切换 taskflow 后布局错乱、标签点不动）。守卫必须带 !important
+ * 以压过 .is-test 的 important 规则。 */
+#designPanel .recording-layout[hidden] {
+  display: none !important;
+}
+
+.recording-layout[hidden] {
+  display: none !important;
+}
+
 #designPanel .recording-layout.is-recording > .recording-list {
   display: flex;
 }
@@ -5562,6 +5575,10 @@ body {
   position: static;
   width: 16px;
   height: 16px;
+}
+
+.type-picker-toolbar button svg {
+  stroke: var(--placeholder);
 }
 
 .service-picker-options,

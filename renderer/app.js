@@ -2479,8 +2479,15 @@ function renderSummaryWorkspace() {
   // 结果标签页共用一个工作区，并在 Test 与其他标签页之间移动浏览器。
   // Test 浏览器按录制项标记重置，避免每次渲染都重复执行异步初始化。
   const state = recordingSession(),
-    item = currentAssistantItem(),
-    active = item.resultTab || "Process";
+    item = currentAssistantItem();
+  // 焦点可能指向不存在的录制（跨会话的迟到回调曾把它写坏）：回到浏览器视图，
+  // 而不是在下面的 item.resultTab 上抛 TypeError、把渲染打断成半截布局。
+  if (!item) {
+    state.view = "browser";
+    renderRecordingWorkspace();
+    return;
+  }
+  const active = item.resultTab || "Process";
   state.view = "analysis";
   if (active === "Test" && state.testBrowserResetKey !== item.id) {
     state.testBrowserResetKey = item.id;
@@ -2559,6 +2566,10 @@ function renderSummaryWorkspace() {
       return;
     void (async () => {
       if (state.testResetPromise) await state.testResetPromise;
+      // 浏览器重置期间用户可能已关闭本 taskflow、切换到另一个 taskflow：
+      // 此时绝不能在旧录制上发起回放（runFlowlinkTest 会用新 taskflow 的 code
+      // + 旧录制 id 调 IPC，主进程报「找不到该录制」且视图被拽回旧 Test 态）。
+      if (recordingSession() !== state || !state.items.includes(target)) return;
       if (
         target.resultTab !== "Test" ||
         target.testRunning ||
@@ -2753,6 +2764,18 @@ function syncFloatingAIDock(target) {
     return;
   }
   if (existing) {
+    // dock 是全局单例，但 deactivate 的布局会被 ensureRecordingLayout 整体
+    // id 后缀化——dock 若恰好留在那个布局里就会带着 aiToggle--<flow> 的 id
+    // 被搬进新工作区，$("aiToggle") 从此失效。移入时恢复原始 id（仅当没有
+    // 其他元素占用，避免与浏览器工具栏按 id 互换的 aiToggle 撞车）并清掉
+    // 换名标记。
+    if (existing.dataset.workspaceId) {
+      if (!document.getElementById(existing.dataset.workspaceId))
+        existing.id = existing.dataset.workspaceId;
+      delete existing.dataset.workspaceId;
+    } else if (existing.id !== "aiToggle" && !document.getElementById("aiToggle")) {
+      existing.id = "aiToggle";
+    }
     if (existing.parentElement !== target) target.appendChild(existing);
     bindAIDock();
     return;
@@ -3417,8 +3440,24 @@ async function invokeAIMerge(option, prompt, extra = {}) {
 
 async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
   const state = recordingSession();
+  // 失败回放的诊断可能在用户关闭本 taskflow、切到新的 taskflow 之后才返回；
+  // recordingSession() 会解析成新会话。会话守卫：只有发起时的会话仍是当前会话
+  // 才允许改焦点/打开 AI 面板/触发渲染，否则只把消息留在源录制项的聊天里。
+  const stillCurrent = () => recordingSession() === state;
   const sources = (items || []).filter(Boolean);
   if (!sources.length) return;
+  const item = sources[0];
+  // 失败回放的诊断可能在用户已切到其他 taskflow 后才触发/返回：此时
+  // recordingSession() 解析成新会话，而 sources 属于旧会话。只把消息留在源
+  // 录制项的聊天里，绝不改当前会话的焦点/AI 面板/渲染。
+  const ownsSource = state.items.includes(item) || item === state.guideAssistant;
+  if (!ownsSource || !stillCurrent()) {
+    (item.chat ??= []).push({
+      role: "assistant",
+      text: "Replay diagnosis arrived after this taskflow was closed; reopen it to review.",
+    });
+    return;
+  }
   state.aiSourceIds = sources.map((item) => item.id);
   state.aiTaskMode = mode || "material-refinement";
   state.aiFailureContext = failureContext || {};
@@ -3426,7 +3465,6 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
   state.view = "analysis";
   state.stage = state.stage === "recording" ? "done" : state.stage;
   state.aiOpen = true;
-  const item = sources[0];
   ensureAssistantData(item);
   renderRecordingWorkspace();
   renderAIPanel();
@@ -3438,7 +3476,7 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
       ? adviceDefaults.replayFailure
       : adviceDefaults.materialRefinement);
   item.chat.push({ role: "assistant", text: "Pi is analyzing the recording evidence…" });
-  renderAIPanel();
+  if (stillCurrent()) renderAIPanel();
   try {
     const answer = await askPiForAdvice(item, sources, prompt, state.aiTaskMode, failureContext || {});
     const last = item.chat[item.chat.length - 1];
@@ -3450,7 +3488,7 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
     if (last?.role === "assistant" && last.text.startsWith("Pi is analyzing")) last.text = message;
     else item.chat.push({ role: "assistant", text: message });
   }
-  renderAIPanel();
+  if (stillCurrent()) renderAIPanel();
 }
 
 

@@ -1261,11 +1261,43 @@
 		return state.items.find((item) => item.id === state.focused) || null
 	}
 
+	/**
+	 * 当前回放的归属域（发起时的 activeFlowKey + 录制项 id）。
+	 * 回放可能在用户关闭本 taskflow、切到另一个 taskflow 之后才结束：
+	 * playback:* 事件处理器若用 findTestItem() 在「当前会话」里找目标，会把
+	 * 旧运行的结果写到新会话的录制项上（覆盖 testResults、并对错误的录制发起
+	 * 失败诊断，表现为新 taskflow 布局错乱）。所有回放事件都必须先通过
+	 * playbackScopedItem() 校验归属。
+	 */
+	let activePlaybackScope = null
+	const playbackScopedItem = () => {
+		if (!activePlaybackScope || activeFlowKey !== activePlaybackScope.code) return null
+		const item = findTestItem()
+		return item && item.id === activePlaybackScope.itemId ? item : null
+	}
+	const clearStaleRunFlag = () => {
+		// 迟到事件落到别的会话时，把发起录制的运行标记就地清掉，
+		// 避免重新打开原 taskflow 时录制项永远显示"运行中"。
+		const scope = activePlaybackScope
+		if (!scope) return
+		const owner = recordingSessions.get(scope.code)
+		const origin = owner?.items.find((entry) => entry.id === scope.itemId)
+		if (origin) origin.testRunning = false
+		activePlaybackScope = null
+	}
+
 	window.runFlowlinkTest = async function (item) {
 		// 调用回放前先显示运行状态；异步进度事件会推进步骤标记，
 		// 错误则关联到当前执行的步骤。
 		if (!item?.recordingId || item.testRunning) return
 		const state = recordingSession()
+		// 入口归属校验：迟到的调用方（如 Test 自动执行的等待）可能带着别的
+		// taskflow 的录制项过来；用当前 taskflow 的 code + 旧录制 id 调 IPC
+		// 会被主进程以「找不到该录制」拒绝，还会把视图拽回旧 Test 态。
+		if (!state.items.includes(item)) {
+			console.warn('[bridge] 忽略跨 taskflow 的测试启动请求')
+			return
+		}
 		state.playbackInFlight = true
 		const code = currentFlow?.code || activeFlowKey
 		try {
@@ -1273,6 +1305,7 @@
 			item.testFlowSteps = flatFlowSteps(flow?.steps || [])
 			item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
 			item.testRunning = true
+			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
 			if (item.testFlowSteps.length) item.testResults[0] = { status: 'running' }
 			item.resultTab = 'Test'
 			renderSummaryWorkspace()
@@ -1313,6 +1346,7 @@
 		try {
 			item.testRunning = true
 			state.playbackInFlight = true
+			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
 			renderSummaryWorkspace()
 			const variables = await window.referenceVariablesForReplay(item)
 			const failureSummary = results[fromStepIndex]?.error?.message || ''
@@ -1346,6 +1380,7 @@
 			const items = recordingSession(code).items
 			const item = items[items.length - 1]
 			if (!item?.recordingId) throw new Error('The task has no saved recordings to run.')
+			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
 			const variables = item ? await window.referenceVariablesForReplay(item) : {}
 			const result = await F.playback.run({ taskCode: code, recordingId: item.recordingId, variables })
 			console.log('[bridge] 回放完成：', result)
@@ -1540,7 +1575,7 @@
 		// 将每条流式结果应用到正在运行的测试项：步骤通过后将运行标记推进到下一步，
 		// 遇到失败则停止推进。
 		console.log('[bridge] 回放步骤：', r.stepId, r.status, r.ms + 'ms')
-		const item = findTestItem()
+		const item = playbackScopedItem()
 		if (!item?.testRunning) return
 		const results = item.testResults || []
 		const runningIndex = results.findIndex((result) => result.status === 'running')
@@ -1582,12 +1617,16 @@
 	/** 回放完成 */
 	F.on('playback:done', (result) => {
 		// 最终结果是所有步骤状态的权威来源；先将界面状态与最终结果对齐，
-		// 再清除运行标记。
+		// 再清除运行标记。事件只允许落回发起运行的录制项（归属域校验）。
 		console.log('[bridge] 回放完成：', result.ok ? '成功' : '失败', result.metrics)
-		recordingSession().playbackInFlight = false
 		$('playbackUserOperation')?.setAttribute('hidden', '')
-		const item = findTestItem()
-		if (!item) return
+		const item = playbackScopedItem()
+		if (!item) {
+			clearStaleRunFlag()
+			return
+		}
+		recordingSession().playbackInFlight = false
+		activePlaybackScope = null
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
 		item.testRunning = false
 		for (let index = 0; index < (result.steps || []).length; index++) {
@@ -1610,7 +1649,8 @@
 	F.on('playback:aiStep', (event) => {
 		const state = recordingSession()
 		const item =
-			state.items.find((entry) => entry.recordingId === event.recordingId) || findTestItem()
+			state.items.find((entry) => entry.recordingId === event.recordingId) ||
+			playbackScopedItem()
 		if (!item) return
 		const results = item.testResults || []
 		if (event.ok && Number.isInteger(event.stepIndex) && results[event.stepIndex]) {
@@ -1637,33 +1677,38 @@
 	F.on('playback:aiDone', (event) => {
 		console.log('[bridge] AI 接管结束：', event.ok ? '完成' : '中止', event.summary)
 		const state = recordingSession()
-		state.playbackInFlight = false
 		const item =
-			state.items.find((entry) => entry.recordingId === event.recordingId) || findTestItem()
-		if (item) {
-			item.testRunning = false
-			const results = item.testResults || []
-			for (let index = 0; index < results.length; index++) {
-				if (results[index]?.status === 'running') results[index] = { status: 'pending' }
-			}
-			if (typeof appendAIMessage === 'function') {
-				appendAIMessage(
-					item,
-					'assistant',
-					`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
-				)
-			}
-			if (item.resultTab === 'Test') renderSummaryWorkspace()
+			state.items.find((entry) => entry.recordingId === event.recordingId) ||
+			playbackScopedItem()
+		if (!item) {
+			clearStaleRunFlag()
+			return
 		}
+		state.playbackInFlight = false
+		activePlaybackScope = null
+		item.testRunning = false
+		const results = item.testResults || []
+		for (let index = 0; index < results.length; index++) {
+			if (results[index]?.status === 'running') results[index] = { status: 'pending' }
+		}
+		if (typeof appendAIMessage === 'function') {
+			appendAIMessage(
+				item,
+				'assistant',
+				`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
+			)
+		}
+		if (item.resultTab === 'Test') renderSummaryWorkspace()
 	})
 
 	/** 回放错误 */
 	F.on('playback:error', ({ message }) => {
 		console.error('[bridge] 回放错误：', message)
-		recordingSession().playbackInFlight = false
 		$('playbackUserOperation')?.setAttribute('hidden', '')
-		const item = findTestItem()
+		const item = playbackScopedItem()
 		if (item?.testRunning) {
+			recordingSession().playbackInFlight = false
+			activePlaybackScope = null
 			item.testRunning = false
 			const index = item.testResults.findIndex((result) => result.status === 'running')
 			if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
