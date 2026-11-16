@@ -935,7 +935,9 @@ function testStepNode(step, index, result) {
         ? "Failed"
         : status === "running"
           ? "Running"
-          : "Pending";
+          : status === "skip"
+            ? "Skipped"
+            : "Pending";
   const node = rowTemplate("testStepTemplate").cloneNode(true);
   node.classList.add("status-" + status);
   const icon = node.querySelector(".test-step-icon");
@@ -987,6 +989,8 @@ function canvasStepNode(group, text, index, refinedFlow) {
   // id）与显式标 execution: manual 的步骤始终 Manual。execution 字段的回放语义
   // （暂停等人工确认）不受此展示逻辑影响。
   const flowStep = group.flowSteps?.[index];
+  // 条件分支步骤：加 class 供样式区分（虚线边框），让分支决策点在串行组卡里可辨识。
+  if (flowStep?.kind === "condition") step.classList.add("condition-step");
   const manual =
     flowStep?.execution === "manual" ||
     String(flowStep?.id || "").startsWith("manual_") ||
@@ -1023,6 +1027,21 @@ function fillProcessPanel(panel, item) {
       heading.dataset.groupSelect = group.id;
       heading.setAttribute("aria-pressed", String(selected));
       heading.textContent = group.number + " · " + group.name;
+      // 分支徽标：该组是某个 condition 的 true/false 目标时说明"何时执行"。
+      const branchEntries = group.branchEntries || [];
+      const branchBadge = section.querySelector(".canvas-group-branch");
+      branchBadge.hidden = branchEntries.length === 0;
+      if (branchEntries.length) {
+        section.classList.add("branch-target");
+        branchBadge.textContent =
+          "分支 · " +
+          branchEntries
+            .map(
+              (entry) =>
+                `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+            )
+            .join("；");
+      }
       section.querySelector(".canvas-group-nodes").replaceChildren(
         ...(group.steps.length
           ? group.steps.map((text, index) =>
@@ -3727,6 +3746,25 @@ function processStepLabel(step, index, groups = []) {
 
 function ensureProcessGroups(item) {
   if (Array.isArray(item?.processFlow?.steps)) {
+    // 收集 condition 步骤（含嵌套 group），给作为其 true/false 目标的组
+    // 附加 branchEntries，供 Process 视图显示"该组何时被执行"的分支说明。
+    const conditionSteps = [];
+    const collectConditions = (steps) => {
+      for (const step of steps || []) {
+        if (step.kind === "group") collectConditions(step.steps);
+        else if (step.kind === "condition") conditionSteps.push(step);
+      }
+    };
+    collectConditions(item.processFlow.steps);
+    const branchEntriesOf = (groupId) =>
+      conditionSteps
+        .filter(
+          (step) => step.trueGroupId === groupId || step.falseGroupId === groupId,
+        )
+        .map((step) => ({
+          conditionLabel: step.label?.trim() || step.id,
+          whenTrue: step.trueGroupId === groupId,
+        }));
     let start = 0;
     return item.processFlow.steps
       .filter((step) => step.kind === "group")
@@ -3743,6 +3781,7 @@ function ensureProcessGroups(item) {
           tab: flowSteps.find((step) => step.page?.index !== undefined)?.page?.index + 1 || 1,
           url: flowSteps.find((step) => step.pageUrl)?.pageUrl || item.url || "",
           flowSteps,
+          branchEntries: branchEntriesOf(group.id),
           steps: flowSteps.map((step, stepIndex) =>
             processStepLabel(step, stepIndex, all),
           ),

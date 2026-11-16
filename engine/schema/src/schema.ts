@@ -144,6 +144,10 @@ const BaseStepSchema = z.object({
 	 * 复用 userOperation 的宿主确认回调）。省略 = automated，旧 Flow 无需迁移。
 	 */
 	execution: z.enum(['automated', 'manual']).optional(),
+	/**
+	 * 本步骤 expect/assert 校验的等待上限（毫秒）。缺省 5000，executor 侧钳制到
+	 * [1000, 30000]；condition 步骤不走此参数（瞬时判定，0 等待）。
+	 */
 	timeout: z.number().int().positive().optional(),
 	/**
 	 * 回放自适应步骤：效果已自行发生时可以跳过（报告为 skip，不算失败）。

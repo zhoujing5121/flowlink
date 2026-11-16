@@ -2067,6 +2067,15 @@ h1 {
   color: #00884A;
 }
 
+/* Skipped steps (branch taken elsewhere / optional step not applicable): neutral gray. */
+.test-step.status-skip .test-step-status {
+  color: #73777d;
+}
+
+.test-step-icon.status-skip svg {
+  opacity: 0.85;
+}
+
 .test-step-error {
   grid-column: 2/-1;
   font-size: 12px;
@@ -3636,6 +3645,35 @@ body {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+/* 分支目标组：虚线描边区分"按条件执行"的组与串行组。 */
+.canvas-group.branch-target {
+  border-style: dashed;
+}
+
+/* 组卡分支徽标：说明该组作为哪个 condition 的 true/false 目标。 */
+.canvas-group-branch {
+  display: block;
+  margin: -4px 0 12px;
+  padding: 2px 8px;
+  border: 1px dashed #00884a;
+  background: #f5fbf7;
+  color: #52585e;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.canvas-group-branch[hidden] {
+  display: none;
+}
+
+/* 条件分支步骤节点：虚线边框 + 绿色描边，与所选组风格一致。 */
+.canvas-step.condition-step {
+  border-style: dashed;
+  border-color: #00884a;
+  background: #f5fbf7;
 }
 
 .canvas-step {

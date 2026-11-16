@@ -2,7 +2,8 @@
  * expect / assert 校验（契约见 docs/architecture.md §5）。
  *
  * 设计要点：
- * - 所有"等待类"期望都轮询到 5s（默认）而不是一次性判定，避免动画/异步渲染造成假失败；
+ * - 所有"等待类"期望都轮询到默认 5s 而不是一次性判定，避免动画/异步渲染造成假失败；
+ *   每步可通过 step.timeout 覆盖该等待上限（下限 1s、上限 30s，见 run.ts 的调用处）；
  * - elementHidden 把「元素从 DOM 里消失」也算通过（unmount 是最常见的隐藏方式）；
  * - domSignature 用 sha1(region.innerHTML)，region 默认 body。
  */
@@ -17,14 +18,26 @@ import { StepFailure } from './errors.js'
 export interface VerifyDeps {
 	page: Page
 	/** 用当前 run 的解析器（expect 场景不带 AI，避免额外调用） */
-	resolveTarget: (target: ElementRef, opts?: { requireVisible?: boolean }) => Promise<ResolveResult>
+	resolveTarget: (
+		target: ElementRef,
+		opts?: { requireVisible?: boolean; elementWaitMs?: number },
+	) => Promise<ResolveResult>
 	timeoutMs: number
 	log: (msg: string) => void
+	/**
+	 * 轮询期间单次元素解析的等待上限（ms）。
+	 * 不设时解析沿用全局元素等待预算，首次解析慢元素会吃掉整个 pollUntil 预算；
+	 * 设小（如 1000）才能让"轮询 N 秒"名副其实。
+	 */
+	pollResolveMs?: number
 	/** 本次 run 已发生的下载（文件名列表），用于 expect.kind === 'download' */
 	recentDownloads?: () => string[]
 }
 
-/** 期望校验的默认等待上限（契约：elementVisible/Hidden 轮询 5s） */
+/**
+ * 期望校验的默认等待上限（契约：elementVisible/Hidden 默认轮询 5s）。
+ * 单个步骤可用 step.timeout 覆盖（executor 侧钳制到 [1000, 30000]）。
+ */
 export const EXPECT_WAIT_MS = 5_000
 const POLL_MS = 100
 
@@ -60,7 +73,10 @@ export async function domSignatureOf(page: Page, region = 'body'): Promise<strin
 
 async function textOf(deps: VerifyDeps, target: ElementRef): Promise<string | undefined> {
 	try {
-		const hit = await deps.resolveTarget(target, { requireVisible: false })
+		const hit = await deps.resolveTarget(target, {
+			requireVisible: false,
+			...(deps.pollResolveMs ? { elementWaitMs: deps.pollResolveMs } : {}),
+		})
 		const text = await hit.locator.textContent({ timeout: 1_000 })
 		return (text ?? '').replace(/\s+/g, ' ').trim()
 	} catch {
@@ -73,7 +89,10 @@ async function visibleStateOf(
 	target: ElementRef,
 ): Promise<{ found: boolean; visible: boolean }> {
 	try {
-		const hit = await deps.resolveTarget(target, { requireVisible: false })
+		const hit = await deps.resolveTarget(target, {
+			requireVisible: false,
+			...(deps.pollResolveMs ? { elementWaitMs: deps.pollResolveMs } : {}),
+		})
 		const visible = await hit.locator.isVisible()
 		return { found: true, visible }
 	} catch (err) {

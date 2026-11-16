@@ -1246,13 +1246,19 @@
 	/** Run：打开 Drawer → Design → 用最近录制回放 */
 	function flatFlowSteps(steps) {
 		const out = []
-		const visit = (list) => {
+		const visit = (list, prefix) => {
 			for (const step of list || []) {
-				if (step.kind === 'group') visit(step.steps)
-				else out.push(step)
+				if (step.kind === 'group') {
+					visit(step.steps, prefix ? `${prefix}/${step.id}` : step.id)
+				} else {
+					// 与引擎的 stepId 约定一致（engine/executor/src/steps.ts）：
+					// group 内步骤带 group 前缀（如 g2/a1），供回放结果按 stepId 精确对齐。
+					step.flattenedStepId = prefix ? `${prefix}/${step.id}` : step.id
+					out.push(step)
+				}
 			}
 		}
-		visit(steps)
+		visit(steps, '')
 		return out
 	}
 
@@ -1572,20 +1578,39 @@
 
 	/** 回放步骤流 */
 	F.on('playback:step', (r) => {
-		// 将每条流式结果应用到正在运行的测试项：步骤通过后将运行标记推进到下一步，
-		// 遇到失败则停止推进。
+		// 将每条流式结果应用到正在运行的测试项：优先按 stepId 精确对齐
+		// （分支跳过后执行顺序与展示顺序不一致，顺序启发式会错位），
+		// 找不到时回退到顺序启发式（兼容未带 id 的旧数据/演示数据）。
+		// pass 与 skip 都推进 running 标记；fail 停止推进。
 		console.log('[bridge] 回放步骤：', r.stepId, r.status, r.ms + 'ms')
 		const item = playbackScopedItem()
 		if (!item?.testRunning) return
 		const results = item.testResults || []
-		const runningIndex = results.findIndex((result) => result.status === 'running')
-		const resultIndex = runningIndex >= 0 ? runningIndex : results.findIndex((result) => result.status === 'pending')
+		let resultIndex = -1
+		if (typeof r.stepId === 'string') {
+			resultIndex = (item.testFlowSteps || []).findIndex(
+				(step) => (step.flattenedStepId || step.id) === r.stepId,
+			)
+		}
+		if (resultIndex < 0) {
+			const runningIndex = results.findIndex((result) => result.status === 'running')
+			resultIndex = runningIndex >= 0 ? runningIndex : results.findIndex((result) => result.status === 'pending')
+		}
 		if (resultIndex < 0) return
-		// 引擎按顺序推送结果；优先修正已有 running 步骤，否则填入首个 pending 步骤。
-		results[resultIndex] = r.status === 'pass'
-			? { status: 'pass' }
-			: { status: r.status === 'fail' ? 'fail' : 'pending', error: r.error }
-		if (r.status === 'pass' && results[resultIndex + 1]) results[resultIndex + 1] = { status: 'running' }
+		results[resultIndex] =
+			r.status === 'pass'
+				? { status: 'pass' }
+				: r.status === 'fail'
+					? { status: 'fail', error: r.error }
+					: r.status === 'skip'
+						? { status: 'skip', error: r.error }
+						: { status: 'pending', error: r.error }
+		if (r.status === 'pass' || r.status === 'skip') {
+			const nextIndex = results.findIndex(
+				(result, index) => index > resultIndex && (!result || result.status === 'pending'),
+			)
+			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
+		}
 		if (r.status === 'fail') item.testRunning = false
 		if (item.resultTab === 'Test') renderSummaryWorkspace()
 	})
@@ -1628,15 +1653,26 @@
 		recordingSession().playbackInFlight = false
 		activePlaybackScope = null
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
+		// 按引擎 stepId 建映射（分支跳过后 result.steps 是执行序而非展示序）；
+		// 本次 run 没有结果的步骤（理论上仅剩中断等罕见情形）统一置 skip。
 		item.testRunning = false
-		for (let index = 0; index < (result.steps || []).length; index++) {
-			const step = result.steps[index]
-			if (!item.testResults[index]) continue
-			item.testResults[index] = step.status === 'pass'
-				? { status: 'pass' }
-				: step.status === 'fail'
-					? { status: 'fail', error: step.error }
-					: { status: 'pending' }
+		const stepById = new Map()
+		for (const step of result.steps || []) {
+			if (typeof step.stepId === 'string' && !stepById.has(step.stepId)) stepById.set(step.stepId, step)
+		}
+		const flowSteps = item.testFlowSteps || []
+		for (let index = 0; index < flowSteps.length; index++) {
+			const final = stepById.get(flowSteps[index].flattenedStepId || flowSteps[index].id)
+			if (!final) {
+				item.testResults[index] = { status: 'skip' }
+				continue
+			}
+			item.testResults[index] =
+				final.status === 'pass'
+					? { status: 'pass' }
+					: final.status === 'fail'
+						? { status: 'fail', error: final.error }
+						: { status: 'skip' }
 		}
 		if (item.resultTab === 'Test') renderSummaryWorkspace()
 		if (!result.ok && typeof window.startFlowLinkAIAdvice === 'function') {
@@ -1653,13 +1689,21 @@
 			playbackScopedItem()
 		if (!item) return
 		const results = item.testResults || []
-		if (event.ok && Number.isInteger(event.stepIndex) && results[event.stepIndex]) {
+		const slotOpen = (index) =>
+			Number.isInteger(index) &&
+			results[index] &&
+			(!results[index].status ||
+				results[index].status === 'pending' ||
+				results[index].status === 'running')
+		// 保持 index 语义（与引擎 flattenSteps 同序）；只写 pending/running 槽位，
+		// 避免迟到/重复事件覆盖已定状态（pass/fail/skip）。
+		if (event.ok && slotOpen(event.stepIndex)) {
 			results[event.stepIndex] = { status: 'pass', ai: true }
 			const nextIndex = results.findIndex(
 				(result, index) => index > event.stepIndex && (!result || result.status === 'pending'),
 			)
 			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
-		} else if (!event.ok && Number.isInteger(event.stepIndex) && results[event.stepIndex]) {
+		} else if (!event.ok && slotOpen(event.stepIndex)) {
 			results[event.stepIndex] = {
 				status: 'fail',
 				ai: true,

@@ -36,7 +36,14 @@ import {
 import { PageManager, resolveStepPageIndex } from './tabs.js'
 import { defaultVariables, renderStep } from './template.js'
 import { NAME_KEEPALIVE_SOURCE, rebaseUrl } from './url.js'
-import { evaluateAssertion, runAssertion, sleep, verifyExpect, type VerifyDeps } from './verify.js'
+import {
+	EXPECT_WAIT_MS,
+	evaluateAssertion,
+	runAssertion,
+	sleep,
+	verifyExpect,
+	type VerifyDeps,
+} from './verify.js'
 import type {
 	PlayOptions,
 	RunReport,
@@ -503,6 +510,8 @@ export async function runFlowInBrowserContext(
 			resolveTarget: (target, o) => resolveTarget(target, { ...o, allowAi: false }),
 			// expect.download 的数据源：只看本步开始之后发生的下载
 			recentDownloads: () => downloads.since(downloadCursor.current),
+			// 单次轮询里的元素解析最多等 1s，保证 pollUntil 的轮询预算真正生效
+			pollResolveMs: 1000,
 		}
 
 		const flat = flattenSteps(flow.steps)
@@ -854,7 +863,9 @@ export async function runFlowInBrowserContext(
 				} else if (rendered.kind === 'assert') {
 					phase = 'expect'
 					stepLogPush(`assert ${rendered.assertion.kind}`)
-					const note = await runAssertion(verifyDeps, rendered.assertion, rendered.target)
+					// 等待上限可由步骤 timeout 覆盖（钳制到 [1s, 30s]）；condition 仍走瞬时判定
+					const waitMs = Math.max(1000, Math.min(rendered.timeout ?? EXPECT_WAIT_MS, 30_000))
+					const note = await runAssertion(verifyDeps, rendered.assertion, rendered.target, waitMs)
 					expectNote = `assert ${note}`
 					stepLogPush(`assert ✓ ${note}`)
 				} else {
@@ -934,7 +945,9 @@ export async function runFlowInBrowserContext(
 				// ---- expect 校验（所有 step 类型通用）----
 				if (rendered.expect) {
 					phase = 'expect'
-					expectNote = await verifyExpect(verifyDeps, rendered.expect)
+					// 等待上限可由步骤 timeout 覆盖（钳制到 [1s, 30s]）
+					const waitMs = Math.max(1000, Math.min(rendered.timeout ?? EXPECT_WAIT_MS, 30_000))
+					expectNote = await verifyExpect(verifyDeps, rendered.expect, waitMs)
 				}
 
 				detail.status = 'pass'
@@ -1013,6 +1026,27 @@ export async function runFlowInBrowserContext(
 				(opts.stopOnFailure || detail.error?.code === 'FLOW_LOOP_LIMIT')
 			) break
 			if (branchCursor !== undefined) {
+				// 分支跳转：为被跳过的每个步骤补报 skip（RunReport 自解释，UI 无需推断对齐）。
+				// 与 abort 路径的 skip 报告同构；不计入 pass/fail 统计，不影响 stopOnFailure 与组访问计数。
+				const skipEnd = branchCursor >= flat.length ? flat.length : branchCursor
+				for (let skipCursor = flatCursor + 1; skipCursor < skipEnd; skipCursor++) {
+					const skipped = flat[skipCursor]!
+					const skipResult: StepResult = {
+						stepId: skipped.stepId,
+						kind: skipped.step.kind,
+						status: 'skip',
+						ms: 0,
+					}
+					steps.push(skipResult)
+					details.push({
+						stepId: skipped.stepId,
+						kind: skipped.step.kind,
+						status: 'skip',
+						ms: 0,
+						log: ['分支跳过：condition 选择了另一条路线'],
+					})
+					opts.onStep?.(skipResult)
+				}
 				if (branchCursor >= flat.length) break
 				flatCursor = branchCursor - 1
 			}

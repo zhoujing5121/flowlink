@@ -1471,6 +1471,7 @@
       <section class="canvas-group">
         <img class="canvas-group-icon" alt="" loading="lazy" />
         <button class="canvas-group-heading" aria-pressed="false"></button>
+        <span class="canvas-group-branch" hidden></span>
         <div class="canvas-group-nodes"></div>
       </section>
     </template>
@@ -1813,6 +1814,16 @@
             <circle cx="12" cy="12" r="10" fill="#b00020" />
             <path
               d="m8.5 8.5 7 7m0-7-7 7"
+              fill="none"
+              stroke="#fff"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <svg data-status-icon="skip" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="#8a9095" />
+            <path
+              d="M8 12h8"
               fill="none"
               stroke="#fff"
               stroke-width="2"
