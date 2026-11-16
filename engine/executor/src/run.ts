@@ -35,6 +35,7 @@ import {
 } from './storage-state.js'
 import { PageManager, resolveStepPageIndex } from './tabs.js'
 import { defaultVariables, renderStep } from './template.js'
+import { waitForSettle } from './settle.js'
 import { NAME_KEEPALIVE_SOURCE, rebaseUrl } from './url.js'
 import {
 	EXPECT_WAIT_MS,
@@ -763,6 +764,19 @@ export async function runFlowInBrowserContext(
 				})()
 				if (rendered.kind === 'group') {
 					throw new StepFailure('NOT_ACTIONABLE', 'group 步骤不应直接执行（应由 flatten 展开）')
+				}
+
+				// ---- settle 沉降：本步执行前让页面稳定（慢过渡后的第一个动作步骤）----
+				// navigate 已内置 load+尽力 networkIdle 等待、wait 本身就是等待，均跳过；
+				// 尽力而为语义：超上限只记日志，失败留给后续元素等待/校验判定。
+				if (
+					rendered.settle &&
+					rendered.kind !== 'navigate' &&
+					rendered.kind !== 'wait'
+				) {
+					await waitForSettle(page, rendered.settle, (msg) =>
+						stepLogPush(`settle: ${msg}`),
+					)
 				}
 
 				// ---- 按类型执行 ----

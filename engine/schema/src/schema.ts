@@ -172,6 +172,27 @@ const BaseStepSchema = z.object({
 	locatorEvidence: z.array(CandidateSchema).optional(),
 	reviewRequired: z.boolean().optional(),
 	reviewReason: z.string().optional(),
+	/**
+	 * 步骤级来源 flow（AI 细化再水化时按元素库 origin 推断：取该步骤全部
+	 * $ref 中出现最多的源 flowId；无元素引用的步骤继承相邻已标注步骤）。
+	 * 供 Process 图按来源分段与着色。属启发式标注；纯录制 flow 不写该字段。
+	 */
+	sourceFlowId: z.string().optional(),
+	/**
+	 * 执行前沉降：该步执行前先等页面稳定下来（可选网络空闲 + DOM 静默），
+	 * 用于慢过渡（登录后首屏、提交后大刷新、跨系统跳转）之后的第一个动作。
+	 * 缺省 = 不沉降，行为与不带该字段的旧 Flow 完全一致。尽力而为语义：
+	 * 到达上限不报错（只记日志），失败留给后续元素等待/校验判定。
+	 */
+	settle: z
+		.object({
+			networkIdle: z.boolean().optional(),
+			/** 距最后一次 DOM 变更至少这么多毫秒才算静默（100–5000）。 */
+			domQuietMs: z.number().int().min(100).max(5_000).optional(),
+			/** 整个沉降等待的总上限（毫秒，500–30000）；缺省 10000。 */
+			maxMs: z.number().int().min(500).max(30_000).optional(),
+		})
+		.optional(),
 })
 
 /**
@@ -395,6 +416,22 @@ export const FlowSchema = z.object({
 	meta: z.object({
 		env: EnvSchema,
 		recorder: z.object({ name: z.string(), version: z.string() }),
+		/**
+		 * AI 融合生成结果的直接来源列表（不递归展开；transitive 可按 flowId 逐级
+		 * 追溯各源 flow 的 meta.sourceFlows）。纯录制 flow 不写该字段
+		 * （undefined = 原生录制，Process 图按单链展示）。
+		 * 必须显式声明：zod 默认 strip 未知键，不声明会在保存/加载链路被洗掉。
+		 */
+		sourceFlows: z
+			.array(
+				z.object({
+					recordingId: z.string().optional(),
+					flowId: z.string(),
+					title: z.string(),
+					flowFile: z.string().optional(),
+				}),
+			)
+			.optional(),
 	}),
 	variables: z.array(VariableSchema).default([]),
 	steps: z.array(StepSchema).min(1),

@@ -966,6 +966,61 @@ function resetTestExecutionStatus(item) {
   item.testResults = steps.map(() => ({ status: "pending" }));
 }
 
+/**
+ * Test 进度列表按组分节：与 Process 图上的组一一对应。
+ * 分组依据 flattenedStepId 前缀（顶层组 id；无前缀的连续裸步骤归入"未分组"节）；
+ * 名称/编号优先取 ensureProcessGroups 视图（processFlow 已加载时）。
+ */
+function testProgressGroups(item) {
+  const steps = item.testFlowSteps?.length
+    ? item.testFlowSteps
+    : item.steps || [];
+  const labelById = new Map();
+  if (item.processFlow) {
+    for (const group of ensureProcessGroups(item)) labelById.set(group.id, group);
+  }
+  const sections = [];
+  let current = null;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const flatId = step?.flattenedStepId || step?.id || String(i);
+    const groupId = flatId.includes("/") ? flatId.split("/")[0] : "";
+    const key = groupId || "__ungrouped__";
+    if (!current || current.key !== key) {
+      const view = labelById.get(groupId);
+      current = {
+        key,
+        rows: [],
+        number: view?.number || "",
+        name: view?.name || groupId || "未分组步骤",
+      };
+      sections.push(current);
+    }
+    current.rows.push({ step, index: i, result: (item.testResults || [])[i] });
+  }
+  return sections;
+}
+
+/** 组节聚合状态：fail > running > pass > 全跳过（分支未走） > pending */
+function testGroupStatus(rows) {
+  let fail = false;
+  let running = false;
+  let pass = false;
+  let skipped = 0;
+  for (const row of rows) {
+    const status = row.result?.status || "pending";
+    if (status === "fail") fail = true;
+    else if (status === "running") running = true;
+    else if (status === "pass") pass = true;
+    else if (status === "skip") skipped++;
+  }
+  if (fail) return "fail";
+  if (running) return "running";
+  if (pass) return "pass";
+  if (rows.length && skipped === rows.length) return "skipped";
+  return "pending";
+}
+
 // 结果面板的静态分区已由 recordingLayoutTemplate 提供；这里按标签页填充数据。
 function fillResultPanel(panel, active, item) {
   panel.querySelectorAll("[data-result-tab]").forEach((section) => {
@@ -978,7 +1033,7 @@ function fillResultPanel(panel, active, item) {
   else if (active === "Record") fillRecordPanel(panel, item);
 }
 
-function canvasStepNode(group, text, index, refinedFlow) {
+function canvasStepNode(group, text, index, refinedFlow, result) {
   const step = rowTemplate("canvasStepTemplate").cloneNode(true);
   step.dataset.canvasStepIndex = group.start + index;
   step.querySelector("[data-step-code]").textContent =
@@ -1000,7 +1055,207 @@ function canvasStepNode(group, text, index, refinedFlow) {
   icon.title = manual ? "Manual" : "Automated";
   setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
   setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
+  // 回放态叠加：步骤行状态点 + 结果 chip + AI 徽标（运行时数据，允许 JS 生成）
+  if (result && result.status && result.status !== "pending") {
+    step.classList.add("status-" + result.status);
+    const dot = document.createElement("span");
+    dot.className = "canvas-step-dot";
+    step.prepend(dot);
+    const chip = document.createElement("span");
+    chip.className = "canvas-step-chip";
+    chip.dataset.chipStatus = result.status;
+    chip.textContent =
+      result.status === "pass"
+        ? "✓"
+        : result.status === "fail"
+          ? "✗"
+          : result.status === "running"
+            ? "…"
+            : "跳过";
+    step.append(chip);
+    if (result.ai) {
+      const ai = document.createElement("span");
+      ai.className = "canvas-step-ai";
+      ai.textContent = "AI";
+      ai.title = "AI takeover completed this step";
+      step.append(ai);
+    }
+  }
   return step;
+}
+
+/** Process 图：来源配色（多来源时按 meta.sourceFlows 顺序取色） */
+const PROCESS_SOURCE_COLORS = [
+  "#00884a",
+  "#1e60c7",
+  "#c77c1e",
+  "#7a4fc9",
+  "#0f8a8a",
+];
+
+/** 图节点 → 渲染视图：真实组走 ensureProcessGroups 视图；未分组伪组现做 */
+function graphNodeView(node, entries, viewByGroupId) {
+  if (node.type === "group") return viewByGroupId.get(node.id) || null;
+  if (node.type === "ungrouped") {
+    const flowSteps = [];
+    for (let i = node.firstIndex; i < node.lastIndex; i++)
+      flowSteps.push(entries[i]?.step);
+    return {
+      id: node.id,
+      name: "未分组步骤",
+      label: "未分组步骤",
+      index: -1,
+      start: node.firstIndex,
+      count: flowSteps.length,
+      number: "—",
+      tab: 1,
+      url: "",
+      flowSteps,
+      branchEntries: [],
+      steps: flowSteps.map((step, i) => processStepLabel(step, i)),
+    };
+  }
+  return null;
+}
+
+/** 组卡聚合状态：有失败=红 / 全跳过=灰 / 有通过或运行中=绿，其余不描边 */
+function graphNodeResultStatus(node, entries, resultByStepId) {
+  let pass = false;
+  let fail = false;
+  let running = false;
+  let seen = 0;
+  let skipped = 0;
+  for (let i = node.firstIndex; i < node.lastIndex; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const result = resultByStepId.get(entry.flattenedStepId);
+    if (!result || !result.status || result.status === "pending") continue;
+    seen++;
+    if (result.status === "fail") fail = true;
+    else if (result.status === "running") running = true;
+    else if (result.status === "skip") skipped++;
+    else pass = true;
+  }
+  if (!seen) return "";
+  if (fail) return "fail";
+  if (running || pass) return "pass";
+  if (skipped) return "skip";
+  return "";
+}
+
+/** 边目标是否"被进入"（有任一步骤 pass/fail/running）；哨节点由调用方特判 */
+function graphNodeEntered(node, entries, resultByStepId) {
+  for (let i = node.firstIndex; i < node.lastIndex; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const result = resultByStepId.get(entry.flattenedStepId);
+    if (result && (result.status === "pass" || result.status === "fail" || result.status === "running"))
+      return true;
+  }
+  return false;
+}
+
+/**
+ * SVG 边层：dagre 坐标已写回节点后调用。走过的路径边高亮、未走的分支边
+ * 淡化虚线（仅在有回放结果时叠加；分支标签附"已走/未走"）。
+ */
+function drawProcessGraphEdges(svg, world, graph, overlay) {
+  const NS = "http://www.w3.org/2000/svg";
+  svg.setAttribute("width", String(Math.max(1, graph.worldWidth)));
+  svg.setAttribute("height", String(Math.max(1, graph.worldHeight)));
+  svg.setAttribute(
+    "viewBox",
+    `0 0 ${Math.max(1, graph.worldWidth)} ${Math.max(1, graph.worldHeight)}`,
+  );
+  svg.replaceChildren();
+  const defs = document.createElementNS(NS, "defs");
+  for (const [id, color] of [
+    ["edge-arrow", "#7d8a92"],
+    ["edge-arrow-taken", "#00884a"],
+    ["edge-arrow-dim", "#c3cbd1"],
+  ]) {
+    const marker = document.createElementNS(NS, "marker");
+    marker.setAttribute("id", id);
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "7");
+    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", "M0,0 L10,5 L0,10 z");
+    path.setAttribute("fill", color);
+    marker.appendChild(path);
+    defs.appendChild(marker);
+  }
+  svg.appendChild(defs);
+
+  const labels = [];
+  for (const edge of graph.edges) {
+    const from = graph.nodeById.get(edge.from);
+    const to = graph.nodeById.get(edge.to);
+    if (!from || !to || from.cx === undefined || to.cx === undefined) continue;
+    let d;
+    let labelAt;
+    if (edge.kind === "back" || to.cy <= from.cy) {
+      // 回跳/同层：从源右缘绕到目标右缘的外弓虚线
+      const x1 = from.cx + from.width / 2;
+      const y1 = from.cy;
+      const x2 = to.cx + to.width / 2;
+      const y2 = to.cy;
+      const bow = 72 + Math.abs(x1 - x2) * 0.25;
+      d = `M ${x1} ${y1} C ${x1 + bow} ${y1}, ${x2 + bow} ${y2}, ${x2} ${y2}`;
+      labelAt = { x: Math.max(x1, x2) + bow * 0.55, y: (y1 + y2) / 2 };
+    } else {
+      const sx = from.cx;
+      const sy = from.cy + from.height / 2;
+      const tx = to.cx;
+      const ty = to.cy - to.height / 2;
+      const mid = Math.max(24, (ty - sy) * 0.45);
+      d = `M ${sx} ${sy} C ${sx} ${sy + mid}, ${tx} ${ty - mid}, ${tx} ${ty}`;
+      labelAt = { x: (sx + tx) / 2, y: (sy + ty) / 2 };
+    }
+
+    // 回放态：目标被进入 → 高亮；运行结束仍未走 → 淡化虚线
+    let stateClass = "";
+    let suffix = "";
+    if (overlay.hasResults) {
+      const entered =
+        to.type === "end"
+          ? overlay.runFinished && graphNodeEntered(from, graph.entries, overlay.resultByStepId)
+          : graphNodeEntered(to, graph.entries, overlay.resultByStepId);
+      if (entered) {
+        stateClass = " taken";
+        suffix = " · 已走";
+      } else if (overlay.runFinished || to.type !== "end") {
+        stateClass = " dim";
+        suffix = " · 未走";
+      }
+    }
+
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", `process-edge${edge.kind === "back" ? " back" : ""}${stateClass}`);
+    path.setAttribute(
+      "marker-end",
+      `url(#edge-arrow${stateClass === " taken" ? "-taken" : stateClass === " dim" ? "-dim" : ""})`,
+    );
+    svg.appendChild(path);
+
+    if (edge.label) {
+      const label = document.createElement("div");
+      label.className =
+        "process-edge-label" +
+        (edge.branch === "false" ? " no" : "") +
+        (stateClass === " dim" ? " dim" : "");
+      label.textContent = edge.label + (overlay.hasResults ? suffix : "");
+      label.style.left = labelAt.x + "px";
+      label.style.top = labelAt.y + "px";
+      labels.push(label);
+    }
+  }
+  // 标签挂在 world 下（随平移缩放走），在卡片之下由 z-order 保证
+  for (const label of labels) world.appendChild(label);
 }
 
 function fillProcessPanel(panel, item) {
@@ -1010,25 +1265,106 @@ function fillProcessPanel(panel, item) {
   const error = canvas.querySelector(".process-status.error");
   error.hidden = !item?.processFlowError;
   if (item?.processFlowError) error.textContent = item.processFlowError;
+  const world = canvas.querySelector(".process-canvas-world");
   const groups = item ? ensureProcessGroups(item) : [];
-  canvas.querySelector(".process-canvas-world").replaceChildren(
-    ...groups.map((group) => {
+  const flow = item?.processFlow;
+
+  // 图模式依赖 dagre（vendor 脚本）：缺失时显示明确错误而非白屏；不提供串行回退。
+  if ((flow || groups.length) && !window.__flowlinkDagre) {
+    error.hidden = false;
+    error.textContent =
+      "Process 流程图布局引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
+  }
+
+  // 回放态数据源：testResults 与 testFlowSteps 按下标对齐，再按 stepId 建映射
+  const resultByStepId = new Map();
+  const hasResults =
+    !!item?.testFlowSteps?.length && Array.isArray(item.testResults);
+  if (hasResults) {
+    for (let i = 0; i < item.testFlowSteps.length; i++) {
+      const step = item.testFlowSteps[i];
+      const result = item.testResults[i];
+      if (step?.flattenedStepId && result?.status && result.status !== "pending")
+        resultByStepId.set(step.flattenedStepId, result);
+    }
+  }
+
+  // —— 图模型（真实 Flow；演示数据合成为同构模型走同一渲染管线） ——
+  let graph = null;
+  if (flow) {
+    graph = FlowGraph.buildGraph(flow);
+  } else if (groups.length) {
+    graph = FlowGraph.buildGraph({
+      steps: groups.map((group) => ({
+        kind: "group",
+        id: group.id,
+        label: group.name,
+        steps: group.flowSteps?.length
+          ? group.flowSteps
+          : Array.from({ length: group.count || 0 }, (_, i) => ({
+              kind: "demo",
+              id: `${group.id}-demo-${i}`,
+            })),
+      })),
+    });
+  }
+
+  // —— 1. 先渲染卡片（组卡 DOM 复用：徽标/条件样式/点击/右键全保留） ——
+  const viewByGroupId = new Map(groups.map((group) => [group.id, group]));
+  const elements = new Map(); // node.id → DOM（卡片或哨节点）
+  const children = [];
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  // SVGElement.className 只有 getter，必须用 setAttribute（赋值会抛 TypeError
+  // 并把 renderSummaryWorkspace 从 fillProcessPanel 中间打断：AI 面板不再刷新、Process 空白）。
+  svg.setAttribute("class", "process-graph-edges");
+  children.push(svg);
+
+  // 来源着色：多来源时按 sourceFlowId 分配色板下标
+  const sourceOrder = [];
+  if (graph && flow?.meta?.sourceFlows?.length) {
+    for (const node of graph.nodes) {
+      if (
+        (node.type === "group" || node.type === "ungrouped") &&
+        node.sourceFlowId &&
+        !sourceOrder.includes(node.sourceFlowId)
+      )
+        sourceOrder.push(node.sourceFlowId);
+    }
+  }
+  const sourceMetaById = new Map(
+    (flow?.meta?.sourceFlows || []).map((source) => [source.flowId, source]),
+  );
+
+  if (graph) {
+    for (const node of graph.nodes) {
+      if (node.type === "start" || node.type === "end") {
+        const sentinel = document.createElement("div");
+        sentinel.className =
+          "process-sentinel" + (node.type === "end" ? " end" : "");
+        sentinel.dataset.sentinelNode = node.id;
+        sentinel.textContent = node.label;
+        children.push(sentinel);
+        elements.set(node.id, sentinel);
+        continue;
+      }
+      const view = graphNodeView(node, graph.entries, viewByGroupId);
+      if (!view) continue;
       const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
-      const selected = item.selectedGroup === group.id;
-      section.dataset.canvasGroup = group.id;
+      const selected = item.selectedGroup === node.id;
+      section.dataset.canvasGroup = node.id;
       section.classList.toggle("selected", selected);
       const icon = section.querySelector(".canvas-group-icon");
-      icon.src = groupFaviconUrl(group.url);
+      icon.src = groupFaviconUrl(view.url);
       icon.onerror = () => {
         icon.src = genericGroupIcon;
         icon.onerror = null;
       };
       const heading = section.querySelector(".canvas-group-heading");
-      heading.dataset.groupSelect = group.id;
+      heading.dataset.groupSelect = node.id;
       heading.setAttribute("aria-pressed", String(selected));
-      heading.textContent = group.number + " · " + group.name;
+      heading.textContent = view.number + " · " + view.name;
       // 分支徽标：该组是某个 condition 的 true/false 目标时说明"何时执行"。
-      const branchEntries = group.branchEntries || [];
+      const branchEntries = view.branchEntries || [];
       const branchBadge = section.querySelector(".canvas-group-branch");
       branchBadge.hidden = branchEntries.length === 0;
       if (branchEntries.length) {
@@ -1042,28 +1378,107 @@ function fillProcessPanel(panel, item) {
             )
             .join("；");
       }
+      // 来源着色（单来源 = 录制原色不动；多来源 = 按来源上色 + 图例）
+      if (sourceOrder.length > 1 && node.sourceFlowId) {
+        const colorIndex = sourceOrder.indexOf(node.sourceFlowId);
+        if (colorIndex >= 0) {
+          section.classList.add("has-source");
+          section.style.borderColor =
+            PROCESS_SOURCE_COLORS[colorIndex % PROCESS_SOURCE_COLORS.length];
+        }
+      }
+      // 回放态：组卡结果描边（全过=绿、有失败=红、全跳过=灰）
+      const nodeStatus = graphNodeResultStatus(node, graph.entries, resultByStepId);
+      if (nodeStatus) section.classList.add("result-" + nodeStatus);
       section.querySelector(".canvas-group-nodes").replaceChildren(
-        ...(group.steps.length
-          ? group.steps.map((text, index) =>
-              canvasStepNode(group, text, index, item.summary === true),
+        ...(view.steps.length
+          ? view.steps.map((text, index) =>
+              // 步骤行状态：flowStep 与 graph.entries 中的是同一对象引用，
+              // 展平时已标注 flattenedStepId（嵌套 group 行无标注，跳过状态叠加）
+              canvasStepNode(
+                view,
+                text,
+                index,
+                item.summary === true,
+                resultByStepId.get(view.flowSteps?.[index]?.flattenedStepId),
+              ),
             )
           : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
       );
-      return section;
-    }),
-  );
+      children.push(section);
+      elements.set(node.id, section);
+    }
+  }
+  world.replaceChildren(...children);
+
+  // —— 2/3. dagre 布局（先量卡片尺寸）→ 绝对定位 ——
+  if (graph && graph.nodes.length) {
+    const laid = FlowGraph.layoutGraph(graph, (node) => {
+      const el = elements.get(node.id);
+      return el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined;
+    });
+    if (laid) {
+      for (const node of graph.nodes) {
+        const el = elements.get(node.id);
+        if (!el || node.left === undefined) continue;
+        el.style.left = node.left + "px";
+        el.style.top = node.top + "px";
+      }
+      world.style.width = Math.max(1, graph.worldWidth) + "px";
+      world.style.height = Math.max(1, graph.worldHeight) + "px";
+      // —— 4. 画边层（含回放态叠加） ——
+      drawProcessGraphEdges(svg, world, graph, {
+        resultByStepId,
+        hasResults,
+        runFinished: hasResults && !item?.testRunning,
+      });
+    } else {
+      world.style.width = "";
+      world.style.height = "";
+    }
+  } else {
+    world.style.width = "";
+    world.style.height = "";
+  }
+
+  // 来源图例（画布层固定悬浮，不随平移缩放）
+  canvas.querySelectorAll(".process-source-legend").forEach((node) => node.remove());
+  if (sourceOrder.length > 1) {
+    const legend = document.createElement("div");
+    legend.className = "process-source-legend";
+    for (const flowId of sourceOrder) {
+      const meta = sourceMetaById.get(flowId);
+      const entry = document.createElement("span");
+      entry.className = "process-source-item";
+      const swatch = document.createElement("i");
+      swatch.className = "process-source-swatch";
+      swatch.style.background =
+        PROCESS_SOURCE_COLORS[sourceOrder.indexOf(flowId) % PROCESS_SOURCE_COLORS.length];
+      entry.appendChild(swatch);
+      entry.appendChild(
+        document.createTextNode(meta?.title || flowId),
+      );
+      legend.appendChild(entry);
+    }
+    canvas.appendChild(legend);
+  }
+
   canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
   const menu = canvas.querySelector(".canvas-step-menu");
-  // 按钮永不「无解释地变灰」：Flow 未加载 / 录制进行中都给出原因 tooltip。
+  // 按钮永不「无解释地变灰」：Flow 未加载 / 录制进行中 / 回放运行中都给出原因。
   const flowReady = Boolean(item.processFlow);
   const recordingNow = recordingSession().stage === "recording";
+  const playbackActive =
+    !!item.testRunning || recordingSession().playbackInFlight === true;
   const editBlockedReason = !flowReady
     ? item.processFlowError
       ? "The recorded Flow could not be loaded for this item."
       : "Loading the recorded Flow…"
     : recordingNow
       ? "Stop the recording to edit steps and groups."
-      : "";
+      : playbackActive
+        ? "Stop the running replay to edit steps and groups."
+        : "";
   for (const [groupIndex, group] of groups.entries()) {
     const actions = rowTemplate("processGroupActionsTemplate").cloneNode(true);
     actions.dataset.groupActions = group.id;
@@ -2564,14 +2979,20 @@ function renderSummaryWorkspace() {
   bindStepEditor();
   bindProcessMap();
   if (
-    active === "Process" &&
+    (active === "Process" || active === "Test") &&
     item?.recordingId &&
     !item.processFlowLoaded &&
     !item.processFlowLoading &&
     !item.processFlowError
   ) {
+    // Test 标签页也加载已保存 Flow：进度列表分组化需要组名/编号
+    // （与 Process 图共用 ensureProcessGroups 视图）。
     void hydrateProcessFlow(item).then((loaded) => {
-      if (loaded && currentAssistantItem() === item && item.resultTab === "Process")
+      if (
+        loaded &&
+        currentAssistantItem() === item &&
+        (item.resultTab === "Process" || item.resultTab === "Test")
+      )
         renderSummaryWorkspace();
     });
   }
@@ -3059,20 +3480,26 @@ function renderAIPanel() {
     !!selectedGroup && !testTab,
   );
   const stepsHost = $("assistantSteps");
+  const quickHost = $("assistantQuickActions");
   const showOptions = !refineOptions && !testTab && !selectedGroup;
-  stepsHost.querySelector('[data-ai-block="options"]').hidden = !showOptions;
   stepsHost.querySelector('[data-ai-block="steps"]').hidden = !showOptions;
-  stepsHost.querySelector('[data-ai-block="refine"]').hidden = !refineOptions;
   stepsHost.querySelector('[data-ai-block="test"]').hidden = !testTab;
   stepsHost.querySelector('[data-ai-block="group"]').hidden = !(
     selectedGroup && !testTab
   );
+  // 统一快捷区：控件保留原 id（按 id 绑定的逻辑不动），只随原区块的
+  // 显隐条件在快捷区内切换对应分组。
+  quickHost.querySelector('[data-quick-block="options"]').hidden = !showOptions;
+  quickHost.querySelector('[data-quick-block="refine"]').hidden = !refineOptions;
+  quickHost.querySelector('[data-quick-block="group"]').hidden = !(
+    selectedGroup && !testTab
+  );
   if (refineOptions) {
     const count = state.aiSourceIds?.length || 0;
-    stepsHost.querySelector(".assistant-refine-title").textContent =
+    quickHost.querySelector(".assistant-refine-title").textContent =
       "Refine " +
       (count === 1 ? "1 selected material" : count + " selected materials");
-    stepsHost.querySelector("[data-refine-presets]").replaceChildren(
+    quickHost.querySelector("[data-refine-presets]").replaceChildren(
       ...REFINE_PRESETS.map((preset, index) => {
         const label = rowTemplate("refinePresetTemplate").cloneNode(true);
         label.querySelector("input").dataset.refinePreset = index;
@@ -3080,7 +3507,7 @@ function renderAIPanel() {
         return label;
       }),
     );
-    stepsHost.querySelector("#refineFreeText").value = "";
+    quickHost.querySelector("#refineFreeText").value = "";
   }
   if (testTab) {
     const testSteps = recording?.testFlowSteps?.length
@@ -3093,13 +3520,38 @@ function renderAIPanel() {
       testSteps.length;
     const list = stepsHost.querySelector(".assistant-test-steps");
     stepsHost.querySelector("[data-test-empty]").hidden = !!testSteps.length;
+    // 进度列表分组化：组标题行（编号+名称+组级状态）+ 组内步骤行；
+    // 分支未走的组整节淡化并标 "Skipped · 分支未走"，与 Process 图上的组对应。
     list.replaceChildren(
-      ...testSteps.map((step, index) =>
-        testStepNode(step, index, results[index]),
-      ),
+      ...testProgressGroups(recording).map((section) => {
+        const status = testGroupStatus(section.rows);
+        const node = rowTemplate("testGroupTemplate").cloneNode(true);
+        node.classList.add("status-" + status);
+        node.querySelector(".test-group-number").textContent = section.number;
+        node.querySelector(".test-group-name").textContent = section.name;
+        const statusChip = node.querySelector(".test-group-status");
+        const label =
+          status === "pass"
+            ? "✓"
+            : status === "fail"
+              ? "✗"
+              : status === "running"
+                ? "▶ Running"
+                : status === "skipped"
+                  ? "Skipped · 分支未走"
+                  : "";
+        statusChip.hidden = !label;
+        statusChip.textContent = label;
+        node.querySelector(".test-group-rows").replaceChildren(
+          ...section.rows.map((row) =>
+            testStepNode(row.step, row.index, row.result),
+          ),
+        );
+        return node;
+      }),
     );
     // 失败后的 AI 接管入口：有失败步骤、无运行中的回放/接管时显示。
-    const aiContinue = stepsHost.querySelector("#aiContinueTest");
+    const aiContinue = quickHost.querySelector("#aiContinueTest");
     if (aiContinue) {
       const hasFail = results.some((result) => result?.status === "fail");
       const canContinue = !!(
@@ -3117,6 +3569,8 @@ function renderAIPanel() {
           }
         : null;
     }
+  } else {
+    quickHost.querySelector("#aiContinueTest").hidden = true;
   }
   if (selectedGroup && !testTab)
     stepsHost.querySelector(".assistant-group-name").textContent =
@@ -3133,7 +3587,11 @@ function renderAIPanel() {
     );
   const continueButton = $("refineContinue");
   if (continueButton) continueButton.onclick = submitRefineOptions;
-  $("assistantSteps").onclick = (e) => {
+  // 快捷区整体在无任何可用控件时隐藏（Test 运行中等场景）。
+  quickHost.hidden = !Array.from(quickHost.children).some(
+    (child) => !child.hidden,
+  );
+  quickHost.onclick = (e) => {
     if (testTab) return;
     const option = e.target.closest("[data-ai-option]");
     if (option) {
@@ -3707,13 +4165,11 @@ function ensureStepDetails(item) {
 }
 
 let processGroupSequence = 0;
+// 展平收敛：原先本文件的 executableFlowSteps 与 bridge.js 的 flatFlowSteps 是
+// 两份实现且只有后者标注 flattenedStepId；统一到 renderer/flow-graph.js 的唯一
+// 实现（含 stepId 前缀标注），Test 列表、Process 图、playback 事件共用。
 function executableFlowSteps(steps) {
-  const result = [];
-  for (const step of steps || []) {
-    if (step.kind === "group") result.push(...executableFlowSteps(step.steps));
-    else result.push(step);
-  }
-  return result;
+  return FlowGraph.flattenFlowSteps(steps).steps;
 }
 
 function processStepLabel(step, index, groups = []) {

@@ -3554,49 +3554,207 @@ body {
   cursor: grabbing;
 }
 
+/* ---------------- Process 流程图（dagre）：边层 / 哨节点 / 回放态叠加 ---------------- */
+
+.process-graph-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+
+.process-edge {
+  stroke: #7d8a92;
+  stroke-width: 1.6;
+  fill: none;
+}
+
+.process-edge.back {
+  stroke-dasharray: 5 4;
+}
+
+.process-edge.taken {
+  stroke: #00884a;
+  stroke-width: 2.4;
+}
+
+.process-edge.dim {
+  stroke: #c3cbd1;
+  stroke-dasharray: 4 4;
+  stroke-width: 1.2;
+}
+
+.process-edge-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  pointer-events: none;
+  padding: 0 8px;
+  background: #fff;
+  border: 1px solid #00884a;
+  border-radius: 8px;
+  color: #005c33;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.process-edge-label.no {
+  color: #8a4b00;
+  border-color: #c77c1e;
+}
+
+.process-edge-label.dim {
+  color: #98a2a9;
+  border-color: #c3cbd1;
+}
+
+.process-sentinel {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 34px;
+  background: #1f2a30;
+  border-radius: 17px;
+  color: #fff;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.process-sentinel.end {
+  background: #6b757c;
+}
+
+/* 组卡回放态描边：全过=绿、有失败=红、全跳过=灰 */
+.canvas-group.result-pass {
+  border-color: #00884a;
+  box-shadow: 0 0 0 3px rgba(0, 136, 74, 0.08);
+}
+
+.canvas-group.result-fail {
+  border-color: #b00020;
+  box-shadow: 0 0 0 3px rgba(176, 0, 32, 0.08);
+}
+
+.canvas-group.result-skip {
+  border-color: #b7bfc5;
+}
+
+.canvas-group.result-skip .canvas-group-heading,
+.canvas-group.result-skip .canvas-group-nodes {
+  opacity: 0.75;
+}
+
+/* 卡内步骤行的回放态：状态点 + 结果 chip + AI 徽标 */
+.canvas-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8a949b;
+  flex: none;
+  margin-right: 4px;
+}
+
+.canvas-step.status-pass .canvas-step-dot {
+  background: #00884a;
+}
+
+.canvas-step.status-fail .canvas-step-dot {
+  background: #b00020;
+}
+
+.canvas-step.status-running .canvas-step-dot {
+  background: #f2c811;
+}
+
+.canvas-step.status-skip .canvas-step-dot {
+  background: #b7bfc5;
+}
+
+.canvas-step-chip {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: #005c33;
+  flex: none;
+  padding-left: 4px;
+}
+
+.canvas-step-chip[data-chip-status="fail"] {
+  color: #b00020;
+}
+
+.canvas-step-chip[data-chip-status="skip"] {
+  color: #73777d;
+}
+
+.canvas-step-ai {
+  flex: none;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid #00884a;
+  border-radius: 4px;
+  color: #00884a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+/* 来源图例（多来源时显示；画布层固定，不随平移缩放） */
+.process-source-legend {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  max-width: calc(100% - 16px);
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #c5cdd4;
+  color: #333c42;
+  font-size: 12px;
+}
+
+.process-source-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.process-source-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* 流程图模式：world 尺寸由 JS 按 dagre 布局结果设置；卡片绝对定位，
+   组间连接改由 SVG 边层（.process-graph-edges）绘制。 */
 .process-canvas-world {
   position: absolute;
   left: 0;
   top: 0;
-  width: 472px;
   transform-origin: 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 40px;
-  padding: 48px 16px 0 0;
 }
 
 .canvas-group {
-  position: relative;
+  position: absolute;
+  z-index: 1;
   width: 448px;
   border: 1px solid #dadde0;
   background: #fcfcfc;
   padding: 0 16px 16px;
   border-radius: 2px;
-}
-
-.canvas-group:nth-child(2n) {
-  margin-left: 0;
-}
-
-.canvas-group:not(:last-child):after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 100%;
-  width: 1px;
-  height: 40px;
-  background: #8a9095;
-}
-
-.canvas-group:not(:last-child):before {
-  content: "";
-  position: absolute;
-  left: calc(50% - 3px);
-  top: calc(100% + 34px);
-  border-left: 3px solid transparent;
-  border-right: 3px solid transparent;
-  border-top: 6px solid #8a9095;
 }
 
 .canvas-group.selected {
@@ -3722,12 +3880,13 @@ body {
   stroke-linejoin: round;
 }
 
-.canvas-step > span:first-child {
+/* 属性选择（而非位置）：回放态叠加会在行首插入状态点 span，位置会变 */
+.canvas-step > [data-step-code] {
   white-space: nowrap;
   flex: 0 0 auto;
 }
 
-.canvas-step > span:nth-child(2) {
+.canvas-step > [data-step-text] {
   min-width: 0;
   flex: 1 1 0;
   overflow-wrap: anywhere;
@@ -4079,18 +4238,6 @@ body {
 
 #designPanel .canvas-step:not(:last-child):before {
   top: calc(100% + 10px);
-}
-
-#designPanel .process-canvas-world {
-  gap: 32px;
-}
-
-#designPanel .canvas-group:not(:last-child):after {
-  height: 32px;
-}
-
-#designPanel .canvas-group:not(:last-child):before {
-  top: calc(100% + 26px);
 }
 
 #designPanel .canvas-group {
@@ -4691,9 +4838,14 @@ body {
 }
 
 .assistant-send-row {
+  position: absolute;
   display: flex;
   justify-content: flex-end;
   margin-top: 8px;
+  align-items: center;
+  gap: 8px;
+  right: 8px;
+  bottom: 8px;
 }
 
 .assistant-send-row .btn {
@@ -4918,6 +5070,68 @@ body {
   color: #101416;
 }
 
+/* Test 进度列表分组化：组标题行 + 组内步骤行（与 Process 图上的组一一对应） */
+.test-group {
+  margin: 10px 0;
+}
+
+.test-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  background: #f3f6f8;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: #333c42;
+}
+
+.test-group-number {
+  min-width: 20px;
+  color: #52585e;
+  font-weight: 700;
+}
+
+.test-group-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.test-group-status {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: #005c33;
+  border: 1px solid #cfd6db;
+  border-radius: 8px;
+  padding: 0 6px;
+  background: #fff;
+  line-height: 16px;
+}
+
+.test-group.status-fail .test-group-status {
+  color: #b00020;
+}
+
+.test-group.status-running .test-group-status {
+  color: #8a6d00;
+}
+
+/* 分支未走的组整节淡化 */
+.test-group.status-skipped {
+  opacity: 0.55;
+}
+
+.test-group.status-skipped .test-group-status {
+  color: #73777d;
+}
+
+.test-group-rows {
+  padding-left: 14px;
+}
+
 .assistant-step {
   border: 0;
   min-height: 32px;
@@ -4953,6 +5167,7 @@ body {
   font: 400 16px/24px var(--font-ui);
   color: #00884A;
   white-space: nowrap;
+  justify-content: space-between;
 }
 
 .execution-monitor strong {
@@ -4985,13 +5200,6 @@ body {
 .assistant-composer textarea::placeholder {
   color: #101416;
   opacity: 1;
-}
-
-.assistant-send-row {
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  margin: 0;
 }
 
 .assistant-send {
@@ -5231,11 +5439,6 @@ body {
   height: 80px;
   min-height: 80px;
   padding: 16px 48px 16px 16px;
-}
-
-.assistant-send-row {
-  right: 8px;
-  bottom: 8px;
 }
 
 /* Keep recording context and conversation in one scrollable content area. */
@@ -6462,16 +6665,6 @@ body .btn.secondary:disabled {
   position: relative;
 }
 
-/* AI assistant mock option buttons. */
-.assistant-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 16px;
-  border-bottom: 1px solid #e5e9ed;
-  margin-bottom: 8px;
-}
-
 .assistant-option {
   display: flex;
   align-items: center;
@@ -6549,6 +6742,47 @@ body .btn.secondary:disabled {
 .assistant-refine-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ------------------------------------------------------------------ */
+/* AI pane: unified quick actions above the composer                  */
+/* 所有可点击操作（选项入口 / refine 表单 / 接管 / 组操作）集中于此；   */
+/* 面板主体只留信息展示。                                              */
+/* ------------------------------------------------------------------ */
+
+.assistant-quick-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px 12px;
+  border-top: 1px solid #e5e9ed;
+}
+
+.assistant-quick-actions[hidden] {
+  display: none;
+}
+
+.quick-action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quick-action-group[hidden] {
+  display: none;
+}
+
+/* 快捷区内的 refine 表单：沿用原 assistant-refine-options 视觉，去掉外边距 */
+.assistant-quick-actions .assistant-refine-options {
+  padding: 0;
+}
+
+/* 快捷区内的自由文本框宽度受控（不超过快捷区宽） */
+.assistant-quick-actions .refine-free-text {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .assistant-attachments {

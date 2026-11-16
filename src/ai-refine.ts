@@ -49,6 +49,14 @@ export type GenerateResult =
 	| { ok: true; flow: Flow; title: string; summary: string; rationale: string[]; risks: string[] }
 	| { ok: false; error: string }
 
+/** flow 级来源元数据（写入生成结果 meta.sourceFlows；镜像 schema 定义）。 */
+export interface FlowSourceMeta {
+	recordingId?: string
+	flowId: string
+	title: string
+	flowFile?: string
+}
+
 export interface GenerateFlowOptions {
 	flowFiles: string[]
 	instruction?: string
@@ -56,6 +64,12 @@ export interface GenerateFlowOptions {
 	timeoutMs?: number
 	/** 'auto' = 录制停止后的自动清洗/分组；默认 'refine' 按用户指令生成。 */
 	mode?: 'auto' | 'refine'
+	/**
+	 * 直接来源列表（主进程按 recordingIds + 已加载 flow 构造）。提供时生成结果
+	 * 写 meta.sourceFlows，并按元素库 origin 推断每步的 sourceFlowId。
+	 * 纯录制/自动清洗（单源 sanitize）不传 → 两个字段都不写。
+	 */
+	sources?: FlowSourceMeta[]
 	/** 生成提示词模板（config/prompts.json 的 generation 段）。 */
 	templates: GenerationTemplates
 	runPrompt: PromptRunner
@@ -336,11 +350,24 @@ function rehydrateExpect(
 	return out
 }
 
+export interface RehydrateHooks {
+	/**
+	 * 每个步骤再水化完成时回调一次（组节点不回调）。
+	 * refIds = 该步骤通过 {"$ref":"eN"} 引用的全部元素库 id（target/from/to/expect），
+	 * 供调用方按元素库 origin 推断步骤级来源（sourceFlowId）。
+	 */
+	onStepRefs?: (step: Record<string, unknown>, refIds: string[]) => void
+}
+
 /**
  * 把模型输出步骤再水化为可校验步骤：元素字段只接受 {"$ref":"eN"}；缺失 id 补
  * 生成；冲突 id 依次加 -2/-3 后缀（组 id 与步骤 id 共用一个命名空间）。
  */
-export function rehydrateSteps(steps: unknown, library: ElementLibraryEntry[]): Step[] {
+export function rehydrateSteps(
+	steps: unknown,
+	library: ElementLibraryEntry[],
+	hooks: RehydrateHooks = {},
+): Step[] {
 	const byId = new Map(library.map((entry) => [entry.id, entry.ref]))
 	const seenIds = new Set<string>()
 	const uniqueId = (raw: unknown): string => {
@@ -369,23 +396,42 @@ export function rehydrateSteps(steps: unknown, library: ElementLibraryEntry[]): 
 			out[key] = structuredClone(val)
 		}
 		out.id = uniqueId(source.id)
-		if ('target' in source) out.target = resolveRef(source.target, byId, `${where}(id=${out.id}).target`)
-		if ('from' in source) out.from = resolveRef(source.from, byId, `${where}(id=${out.id}).from`)
+		const refIds: string[] = []
+		const resolveTracked = (raw: unknown, at: string): ElementRef => {
+			const record = raw as Record<string, unknown>
+			if (record && typeof record === 'object' && typeof record.$ref === 'string') refIds.push(record.$ref)
+			return resolveRef(raw, byId, at)
+		}
+		if ('target' in source)
+			out.target = resolveTracked(source.target, `${where}(id=${out.id}).target`)
+		if ('from' in source)
+			out.from = resolveTracked(source.from, `${where}(id=${out.id}).from`)
 		if ('to' in source) {
 			if (!source.to || typeof source.to !== 'object' || Array.isArray(source.to)) {
 				throw new Error(`${where}(id=${out.id}).to: must be an object`)
 			}
 			const to = { ...structuredClone(source.to as Record<string, unknown>) }
 			if ('target' in (source.to as Record<string, unknown>)) {
-				to.target = resolveRef(
+				to.target = resolveTracked(
 					(source.to as Record<string, unknown>).target,
-					byId,
 					`${where}(id=${out.id}).to.target`,
 				)
 			}
 			out.to = to
 		}
 		if (source.expect !== undefined && source.expect !== null) {
+			// expect 内层 target 的 refId 也计入步骤来源投票
+			const expectSource = source.expect as Record<string, unknown>
+			if (
+				expectSource &&
+				typeof expectSource === 'object' &&
+				'target' in expectSource &&
+				expectSource.target &&
+				typeof expectSource.target === 'object' &&
+				typeof (expectSource.target as Record<string, unknown>).$ref === 'string'
+			) {
+				refIds.push((expectSource.target as Record<string, unknown>).$ref as string)
+			}
 			out.expect = rehydrateExpect(source.expect, byId, `${where}(id=${out.id}).expect`)
 		}
 		if (Array.isArray(source.steps)) {
@@ -393,6 +439,7 @@ export function rehydrateSteps(steps: unknown, library: ElementLibraryEntry[]): 
 				walk(child, `${where}.steps[${index}]`),
 			)
 		}
+		hooks.onStepRefs?.(out, refIds)
 		return out
 	}
 	if (!Array.isArray(steps) || !steps.length) {
@@ -554,6 +601,54 @@ export function buildRefinePrompt(
 
 /* ---------------- 生成入口（不落盘） ---------------- */
 
+/**
+ * 步骤级来源推断（启发式，非精确科学）：
+ * 1. 每步取其全部 $ref 元素的库条目 origin（格式 `${flowId}#...`），
+ *    出现最多的 flowId 记为该步 sourceFlowId；
+ * 2. 无元素引用的步骤（navigate/wait 等）向前继承最近一个已标注步骤，
+ *    首步无前驱时向后继承第一个标注——AI 融合的段边界通常有元素引用可依。
+ */
+function annotateSourceFlowIds(
+	steps: Step[],
+	library: ElementLibraryEntry[],
+	refIdsByStep: Map<Record<string, unknown>, string[]>,
+): void {
+	const originFlowOf = new Map<string, string | undefined>()
+	for (const entry of library) {
+		if (!originFlowOf.has(entry.id)) originFlowOf.set(entry.id, entry.origin.split('#')[0])
+	}
+	const ordered: Array<{ step: Record<string, unknown>; source?: string }> = []
+	const visit = (list: Step[]): void => {
+		for (const step of list) {
+			if (step.kind === 'group') visit(step.steps)
+			else ordered.push({ step: step as unknown as Record<string, unknown> })
+		}
+	}
+	visit(steps)
+	for (const entry of ordered) {
+		const votes = new Map<string, number>()
+		for (const refId of refIdsByStep.get(entry.step) ?? []) {
+			const flowId = originFlowOf.get(refId)
+			if (flowId) votes.set(flowId, (votes.get(flowId) ?? 0) + 1)
+		}
+		if (votes.size > 0) {
+			entry.source = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]![0]
+		}
+	}
+	if (!ordered.some((entry) => entry.source)) return
+	// 向前填充；首段无前驱 → 向后继承第一个标注
+	let carry: string | undefined
+	for (const entry of ordered) {
+		if (entry.source) carry = entry.source
+		else if (carry) entry.source = carry
+	}
+	const firstLabeled = ordered.find((entry) => entry.source)!.source
+	for (const entry of ordered) {
+		if (!entry.source) entry.source = firstLabeled
+		entry.step.sourceFlowId = entry.source
+	}
+}
+
 export async function generateRefinedFlow(options: GenerateFlowOptions): Promise<GenerateResult> {
 	try {
 		if (!Array.isArray(options.flowFiles) || !options.flowFiles.length) {
@@ -591,7 +686,12 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
 			throw new Error('Pi response is not a JSON object; the source was left unchanged.')
 		}
-		const steps = rehydrateSteps(parsed.steps, projection.library)
+		const refIdsByStep = new Map<Record<string, unknown>, string[]>()
+		const steps = rehydrateSteps(parsed.steps, projection.library, {
+			onStepRefs: (step, refIds) => refIdsByStep.set(step, refIds),
+		})
+		const sources = options.sources?.length ? options.sources : undefined
+		if (sources) annotateSourceFlowIds(steps, projection.library, refIdsByStep)
 		const variables = mergeVariables(flows, parsed.variables)
 		// 参数保护守卫（不依赖模型自觉）：
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
@@ -620,6 +720,9 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				version: 1,
 				createdAt: new Date().toISOString(),
 				title,
+				// 来源元数据：直接来源（不递归展开）；从 REFINED 再细化时同样只记
+				// 本次的直接源，transitive 可按 flowId 沿各源 flow 的 meta 追溯。
+				...(sources ? { meta: { ...flows[0]!.meta, sourceFlows: sources } } : {}),
 				steps,
 				variables: prunedVariables,
 				stats: undefined,

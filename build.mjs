@@ -63,3 +63,20 @@ await build({
 	logLevel: 'info',
 	external: ['electron'],
 })
+
+/* ---------- Renderer vendor（IIFE 浏览器全局）构建 ----------
+ *
+ * 渲染层无打包器（renderer/index.html 原样加载 app.js/bridge.js/flow-graph.js），
+ * 新依赖（如 dagre）只能经此入口以 window.__flowlinkDagre 全局变量进入。
+ * target 与 Electron 45 的 Chromium 匹配（es2022）。
+ */
+await build({
+	entryPoints: [here + 'src/renderer-vendor.ts'],
+	outfile: here + 'dist/renderer-vendor.js',
+	bundle: true,
+	platform: 'browser',
+	format: 'iife',
+	target: 'es2022',
+	sourcemap: true,
+	logLevel: 'info',
+})

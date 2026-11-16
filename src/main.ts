@@ -1015,14 +1015,30 @@ function registerIpc(): void {
 			await taskStore.list()
 			const task = taskStore.get(opts.taskCode)
 			const flowFiles: string[] = []
+			const sources: Array<{
+				recordingId: string
+				flowId: string
+				title: string
+				flowFile: string
+			}> = []
 			for (const recordingId of opts.recordingIds) {
 				const recording = task?.recordings.find((item) => item.id === recordingId)
 				if (!recording) throw new Error(`Recording not found: ${recordingId}`)
 				flowFiles.push(recording.flowFile)
+				// 溯源元数据：此处同时知道 recordingId、flowFile 与已加载 flow 的
+				// id/title；生成结果的 meta.sourceFlows 记直接来源（不递归展开）。
+				const sourceFlow = await loadFlow(recording.flowFile)
+				sources.push({
+					recordingId,
+					flowId: sourceFlow.id,
+					title: sourceFlow.title,
+					flowFile: recording.flowFile,
+				})
 			}
 			await mkdir(flowsRoot, { recursive: true })
 			const result = await generateRefinedFlow({
 				flowFiles,
+				sources,
 				instruction: typeof opts.instruction === 'string' ? opts.instruction : undefined,
 				conversation: Array.isArray(opts.conversation)
 					? opts.conversation.filter(

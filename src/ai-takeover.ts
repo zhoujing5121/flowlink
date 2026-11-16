@@ -37,6 +37,8 @@ export interface TakeoverModelConfig {
 export interface AiTakeoverStepEvent {
 	seq: number
 	stepIndex: number
+	/** 步骤的引擎 stepId（group 前缀形式，如 g2/click-pay）；渲染端按它精确对齐进度。 */
+	stepId?: string
 	note: string
 	ok: boolean
 	error?: string
@@ -553,11 +555,12 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 
 				if (ok) {
 					completed.push(entry.globalIndex)
-					deps.onStep({ seq, stepIndex: entry.globalIndex, note: note || markedEvidence || '', ok: true })
+					deps.onStep({ seq, stepIndex: entry.globalIndex, stepId: entry.stepId, note: note || markedEvidence || '', ok: true })
 				} else {
 					deps.onStep({
 						seq,
 						stepIndex: entry.globalIndex,
+						stepId: entry.stepId,
 						note: note || '',
 						ok: false,
 						...(error ? { error } : {}),

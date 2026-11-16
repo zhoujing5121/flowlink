@@ -119,7 +119,9 @@
 				if (!item.recordingId || !item.flowFile || item.testFlowSteps?.length) return
 				try {
 					const flow = await F.flow.load(item.flowFile)
-					item.testFlowSteps = flatFlowSteps(flow?.steps || [])
+					const initialFlat = FlowGraph.flattenFlowSteps(flow?.steps || [])
+					item.testFlowSteps = initialFlat.steps
+					item.testFlowIndexById = initialFlat.indexById
 					item.steps = item.testFlowSteps.map((step) => {
 						const kind = step.kind || 'action'
 						const value = step.url || step.text || step.value || ''
@@ -1244,22 +1246,10 @@
 	}
 
 	/** Run：打开 Drawer → Design → 用最近录制回放 */
+	// 展平收敛：本文件原有一份 flatFlowSteps 实现，与 app.js 的 executableFlowSteps
+	// 统一到 renderer/flow-graph.js 的唯一实现（含 flattenedStepId 标注）。
 	function flatFlowSteps(steps) {
-		const out = []
-		const visit = (list, prefix) => {
-			for (const step of list || []) {
-				if (step.kind === 'group') {
-					visit(step.steps, prefix ? `${prefix}/${step.id}` : step.id)
-				} else {
-					// 与引擎的 stepId 约定一致（engine/executor/src/steps.ts）：
-					// group 内步骤带 group 前缀（如 g2/a1），供回放结果按 stepId 精确对齐。
-					step.flattenedStepId = prefix ? `${prefix}/${step.id}` : step.id
-					out.push(step)
-				}
-			}
-		}
-		visit(steps, '')
-		return out
+		return FlowGraph.flattenFlowSteps(steps).steps
 	}
 
 	function findTestItem() {
@@ -1308,7 +1298,9 @@
 		const code = currentFlow?.code || activeFlowKey
 		try {
 			const flow = await F.flow.load(item.flowFile)
-			item.testFlowSteps = flatFlowSteps(flow?.steps || [])
+			const flat = FlowGraph.flattenFlowSteps(flow?.steps || [])
+			item.testFlowSteps = flat.steps
+			item.testFlowIndexById = flat.indexById
 			item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
 			item.testRunning = true
 			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
@@ -1338,7 +1330,7 @@
 		recordingSession().playbackInFlight = false
 		const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
 		if (runningIndex >= 0) item.testResults[runningIndex] = { status: 'fail', error: { message: 'Stopped by user' } }
-		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	}
 
 	/** AI 接管续跑：Test 失败后从第一个失败步骤起，把剩余步骤交给 browser-use agent。 */
@@ -1588,9 +1580,14 @@
 		const results = item.testResults || []
 		let resultIndex = -1
 		if (typeof r.stepId === 'string') {
-			resultIndex = (item.testFlowSteps || []).findIndex(
-				(step) => (step.flattenedStepId || step.id) === r.stepId,
-			)
+			// 优先查展平时建立的 id→index 映射；找不到时回退线性查找
+			// （兼容未带 id 的旧数据/演示数据）。
+			resultIndex = item.testFlowIndexById?.get(r.stepId) ?? -1
+			if (resultIndex < 0) {
+				resultIndex = (item.testFlowSteps || []).findIndex(
+					(step) => (step.flattenedStepId || step.id) === r.stepId,
+				)
+			}
 		}
 		if (resultIndex < 0) {
 			const runningIndex = results.findIndex((result) => result.status === 'running')
@@ -1612,7 +1609,8 @@
 			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
 		}
 		if (r.status === 'fail') item.testRunning = false
-		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		// Test 面板刷新进度；停留在 Process 标签时刷新流程图的回放态叠加
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	})
 
 	F.on('playback:userOperation', ({ token, stepId, prompt }) => {
@@ -1674,7 +1672,7 @@
 						? { status: 'fail', error: final.error }
 						: { status: 'skip' }
 		}
-		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 		if (!result.ok && typeof window.startFlowLinkAIAdvice === 'function') {
 			const failed = (result.steps || []).filter((step) => step.status === 'fail')
 			void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay failed. Diagnose the failed step(s) and the whole procedure using the execution result and captured evidence. Suggest a fix, but do not modify the source material unless the user explicitly requests a refined material.', failureContext: { ok: result.ok, error: result.error, metrics: result.metrics, failedSteps: failed, allResults: result.steps } })
@@ -1695,16 +1693,22 @@
 			(!results[index].status ||
 				results[index].status === 'pending' ||
 				results[index].status === 'running')
-		// 保持 index 语义（与引擎 flattenSteps 同序）；只写 pending/running 槽位，
-		// 避免迟到/重复事件覆盖已定状态（pass/fail/skip）。
-		if (event.ok && slotOpen(event.stepIndex)) {
-			results[event.stepIndex] = { status: 'pass', ai: true }
+		// 事件按 stepId 对齐（展平收敛后 id→index 映射）；stepIndex 仅作旧事件回退。
+		let stepIndex = -1
+		if (typeof event.stepId === 'string' && item.testFlowIndexById) {
+			const mapped = item.testFlowIndexById.get(event.stepId)
+			if (mapped !== undefined) stepIndex = mapped
+		}
+		if (stepIndex < 0 && Number.isInteger(event.stepIndex)) stepIndex = event.stepIndex
+		// 只写 pending/running 槽位，避免迟到/重复事件覆盖已定状态（pass/fail/skip）。
+		if (event.ok && slotOpen(stepIndex)) {
+			results[stepIndex] = { status: 'pass', ai: true }
 			const nextIndex = results.findIndex(
-				(result, index) => index > event.stepIndex && (!result || result.status === 'pending'),
+				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
 			)
 			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
-		} else if (!event.ok && slotOpen(event.stepIndex)) {
-			results[event.stepIndex] = {
+		} else if (!event.ok && slotOpen(stepIndex)) {
+			results[stepIndex] = {
 				status: 'fail',
 				ai: true,
 				error: { message: event.error || 'AI could not complete this step' },
@@ -1714,7 +1718,7 @@
 		if (event.note && typeof appendAIMessage === 'function') {
 			appendAIMessage(item, 'assistant', `AI: ${event.note}`)
 		}
-		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	})
 
 	/** AI 接管结束：清运行标记并把总结写入聊天 */
@@ -1742,7 +1746,7 @@
 				`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
 			)
 		}
-		if (item.resultTab === 'Test') renderSummaryWorkspace()
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	})
 
 	/** 回放错误 */
@@ -1756,7 +1760,7 @@
 			item.testRunning = false
 			const index = item.testResults.findIndex((result) => result.status === 'running')
 			if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
-			if (item.resultTab === 'Test') renderSummaryWorkspace()
+			if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
 		}
 	})

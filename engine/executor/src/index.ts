@@ -34,6 +34,7 @@ export {
 } from './artifacts.js'
 export { buildKeyChord, describeKeyChord } from './keys.js'
 export type { KeyModifier } from './keys.js'
+export { SETTLE_DEFAULT_MAX_MS, waitForSettle, type SettleOptions } from './settle.js'
 export {
 	PageManager,
 	resolveStepPageIndex,
