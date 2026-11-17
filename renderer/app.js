@@ -2040,6 +2040,10 @@ function syncBrowserSession(state = recordingSession()) {
 function initializeDrawerRecording(code) {
   activeFlowKey = code || nextTaskflowCode();
   recordingSession();
+  // 打开工作区即视为重新打开浏览器（空闲时）：回到该流程起始 URL 的单一新页，
+  // 清除上一个 taskflow / 上一轮运行遗留的标签页与状态。
+  if (typeof window.resetBrowserToTaskflowStart === "function")
+    void window.resetBrowserToTaskflowStart(activeFlowKey);
   showDrawerTab("Profile");
 }
 

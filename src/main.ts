@@ -312,18 +312,11 @@ function normalizeHttpUrl(value: string): string {
 	return parsed.href
 }
 
-/** origin+path+query 相同（忽略 hash）即视为同一页面，无需重新导航。 */
-function samePageUrl(a: string, b: string): boolean {
-	try {
-		const ua = new URL(a)
-		const ub = new URL(b)
-		return ua.origin === ub.origin && ua.pathname === ub.pathname && ua.search === ub.search
-	} catch {
-		return false
-	}
-}
-
-/** 模式切换前把内嵌浏览器还原到单一 start-URL 标签页；cookie/storage/cache 保留。 */
+/** 模式切换前把内嵌浏览器还原到单一 start-URL 标签页；cookie/storage/cache 保留。
+ * 每次打开（录制 / Test / 前缀回放 / 手动重启）都视为全新浏览器会话：关闭多余
+ * 标签页并无条件重新加载起始 URL——同地址的旧页面是上一轮运行的脏状态（SPA
+ * 状态已推进、DOM 已变化），不能作为起点。preservePage 的分组重录路径不经过
+ * 本函数（前缀回放抵达的状态必须保留）。 */
 async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
 	// 新标签页集合，或意外修改刚重建的浏览器状态。
@@ -358,11 +351,6 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	syncBrowserVisibility()
 
 	const startUrl = initialUrl || 'https://bosch.com.cn'
-	// 跳过重载意味着录制基线是当前 DOM 而非新加载页面（与 preservePage 同
-	// 一取舍）。若将来需要保证干净基线，应做成显式的「录制前强制刷新」选项，
-	// 而不是恢复这里的无条件 loadURL；recorder 本就把已存在的页面当作种子
-	// 上下文（无初始导航事件）。
-	if (samePageUrl(browserView.webContents.getURL(), startUrl)) return
 	// 导航后台进行，不再二次等待整页加载：recorder 的 waitForLoadState('load')
 	// 是唯一加载闸门，回放路径的执行器 goto 同理；Stop 仍经 webContents.stop()
 	// 与 withAbort 立即中止。
@@ -905,6 +893,10 @@ function registerIpc(): void {
 		if (recStartPromise || recPromise || recStopPromise) {
 			await stopRecordingSession({ discard: true })
 		}
+		// 回放进行中不允许重启：重启会销毁回放附着的页面，把运行中的 Test 杀掉。
+		// 空闲重置（打开工作区时的默认 URL 恢复）与 Test 启动存在异步竞态，
+		// 必须在进程边界拒绝而不是依赖渲染层时序。
+		if (playPromise) throw new Error('回放正在进行，无法重启浏览器')
 		const normalized = String(initialUrl || 'https://bosch.com.cn').trim() || 'https://bosch.com.cn'
 		let startUrl = normalized
 		try {
@@ -1380,7 +1372,8 @@ function registerIpc(): void {
 
 		const flow: Flow = await loadFlow(recording.flowFile)
 
-		// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态。
+		// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态
+		// （全新浏览器语义，见 resetBrowserTabs）。
 		await resetBrowserTabs(flow.meta.env.startUrl)
 		const seedPages = await attachPlaybackPages()
 		// Test 运行由用户主动触发，浏览器 surface 必然位于 Test 布局。resetBrowserTabs

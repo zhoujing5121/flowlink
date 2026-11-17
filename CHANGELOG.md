@@ -49,6 +49,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **Browser:** Opening the embedded browser for recording or a Test is now always a fresh browser session — extra tabs close and the start URL reloads unconditionally (an already-open same URL no longer keeps its stale DOM), and opening a taskflow's workspace while idle resets the browser to that flow's start URL, so tabs and page state no longer bleed across taskflows or runs; restarting during a replay is refused at the process boundary.
+
 - **Recording:** Recorded navigation target URLs are saved as `url_N` Reference variables (default = the recorded URL), so users can retarget a flow — for example switch environment domains — from the Reference page before replay; replay behavior is unchanged because the default reproduces the recorded address.
 - **Process:** Decision nodes render as true diamonds (clip-path polygon instead of a rotated rectangle), and edges route through dagre's computed bend points as polylines anchored to node boundaries — a decision's two outgoing branches leave one downward and one sideways (right or left), with diagonal and turning segments allowed — for a standard flowchart look.
 
@@ -71,6 +73,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **Storage:** Delete a recording's Flow and artifacts with the recording, remove all recordings' files when deleting a taskflow, and discard generated files when closing a new unsaved taskflow.
 
 ### Fixed
+
+- **Test:** The taskflow list's Run action now goes through the same entry as the Test panel — it initializes the step list and run flags and switches the view to Test before replaying; previously the replay ran in the background with no UI feedback because progress events were dropped (the item's run flags were never set).
+- **Test:** A second run of the same flow (or a flow whose start URL matches where the previous run ended) no longer stalls on an unopened start page — the pre-run reset previously skipped reloading when the browser already sat on that URL, while the embedded executor trusts that reset as its only load.
 
 - **Process:** Recordings restored after an app restart (or any item without a loaded flow) no longer show the placeholder leave-application group names from the old demo seed; groups derive from the recording's real steps by tab and URL, the same as a fresh recording.
 

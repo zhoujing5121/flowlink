@@ -1462,6 +1462,36 @@
 		}
 	}
 
+	/** 打开 taskflow 工作区时的浏览器重置（全新浏览器语义）：空闲状态下把内嵌
+	 * 浏览器还原为该流程起始 URL 的单一新页，清除跨 taskflow 遗留的标签页与
+	 * 上一轮运行状态；录制/回放进行中不打扰。 */
+	window.resetBrowserToTaskflowStart = async function (code) {
+		if (!code) return
+		const state = recordingSession(code)
+		if (state.stage === 'recording' || state.playbackInFlight) return
+		const item = [...state.items]
+			.reverse()
+			.find((entry) => entry?.recordingId && entry.flowFile)
+		let startUrl = ''
+		if (item) {
+			try {
+				startUrl = (await F.flow.load(item.flowFile))?.meta?.env?.startUrl || ''
+			} catch {
+				// 读不到起始 URL 时走默认地址兜底
+			}
+		}
+		if (!startUrl && typeof recordingTestURL === 'string') startUrl = recordingTestURL
+		if (!startUrl) return
+		// 异步加载流程文件期间可能已有 Test/录制启动；重启前二次确认空闲。
+		if (state.stage === 'recording' || state.playbackInFlight) return
+		try {
+			await F.browser.restart(startUrl)
+		} catch {
+			// 重置失败（含回放已启动被主进程拒绝）不打断工作区打开；
+			// 后续 Record/Test 各自的重置仍会执行。
+		}
+	}
+
 	async function runFlow(code) {
 		const task = flowData.find((f) => f.code === code)
 		if (!task || !(task.recordingCount || task.recordings?.length)) return
@@ -1472,10 +1502,12 @@
 			const items = recordingSession(code).items
 			const item = items[items.length - 1]
 			if (!item?.recordingId) throw new Error('The task has no saved recordings to run.')
-			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
-			const variables = item ? await window.referenceVariablesForReplay(item) : {}
-			const result = await F.playback.run({ taskCode: code, recordingId: item.recordingId, variables })
-			console.log('[bridge] 回放完成：', result)
+			// 列表 Run 与 Test 面板共用同一入口：初始化步骤/结果/运行标记并切到
+			// Test 视图后再回放。此前直接调 playback:run，界面没有任何运行反馈，
+			// 回放只在后台执行（步骤事件因 testRunning 未置位而被全部丢弃）。
+			if (typeof window.runFlowlinkTest !== 'function')
+				throw new Error('Test runner is unavailable.')
+			await window.runFlowlinkTest(item)
 		} catch (err) {
 			console.error('[bridge] 回放失败：', err)
 		}

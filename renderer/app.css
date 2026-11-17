@@ -4927,6 +4927,14 @@ body {
   bottom: 8px;
 }
 
+.assistant-mic {
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  pointer-events: none
+}
+
 .assistant-send-row .btn {
   width: 128px;
   min-width: 128px;
