@@ -870,28 +870,6 @@ function summaryTabId(name) {
       ? "summaryTabRecords"
       : "summaryTab" + name;
 }
-const leaveGroupSeed = [
-  {
-    name: "进入请假申请",
-    steps: ["打开 OA 系统", "进入请假申请页面", "点击新建申请"],
-  },
-  {
-    name: "填写请假信息",
-    steps: [
-      "选择请假类型",
-      "填写开始与结束时间",
-      "填写请假原因",
-      "上传证明附件（如需）",
-    ],
-  },
-  {
-    name: "确认并提交",
-    steps: ["确认审批人", "核对申请信息", "点击提交", "查看提交结果"],
-  },
-];
-
-const referenceOperation = leaveGroupSeed.flatMap((group) => group.steps);
-
 /** 操作类型 → 展示文本映射：无 label 的步骤按此合成可读文本（如 REFINED 的步骤已有业务语言 label 则优先用 label） */
 const STEP_KIND_TEXT = {
   navigate: "打开页面",
@@ -1190,6 +1168,68 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
   }
   svg.appendChild(defs);
 
+  // —— 折线边（dagre 路由点）：起/终点锚定到节点边界，中间拐点原样连线 ——
+  // 判断节点取菱形顶点（出向一向下一向侧，贴近标准流程图画法），
+  // 矩形节点取中心连线与边框的交点；允许斜向与转弯线段。
+  const rectBoundary = (node, toward) => {
+    const dx = toward.x - node.cx;
+    const dy = toward.y - node.cy;
+    if (!dx && !dy) return { x: node.cx, y: node.cy + node.height / 2 };
+    const scale = Math.min(
+      dx ? node.width / 2 / Math.abs(dx) : Infinity,
+      dy ? node.height / 2 / Math.abs(dy) : Infinity,
+    );
+    return { x: node.cx + dx * scale, y: node.cy + dy * scale };
+  };
+  const decisionVertex = (node, toward) => {
+    const dx = toward.x - node.cx;
+    const dy = toward.y - node.cy;
+    if (Math.abs(dy) >= Math.abs(dx))
+      return {
+        x: node.cx,
+        y: node.cy + (dy >= 0 ? node.height / 2 : -node.height / 2),
+      };
+    return {
+      x: node.cx + (dx >= 0 ? node.width / 2 : -node.width / 2),
+      y: node.cy,
+    };
+  };
+  const forwardEdge = (edge, from, to) =>
+    Array.isArray(edge.points) &&
+    edge.points.length >= 2 &&
+    edge.kind !== "back" &&
+    to.cy > from.cy;
+  // 判断节点两个前向分支的出向分配：横向偏移更大的走侧顶点（右/左），
+  // 更垂直的走底顶点；持平则“是”向下、“否”向右。
+  const decisionExit = new Map();
+  for (const node of graph.nodes) {
+    if (node.type !== "decision") continue;
+    const out = graph.edges.filter((edge) => {
+      if (edge.from !== node.id) return false;
+      const target = graph.nodeById.get(edge.to);
+      return !!target && forwardEdge(edge, node, target);
+    });
+    if (out.length !== 2) continue;
+    const lateralOf = (edge) =>
+      Math.abs((graph.nodeById.get(edge.to)?.cx ?? node.cx) - node.cx);
+    const [first, second] = out;
+    const lateral =
+      lateralOf(first) > lateralOf(second)
+        ? first
+        : lateralOf(second) > lateralOf(first)
+          ? second
+          : first.branch === "false"
+            ? first
+            : second;
+    for (const edge of out) {
+      if (edge !== lateral) decisionExit.set(edge, "down");
+      else {
+        const dx = (graph.nodeById.get(edge.to)?.cx ?? node.cx) - node.cx;
+        decisionExit.set(edge, dx >= 0 ? "right" : "left");
+      }
+    }
+  }
+
   const labels = [];
   for (const edge of graph.edges) {
     const from = graph.nodeById.get(edge.from);
@@ -1197,7 +1237,36 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
     if (!from || !to || from.cx === undefined || to.cx === undefined) continue;
     let d;
     let labelAt;
-    if (edge.kind === "back" || to.cy <= from.cy) {
+    if (forwardEdge(edge, from, to)) {
+      const inner = edge.points.slice(1, -1);
+      const firstToward = inner[0] || edge.points[edge.points.length - 1];
+      const lastToward = inner[inner.length - 1] || edge.points[0];
+      let src;
+      if (from.type === "decision") {
+        const hint = decisionExit.get(edge);
+        src =
+          hint === "right"
+            ? { x: from.cx + from.width / 2, y: from.cy }
+            : hint === "left"
+              ? { x: from.cx - from.width / 2, y: from.cy }
+              : { x: from.cx, y: from.cy + from.height / 2 };
+      } else {
+        src = rectBoundary(from, firstToward);
+      }
+      const dst =
+        to.type === "decision"
+          ? decisionVertex(to, lastToward)
+          : rectBoundary(to, lastToward);
+      const pts = [src, ...inner, dst];
+      d =
+        `M ${pts[0].x} ${pts[0].y} ` +
+        pts
+          .slice(1)
+          .map((p) => `L ${p.x} ${p.y}`)
+          .join(" ");
+      const after = inner[0] || dst;
+      labelAt = { x: (src.x + after.x) / 2, y: (src.y + after.y) / 2 };
+    } else if (edge.kind === "back" || to.cy <= from.cy) {
       // 回跳/同层：从源右缘绕到目标右缘的外弓虚线
       const x1 = from.cx + from.width / 2;
       const y1 = from.cy;
@@ -1347,6 +1416,26 @@ function fillProcessPanel(panel, item) {
         elements.set(node.id, sentinel);
         continue;
       }
+      if (node.type === "decision") {
+        // 判断节点（菱形）：契约形态的组尾 condition 提取为独立节点，
+        // 连接两个出向组；组卡不再重复显示该步骤行。
+        const decision = document.createElement("div");
+        decision.className = "process-decision";
+        decision.dataset.decisionNode = node.id;
+        decision.title = node.label;
+        const text = document.createElement("span");
+        text.textContent = node.label;
+        decision.appendChild(text);
+        const decisionStatus = graphNodeResultStatus(
+          node,
+          graph.entries,
+          resultByStepId,
+        );
+        if (decisionStatus) decision.classList.add("result-" + decisionStatus);
+        children.push(decision);
+        elements.set(node.id, decision);
+        continue;
+      }
       const view = graphNodeView(node, graph.entries, viewByGroupId);
       if (!view) continue;
       const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
@@ -1392,17 +1481,20 @@ function fillProcessPanel(panel, item) {
       if (nodeStatus) section.classList.add("result-" + nodeStatus);
       section.querySelector(".canvas-group-nodes").replaceChildren(
         ...(view.steps.length
-          ? view.steps.map((text, index) =>
-              // 步骤行状态：flowStep 与 graph.entries 中的是同一对象引用，
-              // 展平时已标注 flattenedStepId（嵌套 group 行无标注，跳过状态叠加）
-              canvasStepNode(
-                view,
-                text,
-                index,
-                item.summary === true,
-                resultByStepId.get(view.flowSteps?.[index]?.flattenedStepId),
-              ),
-            )
+          ? view.steps
+              // 尾置 condition 已提取为菱形判断节点：组卡只显示节点区间内的行
+              .slice(0, Math.max(0, node.lastIndex - node.firstIndex))
+              .map((text, index) =>
+                // 步骤行状态：flowStep 与 graph.entries 中的是同一对象引用，
+                // 展平时已标注 flattenedStepId（嵌套 group 行无标注，跳过状态叠加）
+                canvasStepNode(
+                  view,
+                  text,
+                  index,
+                  item.summary === true,
+                  resultByStepId.get(view.flowSteps?.[index]?.flattenedStepId),
+                ),
+              )
           : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
       );
       children.push(section);
@@ -2501,20 +2593,6 @@ async function finishBrowserRecording() {
   state.view = "browser";
   state.allExplicit = false;
   renderRecordingWorkspace();
-  // Reference 分析仅用于本地演示，与录制得到的媒体内容相互独立。
-  setTimeout(() => {
-    if (!state.items.includes(item)) return;
-    item.analyzed = true;
-    item.steps = [...referenceOperation];
-    if (drawerView === "Design" && state === recordingSession()) {
-      if (state.view === "analysis" && state.focused === item.id)
-        renderRecordingWorkspace();
-      else {
-        updateSummaryState();
-        renderAIPanel();
-      }
-    }
-  }, 500);
 }
 
 function updateCaptureControl() {
@@ -3247,7 +3325,7 @@ function ensureAssistantData(item) {
     };
     state.aiConversations.set(key, conversation);
   }
-  item.steps ??= [...referenceOperation];
+  item.steps ??= [];
   item.chat = conversation.messages;
   item.chatDraft = conversation.draft;
   return conversation;
@@ -4246,32 +4324,14 @@ function ensureProcessGroups(item) {
         return view;
       });
   }
-  // 根据演示种子数据按需创建分组，再生成派生视图；分组 ID 保持稳定，
-  // start 偏移则反映其在当前扁平步骤列表中的位置。
+  // 无 processFlow 的录制项（重启后恢复、旧数据）：按标签页/URL 对真实步骤分组，
+  // 组名来自实际页面（bridge.js 的 buildGroupsFromSteps），不再套用演示种子文本。
   ensureAssistantData(item);
   if (!item.processGroups) {
-    let start = 0;
-    item.processGroups = leaveGroupSeed
-      .map((seed) => {
-        const count = Math.min(
-            seed.steps.length,
-            Math.max(0, item.steps.length - start),
-          ),
-          group = {
-            id: "group-" + ++processGroupSequence,
-            name: seed.name,
-            count,
-          };
-        start += count;
-        return group;
-      })
-      .filter((group) => group.count);
-    if (start < item.steps.length)
-      item.processGroups.push({
-        id: "group-" + ++processGroupSequence,
-        name: "后续操作",
-        count: item.steps.length - start,
-      });
+    item.processGroups =
+      typeof window.buildGroupsFromSteps === "function"
+        ? window.buildGroupsFromSteps(item.testFlowSteps || [])
+        : [];
   }
   let offset = 0;
   return item.processGroups.map((group, index) => {
@@ -4698,7 +4758,7 @@ function ensureReferenceFiles(item) {
   // 上传的文件也仅保存在本地。
   if (!item) return [];
   if (!item.references) {
-    const steps = item.steps || referenceOperation;
+    const steps = item.steps || [];
     const xml =
       '<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Steps"><Table><Row><Cell><Data ss:Type="String">Step</Data></Cell><Cell><Data ss:Type="String">Operation</Data></Cell></Row>' +
       steps
@@ -5681,6 +5741,56 @@ function bindProcessMap() {
       }, 50);
     } else if (e.target.closest("[data-step-break]")) {
       hideStepMenu();
+      // 已加载真实 Flow：在 processFlow.steps 上真实拆组（旧实现只改派生视图
+      // 数组，而 ensureProcessGroups 每次从 steps 重建，拆分从未生效）。
+      if (item.processFlow) {
+        void (async () => {
+          const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+          const entry = flat.entries[stepIndex];
+          const groupId = entry?.groupId;
+          if (!entry || !groupId) return;
+          const groupFirst = flat.entries.find((e2) => e2.groupId === groupId);
+          const offset = stepIndex - (groupFirst?.index ?? stepIndex);
+          const top = item.processFlow.steps.find(
+            (s) => s.kind === "group" && s.id === groupId,
+          );
+          // 切点必须在组内：留出两个非空组
+          if (!top || !Array.isArray(top.steps) || offset <= 0 || offset >= top.steps.length)
+            return;
+          let newId = `${groupId}-split-${Date.now().toString(36)}`;
+          let seq = 2;
+          while (item.processFlow.steps.some((s) => s && s.id === newId))
+            newId = `${groupId}-split-${Date.now().toString(36)}-${seq++}`;
+          const stepsBefore = item.processFlow.steps;
+          const idx = stepsBefore.indexOf(top);
+          const first = { ...top, steps: top.steps.slice(0, offset) };
+          const second = { ...top, id: newId, steps: top.steps.slice(offset) };
+          item.processFlow = {
+            ...item.processFlow,
+            steps: [
+              ...stepsBefore.slice(0, idx),
+              first,
+              second,
+              ...stepsBefore.slice(idx + 1),
+            ],
+          };
+          try {
+            // 走 flow.updateSteps 的完整校验；失败回滚，磁盘 Flow 未动
+            await persistProcessFlow(item);
+            item.selectedGroup = newId;
+            renderSummaryWorkspace();
+          } catch (error) {
+            item.processFlow = { ...item.processFlow, steps: stepsBefore };
+            syncProcessFlowPresentation(item);
+            showFlowlinkNotice(
+              "Split group failed: " +
+                (error instanceof Error ? error.message : String(error)),
+              "warn",
+            );
+          }
+        })();
+        return;
+      }
       const groups = ensureProcessGroups(item);
       const idx = groups.findIndex(
         (g) => g.start <= stepIndex && stepIndex < g.start + g.count,

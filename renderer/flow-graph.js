@@ -148,6 +148,39 @@
       }
     }
     flushBare();
+    for (const node of nodes) {
+      if (node.type !== "group" && node.type !== "ungrouped") continue;
+      // 契约形态的 condition 是组最后一个可执行步骤：提取为独立菱形判断节点，
+      // 组卡只保留动作步骤（"更像流程图"：判断单独成节点，连接两个出向组）。
+      while (node.lastIndex > node.firstIndex) {
+        const entry = entries[node.lastIndex - 1];
+        if (!entry || entry.step.kind !== "condition") break;
+        node.lastIndex -= 1;
+        const decision = {
+          id: "cond-" + entry.flattenedStepId.replace(/[^-\w]/g, "-"),
+          type: "decision",
+          label: entry.step.label?.trim() || "条件判断",
+          firstIndex: entry.index,
+          lastIndex: entry.index + 1,
+          segmentIndex: segmentOf[entry.index] ?? 0,
+          sourceFlowId: entry.step.sourceFlowId ?? null,
+          conditionStep: entry.step,
+        };
+        nodes.push(decision);
+        nodeById.set(decision.id, decision);
+      }
+    }
+    // 抽取后为空的组（整组只有一个 condition）不产卡片
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const node = nodes[i];
+      if (
+        (node.type === "group" || node.type === "ungrouped") &&
+        node.firstIndex === node.lastIndex
+      ) {
+        nodeById.delete(node.id);
+        nodes.splice(i, 1);
+      }
+    }
 
     // —— 哨节点：每段一对 Start/End ——
     const startBySegment = new Map();
@@ -213,7 +246,9 @@
       const list = nodes
         .filter(
           (n) =>
-            (n.type === "group" || n.type === "ungrouped") &&
+            (n.type === "group" ||
+              n.type === "ungrouped" ||
+              n.type === "decision") &&
             n.segmentIndex === s,
         )
         .sort((a, b) => a.firstIndex - b.firstIndex);
@@ -226,23 +261,22 @@
       if (segStart) edges.push({ from: segStart.id, to: list[0].id, kind: "flow" });
       for (let i = 0; i < list.length; i++) {
         const node = list[i];
-        const lastEntry = entries[node.lastIndex - 1];
-        // 组内 condition 步骤（含嵌套，规则与 ensureProcessGroups 的
-        // branchEntries 一致）都画是/否分支边。
+        if (node.type === "decision") {
+          // 判断节点：只出分支边（是/否），无顺延
+          addBranchEdges(node, node.conditionStep);
+          continue;
+        }
+        // 组内 condition（含嵌套，规则与 ensureProcessGroups 的 branchEntries 一致）
+        // 都画是/否分支边。契约形态的尾置 condition 已提取为判断节点，
+        // 这里剩下的只可能是旧数据的组中段 condition（近似呈现：分支+顺延的超集）。
         for (let j = node.firstIndex; j < node.lastIndex; j++) {
           const entry = entries[j];
           if (entry && entry.step.kind === "condition")
             addBranchEdges(node, entry.step);
         }
-        // 契约上 condition 必须是组最后一步；此时流程完全由分支决定，
-        // 不再画顺延边。组中段的 condition（旧数据非法形态）额外保留顺延边，
-        // 图上呈现为分支+顺延的超集（近似）。
-        const endsWithCondition = lastEntry && lastEntry.step.kind === "condition";
-        if (!endsWithCondition) {
-          if (i + 1 < list.length)
-            edges.push({ from: node.id, to: list[i + 1].id, kind: "flow" });
-          else if (segEnd) edges.push({ from: node.id, to: segEnd.id, kind: "flow" });
-        }
+        if (i + 1 < list.length)
+          edges.push({ from: node.id, to: list[i + 1].id, kind: "flow" });
+        else if (segEnd) edges.push({ from: node.id, to: segEnd.id, kind: "flow" });
       }
     }
 
@@ -306,6 +340,11 @@
         const size = measure ? measure(node) : undefined;
         node.width = size?.width || 448;
         node.height = size?.height || 120;
+      } else if (node.type === "decision") {
+        // 菱形判断节点：优先量 DOM 实测尺寸，缺省给足标签空间
+        const size = measure ? measure(node) : undefined;
+        node.width = size?.width || 168;
+        node.height = size?.height || 72;
       } else {
         node.width = SENTINEL_SIZE.width;
         node.height = SENTINEL_SIZE.height;
@@ -331,11 +370,25 @@
       });
       g.setDefaultEdgeLabel(() => ({}));
       for (const node of component) g.setNode(node.id, { width: node.width, height: node.height });
+      let edgeSeq = 0;
       for (const edge of graph.edges) {
         if (componentById.get(edge.from) !== component) continue;
-        g.setEdge(edge.from, edge.to, { labelpos: "r" });
+        // multigraph 下用唯一边名（平行边互不覆盖），布局后按名取路由点
+        edge.dagreName = "e" + edgeSeq++;
+        g.setEdge(edge.from, edge.to, { labelpos: "r" }, edge.dagreName);
       }
       dagre.layout(g);
+      for (const edge of graph.edges) {
+        if (componentById.get(edge.from) !== component) continue;
+        const placed = g.edge(edge.from, edge.to, edge.dagreName);
+        // dagre 计算的边路由点（含转弯）交给渲染层画折线；
+        // 与节点同分量坐标系，补 offsetX 平移到画布坐标。
+        if (Array.isArray(placed?.points) && placed.points.length)
+          edge.points = placed.points.map((point) => ({
+            x: offsetX + point.x,
+            y: point.y,
+          }));
+      }
 
       let minX = Infinity;
       let maxX = -Infinity;

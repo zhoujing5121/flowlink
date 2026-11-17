@@ -2042,6 +2042,24 @@ h1 {
   background: #f0f9f4;
 }
 
+/* AI 接管后的一键流程修复：与接管按钮同款 */
+.ai-repair-flow {
+  width: 100%;
+  margin: 4px 0;
+  padding: 8px 12px;
+  border: 1px solid #1e60c7;
+  border-radius: 6px;
+  background: #fff;
+  color: #1e60c7;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-repair-flow:hover {
+  background: #f0f5fd;
+}
+
 .test-step-status {
   min-width: 72px;
   text-align: right;
@@ -3629,6 +3647,67 @@ body {
 
 .process-sentinel.end {
   background: #6b757c;
+}
+
+/* 判断节点（菱形）：契约形态的组尾 condition 独立成节点，连接两个出向组。
+ * 节点盒保持矩形（供 dagre 量尺寸）；菱形用 clip-path 多边形绘制——
+ * ::before 作描边层、::after 作同形内缩的填充层（差值即边框），文本平铺其上。
+ * 旋转方块的方案在宽扁盒上会退化成斜矩形，故弃用。 */
+.process-decision {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 168px;
+  min-height: 72px;
+  padding: 10px 30px;
+}
+
+.process-decision::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: #00884a;
+}
+
+.process-decision::after {
+  content: "";
+  position: absolute;
+  inset: 1.5px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: #f5fbf7;
+}
+
+.process-decision span {
+  position: relative;
+  z-index: 1;
+  max-width: 66%;
+  font-size: 12px;
+  font-weight: 600;
+  color: #005c33;
+  text-align: center;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* 判断节点回放态：与组卡描边语义一致（描边层/填充层分别着色） */
+.process-decision.result-pass::after {
+  background: #e7f6ee;
+}
+
+.process-decision.result-fail::before {
+  background: #b00020;
+}
+
+.process-decision.result-fail::after {
+  background: #fdf0f2;
+}
+
+.process-decision.result-skip::before {
+  background: #98a2a9;
+  opacity: 0.6;
 }
 
 /* 组卡回放态描边：全过=绿、有失败=红、全跳过=灰 */

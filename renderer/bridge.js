@@ -1214,6 +1214,9 @@
 		if (current && current.count > 0) groups.push(current)
 		return groups.length ? groups : [{ id: 'group-1', name: '操作步骤', count: steps.length }]
 	}
+	// app.js 的 Process 视图在无 processFlow 的录制项（重启后恢复等）上复用
+	// 同一套“按标签页/URL 分组”，组名来自真实页面而非演示种子。
+	window.buildGroupsFromSteps = buildGroupsFromSteps
 
 	/* ================================================================
 	 * 6. 列表 Run / Delete：启用并接线 IPC
@@ -1365,6 +1368,97 @@
 			} else {
 				console.error('[bridge] AI 接管启动失败：', message)
 			}
+		}
+	}
+
+	/** AI 接管后的自动流程修复：带失败信息与 AI 执行证据重跑细化管线，另存为全新录制（原始流程不动）。 */
+	window.aiRepairFlowAfterTakeover = async function (item) {
+		if (!item?.recordingId || !item.lastTakeover?.aiCompleted) return
+		if (item.testRunning || recordingSession().playbackInFlight) return
+		if (item.repairInFlight) return
+		item.repairInFlight = true
+		const code = currentFlow?.code || activeFlowKey
+		const results = item.testResults || []
+		const failedSteps = []
+		for (let index = 0; index < (item.testFlowSteps?.length || 0); index++) {
+			const step = item.testFlowSteps[index]
+			const result = results[index]
+			if (step && result?.status === 'fail')
+				failedSteps.push({
+					stepId: step.flattenedStepId || step.id,
+					label: step.label || step.text || '',
+					error: result.error?.message || '',
+				})
+		}
+		const aiSteps = []
+		for (let index = 0; index < (item.testFlowSteps?.length || 0); index++) {
+			const step = item.testFlowSteps[index]
+			if (results[index]?.ai && results[index].status === 'pass')
+				aiSteps.push(step?.label || step?.flattenedStepId || '')
+		}
+		if (typeof appendAIMessage === 'function')
+			appendAIMessage(item, 'assistant', 'Updating the flow from the AI takeover result…')
+		renderSummaryWorkspace()
+		try {
+			const repair = await F.pi.repairFlow({
+				taskCode: code,
+				recordingId: item.recordingId,
+				takeover: {
+					ok: item.lastTakeover.ok,
+					summary: item.lastTakeover.summary,
+					aiCompleted: item.lastTakeover.aiCompleted,
+					failedSteps,
+					aiSteps,
+				},
+			})
+			// 不覆盖当前录制：修复后的完整 Flow（主进程已 parseFlow 校验）另存为
+			// 全新录制（persistMerged → saveFlow 落盘前再次完整校验），原始流程与
+			// 本次测试结果保持原样。
+			const now = new Date()
+			const pad = (value) => String(value).padStart(2, '0')
+			const base =
+				'REPAIRED-' +
+				pad(now.getMonth() + 1) +
+				pad(now.getDate()) +
+				'-' +
+				pad(now.getHours()) +
+				pad(now.getMinutes())
+			const state = recordingSession(code)
+			const names = new Set(state.items.map((entry) => entry.name))
+			let name = base
+			for (let suffix = 2; names.has(name); suffix++) name = `${base} (${suffix})`
+			const recording = await F.recording.persistMerged({
+				taskCode: code,
+				flow: repair.flow,
+				name,
+			})
+			item.lastTakeover = null
+			// 与 ai:autoRefine 同款刷新：按 recordingId 保留现有条目（测试结果与聊天
+			// 都在原对象上），新条目追加进列表。
+			state.detailsLoaded = false
+			await window.loadTaskDetails(code, { force: true })
+			if (currentFlow && currentFlow.code === code) {
+				currentFlow.recordingCount = Math.max(
+					currentFlow.recordingCount || 0,
+					state.items.filter((entry) => entry.recordingId).length,
+				)
+			}
+			if (typeof appendAIMessage === 'function') {
+				appendAIMessage(
+					item,
+					'assistant',
+					`Created a new repaired flow: ${recording.name}. The original flow was preserved. ${repair.summary || ''}` +
+						(repair.risks?.length ? `\nRisks: ${repair.risks.join('；')}` : ''),
+				)
+			}
+			renderSummaryWorkspace()
+		} catch (err) {
+			const message = err?.message || String(err)
+			if (typeof appendAIMessage === 'function')
+				appendAIMessage(item, 'assistant', `Flow update failed: ${message}`)
+			renderSummaryWorkspace()
+		} finally {
+			item.repairInFlight = false
 		}
 	}
 
@@ -1651,8 +1745,9 @@
 		recordingSession().playbackInFlight = false
 		activePlaybackScope = null
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
-		// 按引擎 stepId 建映射（分支跳过后 result.steps 是执行序而非展示序）；
-		// 本次 run 没有结果的步骤（理论上仅剩中断等罕见情形）统一置 skip。
+		// 按引擎 stepId 建映射（分支跳过后 result.steps 是执行序而非展示序）。
+		// 本次 run 没有结果的步骤（失败后未执行/中断）不写槽位，保持原状 Pending；
+		// 只有引擎 skip 事件产生的结果才显示 Skipped（分支未走/isOptional 未生效）。
 		item.testRunning = false
 		const stepById = new Map()
 		for (const step of result.steps || []) {
@@ -1661,10 +1756,7 @@
 		const flowSteps = item.testFlowSteps || []
 		for (let index = 0; index < flowSteps.length; index++) {
 			const final = stepById.get(flowSteps[index].flattenedStepId || flowSteps[index].id)
-			if (!final) {
-				item.testResults[index] = { status: 'skip' }
-				continue
-			}
+			if (!final) continue
 			item.testResults[index] =
 				final.status === 'pass'
 					? { status: 'pass' }
@@ -1736,8 +1828,18 @@
 		activePlaybackScope = null
 		item.testRunning = false
 		const results = item.testResults || []
+		// 接管结束：running 的步骤不会再执行，重置回 pending（接管中断在该步）；
+		// 其余未执行步骤保持 Pending——Skipped 仅表示分支未走/isOptional 未生效。
 		for (let index = 0; index < results.length; index++) {
 			if (results[index]?.status === 'running') results[index] = { status: 'pending' }
+		}
+		// 记录接管结果：aiCompleted > 0 时自动后台触发流程优化（见下方）
+		item.lastTakeover = {
+			at: Date.now(),
+			ok: !!event.ok,
+			summary: String(event.summary || ''),
+			aiCompleted: results.filter((result) => result?.ai && result.status === 'pass')
+				.length,
 		}
 		if (typeof appendAIMessage === 'function') {
 			appendAIMessage(
@@ -1745,6 +1847,11 @@
 				'assistant',
 				`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
 			)
+		}
+		// 接管有 AI 执行证据时自动在后台优化流程并写回当前录制，无需用户触发；
+		// repairInFlight 防重复，函数内已有 testRunning/playbackInFlight 守卫。
+		if (item.lastTakeover.aiCompleted > 0 && !item.repairInFlight) {
+			void window.aiRepairFlowAfterTakeover(item)
 		}
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	})
@@ -1760,6 +1867,8 @@
 			item.testRunning = false
 			const index = item.testResults.findIndex((result) => result.status === 'running')
 			if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
+			// 异常终止后未执行到的步骤保持 Pending（不写任何值）；
+			// Skipped 仅来自引擎 skip 事件（分支未走/isOptional 未生效）。
 			if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
 		}
@@ -1808,6 +1917,30 @@
 	window.addEventListener('resize', () => {
 		if (boundsObserver) reportBrowserBounds()
 	})
+
+	/* ================================================================
+	 * 10. 渲染后强制重报 bounds（AI 面板开合等布局变化兜底）
+	 *
+	 * 浏览器原生视图的位置完全来自上次上报的 #browserFrames 矩形。
+	 * 布局变化（如关闭 AI 面板后 drawer 收回 padding）理论上会被
+	 * ResizeObserver 捕获，但存在收不到回调的边缘情形，导致浏览器
+	 * 一直停在窄宽度、不占据剩余空间。这里在每次工作区渲染后用
+	 * RAF + 延迟双保险强制重新测量上报（reportBrowserBounds 自带
+	 * 矩形缓存去重，重复调用无副作用）。
+	 * ================================================================ */
+	const refreshBoundsAfterPaint = () => {
+		requestAnimationFrame(() => reportBrowserBounds())
+		setTimeout(() => reportBrowserBounds(), 350)
+	}
+	for (const name of ['renderAIPanel', 'renderSummaryWorkspace', 'renderRecordingWorkspace']) {
+		const original = window[name]
+		if (typeof original !== 'function') continue
+		window[name] = function () {
+			const out = original.apply(this, arguments)
+			refreshBoundsAfterPaint()
+			return out
+		}
+	}
 
 	/* ================================================================
 	 * 启动：加载任务列表

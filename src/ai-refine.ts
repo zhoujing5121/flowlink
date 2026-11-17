@@ -150,6 +150,11 @@ const BASE_FIELDS = [
 	'systemName',
 	'reviewRequired',
 	'reviewReason',
+	// 执行方式与回放增强字段必须随投影进出：模型看得到才会原样回显，
+	// 再水化按未知标量透传——否则每次细化都会把 execution/settle/sourceFlowId 洗掉。
+	'execution',
+	'settle',
+	'sourceFlowId',
 ]
 const STEP_SCALAR_FIELDS: Record<string, string[]> = {
 	navigate: ['url', 'navigationType', 'previousUrl'],

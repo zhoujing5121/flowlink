@@ -240,6 +240,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	let inputSeq = 0
 	/** 下拉框取值占位变量序号：select_1 / select_2 … */
 	let selectSeq = 0
+	/** navigate 目标 URL 变量序号：url_1 / url_2 … */
+	let urlSeq = 0
 	/** 每个标签页最近一次签名（expect 推断的兜底 before） */
 	const lastSigByPage = new Map<number, PageSignature>()
 	/** 页面签名时间线：多标签页各自打点，按 pageIndex 过滤使用 */
@@ -898,7 +900,17 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			if (action.kind === 'navigate') {
 				// 机器跳转合成的 navigate 带 isOptional：回放时若浏览器已自行重定向则跳过
 				const isOptional = AUTO_NAVIGATION_TYPES.has(action.navigationType ?? '')
-				return { kind: 'navigate', id, url: action.url ?? pageOfAction(action).url(), navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence, ...(isOptional ? { isOptional: true } : {}) }
+				// 目标 URL 提取为 Reference 变量（url_1、url_2 …）：默认值即录制时的地址，
+				// 回放行为不变；用户可在 Reference 页改目标值（如切换环境域名）。
+				const name = `url_${++urlSeq}`
+				variables.set(name, {
+					name,
+					type: 'string',
+					defaultValue: action.url ?? pageOfAction(action).url(),
+					secret: false,
+					source: 'input',
+				})
+				return { kind: 'navigate', id, url: `{{${name}}}`, navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence, ...(isOptional ? { isOptional: true } : {}) }
 			}
 			const target = await buildRefFor(action, stepIndex)
 			switch (action.kind) {

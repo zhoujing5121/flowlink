@@ -1060,6 +1060,79 @@ function registerIpc(): void {
 		},
 	)
 
+	/* ---------- Pi：AI 接管后的一键流程修复（带失败与接管证据重跑细化，返回步骤提案不落盘） ---------- */
+	ipcMain.handle(
+		'pi:repairFlow',
+		async (
+			_event,
+			opts: {
+				taskCode: string
+				recordingId: string
+				takeover?: {
+					ok?: boolean
+					summary?: string
+					aiCompleted?: number
+					failedSteps?: Array<{ stepId: string; label?: string; error?: string }>
+					aiSteps?: string[]
+				}
+			},
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				(opts.takeover !== undefined &&
+					(typeof opts.takeover !== 'object' || Array.isArray(opts.takeover)))
+			) {
+				throw new Error('Pi repairFlow request is invalid')
+			}
+			const takeover = opts.takeover ?? {}
+			await taskStore.list()
+			const task = taskStore.get(opts.taskCode)
+			const recording = task?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error(`Recording not found: ${opts.recordingId}`)
+			const failures = (takeover.failedSteps ?? [])
+				.map(
+					(step) =>
+						`- step ${step.stepId}${step.label ? ` (${step.label})` : ''}: ${
+							step.error || 'failed'
+						}`,
+				)
+				.join('\n')
+			const aiDone = (takeover.aiSteps ?? []).map((label) => `- ${label}`).join('\n')
+			const instruction = [
+				'Repair this workflow so the next replay succeeds without AI takeover.',
+				'The previous replay failed at these steps:',
+				failures || '- (failure details unavailable)',
+				takeover.summary
+					? `An AI agent then completed the remaining steps in a live browser. Takeover summary: ${takeover.summary}`
+					: '',
+				aiDone
+					? `Steps the AI agent completed (evidence of what actually works on the page):\n${aiDone}`
+					: '',
+				'Apply the smallest set of changes that makes replay reliable: adjust verification targets following the invariants, add settle/timeout waits around the slow transitions involved in the failures, reorder or remove steps only when the evidence supports it. Never invent selectors or URLs; keep the recorded element references, variable templates, isOptional flags, and the gate-condition + tolerant sign-in structure. Keep every step that already works unchanged.',
+			]
+				.filter(Boolean)
+				.join('\n\n')
+			const result = await generateRefinedFlow({
+				flowFiles: [recording.flowFile],
+				instruction,
+				templates: getPromptTemplates().generation,
+				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
+			})
+			if (!result.ok) throw new Error(result.error)
+			return {
+				// 完整已校验 Flow 一并返回：渲染层可不经拼装直接另存为新录制。
+				flow: result.flow,
+				steps: result.flow.steps,
+				title: result.title,
+				summary: result.summary,
+				rationale: result.rationale,
+				risks: result.risks,
+			}
+		},
+	)
+
 	/* ---------- 内嵌浏览器：导航 ---------- */
 	ipcMain.handle('recording:navigate', async (_e, url: string, tabId?: string) => {
 		const normalized = normalizeHttpUrl(url)

@@ -80,6 +80,18 @@ const api = {
 			instruction?: string
 			conversation?: Array<{ role: string; text: string }>
 		}) => ipcRenderer.invoke('pi:generateFlow', opts),
+		/** AI 接管后的自动流程修复：带失败与接管证据重跑细化，返回修复后的完整 Flow 与步骤提案（不落盘） */
+		repairFlow: (opts: {
+			taskCode: string
+			recordingId: string
+			takeover?: {
+				ok?: boolean
+				summary?: string
+				aiCompleted?: number
+				failedSteps?: Array<{ stepId: string; label?: string; error?: string }>
+				aiSteps?: string[]
+			}
+		}) => ipcRenderer.invoke('pi:repairFlow', opts),
 	},
 
 	flow: {
