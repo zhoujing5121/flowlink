@@ -30,6 +30,8 @@ export interface RecordingMeta {
 	artifactsDir: string
 	/** 视频帧捕获目录（绝对路径）；独立于 recorder 写入的 Flow artifacts */
 	captureDir?: string
+	/** rrweb DOM 事件录制目录（绝对路径）；旧录制为空，Record 标签页回退到 webm/帧目录回放 */
+	rrwebDir?: string
 	createdAt: string
 	steps: number
 	videoFile?: string

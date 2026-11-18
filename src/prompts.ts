@@ -33,6 +33,8 @@ export interface TakeoverTemplates {
 	stepTask: string
 	/** 单步失败后的重试任务模板。 */
 	retryTask: string
+	/** 单步两败后降级自由续跑（free-run）的 goal 任务模板。 */
+	freeRunTask: string
 }
 
 export interface PromptTemplates {
@@ -96,6 +98,7 @@ function validateTemplates(value: unknown): PromptTemplates {
 			systemInstructions: requireString(takeover?.systemInstructions, 'takeover.systemInstructions'),
 			stepTask: requireString(takeover?.stepTask, 'takeover.stepTask'),
 			retryTask: requireString(takeover?.retryTask, 'takeover.retryTask'),
+			freeRunTask: requireString(takeover?.freeRunTask, 'takeover.freeRunTask'),
 		},
 	}
 }

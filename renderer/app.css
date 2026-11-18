@@ -4245,6 +4245,35 @@ body {
   gap: 16px;
 }
 
+/* 技术抽屉（Instruction）在旧 input 样式之上补充 checkbox / select / textarea 的形态 */
+.step-detail-fields input[type="checkbox"] {
+  height: 18px;
+  width: 18px;
+  padding: 0;
+  border: 1px solid #52585e;
+  border-radius: 3px;
+  accent-color: #00884a;
+  flex-shrink: 0;
+}
+
+.step-detail-fields select {
+  height: 48px;
+  padding: 0 12px;
+  border: 1px solid #a4aeb7;
+  border-radius: 4px;
+  color: #101416;
+  background: #fff;
+  width: 100%;
+  font-family: inherit;
+  font-size: 16px;
+}
+
+.step-detail-fields textarea {
+  min-height: 72px;
+  padding: 10px 12px;
+  line-height: 22px;
+}
+
 @media (max-width: 760px) {
   .step-disclosure summary {
     gap: 8px;
@@ -4571,6 +4600,415 @@ body {
 
 #designPanel .steps-group {
   margin-bottom: 16px;
+}
+
+/* ---------- Instruction 双层呈现：行层 + 技术抽屉 ---------- */
+
+.instruction-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.instruction-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 0 16px;
+  flex-wrap: wrap;
+}
+
+.instruction-header .instruction-status {
+  font-size: 13px;
+  line-height: 20px;
+  color: #52585e;
+  overflow-wrap: anywhere;
+}
+
+.instruction-header .instruction-status.error {
+  color: #b3261e;
+}
+
+.instruction-polish {
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid #00884a;
+  color: #00884a;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.instruction-polish:disabled {
+  border-color: #a4aeb7;
+  color: #838b92;
+  cursor: default;
+}
+
+.instruction-group-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.instruction-group-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+}
+
+.instruction-group-tab,
+.instruction-group-branch {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid #c5cdd4;
+  border-radius: 10px;
+  background: #f8f9fa;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instruction-group-branch {
+  border-color: #b7dfc9;
+  background: #edf8f1;
+  color: #00663a;
+}
+
+.instruction-row .step-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.instruction-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: #f8f9fa;
+  border: 1px solid #c5cdd4;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+}
+
+.instruction-row .step-row-text {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+}
+
+.instruction-row .step-row-text:hover {
+  border-bottom-color: #a4aeb7;
+}
+
+.instruction-step-menu {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #52585e;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.instruction-step-menu svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.instruction-step-menu:disabled {
+  color: #c5cdd4;
+  cursor: default;
+}
+
+.instruction-label-editor {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  padding: 6px 8px;
+  border: 1px solid #00884a;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 24px;
+  color: #101416;
+  background: #fff;
+  overflow: hidden;
+}
+
+.instruction-step.is-dirty .step-row-number::after {
+  content: "•";
+  margin-left: 4px;
+  color: #00884a;
+}
+
+.instruction-step.condition-step .instruction-row {
+  border-left: 3px dashed #b7dfc9;
+}
+
+.instruction-step-error {
+  margin: 0;
+  padding: 6px 16px 10px 104px;
+  font-size: 13px;
+  line-height: 20px;
+  color: #b3261e;
+}
+
+.instruction-kind-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+}
+
+.instruction-step-id {
+  color: #838b92;
+}
+
+.instruction-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.instruction-modifiers {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  color: #52585e;
+}
+
+.instruction-fieldset {
+  border: 1px solid #d7dbdf;
+  border-radius: 6px;
+  padding: 8px 12px 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.instruction-fieldset legend {
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+  padding: 0 4px;
+}
+
+.instruction-drawer-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: #838b92;
+}
+
+/* 目标查看器：证据只读展示 */
+.target-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d7dbdf;
+  border-radius: 6px;
+  background: #f8f9fa;
+}
+
+.target-viewer-title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  color: #101416;
+}
+
+.target-viewer-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: #838b92;
+}
+
+.target-crop {
+  max-width: 320px;
+  max-height: 180px;
+  border: 1px solid #c5cdd4;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.target-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.target-facts dt {
+  color: #838b92;
+}
+
+.target-facts dd {
+  margin: 0;
+  color: #101416;
+  overflow-wrap: anywhere;
+}
+
+.target-candidates {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.target-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.target-viewer-actions select {
+  height: 36px;
+  min-width: 220px;
+  padding: 0 8px;
+  border: 1px solid #a4aeb7;
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.target-rerecord {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #00884a;
+  border-radius: 4px;
+  background: transparent;
+  color: #00884a;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* 步骤操作菜单（fixed 定位小浮层） */
+.instruction-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid #c5cdd4;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 6px 24px rgba(16, 20, 22, 0.14);
+}
+
+.instruction-menu button {
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  color: #101416;
+  cursor: pointer;
+}
+
+.instruction-menu button:hover:not(:disabled) {
+  background: #edf8f1;
+}
+
+.instruction-menu button:disabled {
+  color: #c5cdd4;
+  cursor: default;
+}
+
+/* AI 润色 diff 对话框 */
+.instruction-polish-dialog {
+  max-width: 560px;
+}
+
+.instruction-polish-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  line-height: 26px;
+}
+
+.instruction-polish-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: #52585e;
+}
+
+.instruction-polish-diff {
+  margin: 0 0 12px;
+  padding: 0 4px 0 20px;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: decimal;
+}
+
+.instruction-polish-diff li {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.polish-diff-old {
+  color: #838b92;
+  text-decoration: line-through;
+}
+
+.polish-diff-arrow {
+  color: #838b92;
+  margin: 0 4px;
+}
+
+.polish-diff-new {
+  color: #00663a;
+  font-weight: 600;
+}
+
+@media (max-width: 760px) {
+  .instruction-step-error {
+    padding-left: 16px;
+  }
+
+  .target-viewer-actions select {
+    min-width: 0;
+    flex: 1;
+  }
 }
 
 .metric-table {
@@ -5155,6 +5593,19 @@ body {
 .test-progress-heading strong,
 .test-progress-heading span {
   color: #101416;
+}
+
+/* 修复链自动回跑轮次徽标（.test-round-note）：存在第三个子元素时计数右靠，
+   轮次徽标紧随其后；只有两个子元素时布局与原 space-between 一致 */
+.test-progress-heading span:first-of-type {
+  margin-left: auto;
+}
+
+.test-round-note {
+  color: #1e60c7;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* Test 进度列表分组化：组标题行 + 组内步骤行（与 Process 图上的组一一对应） */
@@ -7021,4 +7472,108 @@ body .btn.secondary:disabled {
   font-size: 16px;
   line-height: 18px;
   cursor: pointer;
+}
+
+/* ================================================================
+ * rrweb 回放器（Record 标签页）
+ * ================================================================ */
+.rrweb-player-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rrweb-player-root[hidden] {
+  display: none;
+}
+
+.rrweb-player-stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: #101416;
+  border: 1px solid #d7dee7;
+}
+
+.rrweb-tab-view {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.rrweb-tab-view[hidden] {
+  display: none;
+}
+
+.rrweb-player-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.rrweb-seek {
+  flex: 1 1 160px;
+  min-width: 120px;
+  accent-color: var(--blue);
+}
+
+.rrweb-time {
+  font-size: 13px;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+.rrweb-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.rrweb-tab-btn {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  font-size: 13px;
+  border: 1px solid #d7dee7;
+  background: #fff;
+  color: var(--secondary);
+}
+
+.rrweb-tab-btn:hover {
+  border-color: var(--blue);
+}
+
+.rrweb-tab-btn.is-active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.rrweb-error {
+  padding: 12px 14px;
+  border: 1px solid #e2b4b4;
+  background: #fdf3f3;
+  color: #8f2d2d;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.rrweb-error[hidden] {
+  display: none;
+}
+
+.rrweb-notice {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a4aeb7;
+  font-size: 14px;
 }

@@ -104,6 +104,7 @@
 					videoURL: recording.videoFile
 						? `file:///${String(recording.videoFile).replace(/\\/g, '/')}`
 						: '',
+					rrwebDir: recording.rrwebDir || '',
 					screenshots: (recording.stepScreenshots || recording.frames || []).map((filePath, index) => ({
 						image: `file:///${String(filePath).replace(/\\/g, '/')}`,
 						name: `Step-${String(index + 1).padStart(2, '0')}.png`,
@@ -454,7 +455,6 @@
 		state.view = 'browser'
 		ensureRecordingLayout()
 		updateBrowserChrome()
-		startRecordingMedia(state)
 
 		/* 启动真实录制 */
 		const taskCode = currentFlow?.code || activeFlowKey
@@ -480,10 +480,9 @@
 	const EMPTY_RECORDING_MESSAGE =
 		'No steps have been recorded. A recording without steps will not be saved. Stop recording?'
 
-	function exitEmptyRecording(state, pending, mediaResult) {
+	function exitEmptyRecording(state, pending) {
 		// 明确丢弃没有步骤的捕获，不将其加入录制列表。
 		// 普通录制和节点录制分别恢复到适当的浏览器/分析视图。
-		if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
 		const reRecordTarget = pending?.reRecordTarget
 		delete pending.finishing
 		if (state.pending === pending) state.pending = null
@@ -515,31 +514,21 @@
 		const discardWithoutSteps = !(pending.actions || []).length
 		const engineStop = F.recording.stop(discardWithoutSteps ? { discard: true } : undefined)
 		engineStop.catch(() => undefined)
-		const mediaStop = stopRecordingMedia(state)
 		if (discardWithoutSteps) {
-			// 空录制的 Stop 刻意采用 fire-and-forget：浏览器或媒体出错也不能
+			// 空录制的 Stop 刻意采用 fire-and-forget：浏览器收尾出错也不能
 			// 让用户一直困在录制状态。
-			void mediaStop.then((mediaResult) => {
-				if (mediaResult?.videoURL) URL.revokeObjectURL(mediaResult.videoURL)
-			}).catch(() => undefined)
-			exitEmptyRecording(state, pending, { videoURL: '', videoDataUrl: '', screenshots: [] })
+			exitEmptyRecording(state, pending)
 			return
 		}
-		// 非空录制需等待媒体收尾；媒体失败可降级为空媒体，但仍继续向引擎取回 Flow。
-		const mediaResult = await mediaStop.catch(() => ({
-			videoURL: '',
-			videoDataUrl: '',
-			screenshots: [],
-		}))
-		pending.media = mediaResult
-
 		try {
 			const result = await engineStop
 			if (result?.reason === 'empty') {
-				exitEmptyRecording(state, pending, mediaResult)
+				exitEmptyRecording(state, pending)
 				return
 			}
 			if (!result?.recording) {
+				// 引擎未返回录制的兜底路径：没有媒体可组装（旧媒体管线已删除）。
+				const mediaResult = { videoURL: '', rrwebDir: '', screenshots: [] }
 				const fallbackSteps = (pending.actions || []).map((action) => {
 					if (action.type === 'click') return `点击【${action.target || '目标'}】`
 					if (action.type === 'input') return `在【${action.target || '输入框'}】中填写：${action.value || ''}`
@@ -550,7 +539,7 @@
 					return action.type || '操作'
 				}).filter(Boolean)
 				if (!fallbackSteps.length) {
-					exitEmptyRecording(state, pending, mediaResult)
+					exitEmptyRecording(state, pending)
 					return
 				}
 				if (pending.groupId && state.items) {
@@ -634,19 +623,6 @@
 			item.flowFile = result.recording.flowFile
 			item.artifactsDir = result.recording.artifactsDir
 			item.recordingId = result.recording.id
-			let savedVideoFile = ''
-			if (mediaResult.videoDataUrl) {
-				try {
-					savedVideoFile =
-						(await F.recording.saveVideo({
-							recordingId: result.recording.id,
-							taskCode: currentFlow?.code || activeFlowKey,
-							dataUrl: mediaResult.videoDataUrl,
-						})) || ''
-				} catch (err) {
-					console.error('[bridge] 保存录制视频失败：', err)
-				}
-			}
 			const recordedScreenshots = (result.recording.stepScreenshots || result.recording.frames || [])
 				.slice(0, flowSteps.length)
 				.map((filePath, index) => ({
@@ -660,14 +636,21 @@
 				})
 			}
 			item.media = {
-				videoURL:
-					mediaResult.videoURL ||
-					(savedVideoFile ? `file:///${savedVideoFile.replace(/\\/g, '/')}` : ''),
+				// 旧录制（webm 落盘）经 videoFile 回放；新录制走 rrwebDir 的 DOM 事件回放。
+				videoURL: result.recording.videoFile
+					? `file:///${String(result.recording.videoFile).replace(/\\/g, '/')}`
+					: '',
+				rrwebDir: result.recording.rrwebDir || '',
 				screenshots: recordedScreenshots,
 				posterFile: result.recording.posterFile || '',
 			}
-			item.steps = flowSteps.map(flowStepToText)
-			item.stepDetails = flowSteps.map(flowStepToDetail)
+			// 行文本统一走 app.js 的 processStepLabel（优先 step.label，与
+			// Instruction/Process 同源）；打开结果页时 hydrateProcessFlow →
+			// syncProcessFlowPresentation 会再对齐，消除两套文本来源。
+			// item.stepDetails 不再写入：该草稿仅供演示路径（ensureStepDetails 兜底）。
+			item.steps = flowSteps.map((step, index) => (
+				typeof processStepLabel === 'function' ? processStepLabel(step, index) : flowStepToText(step)
+			))
 			item.processGroups = buildGroupsFromSteps(flowSteps)
 			item.analyzed = true
 			item.recorded = true
@@ -1012,78 +995,12 @@
 		// 页面关闭监听器会向引擎录制提供 closeTab 操作。
 	}
 
-	/** 启动真实的 canvas 视频录制器，画面由原生 WebContentsView 捕获帧提供。 */
-	startRecordingMedia = function (state) {
-		// 原生页面像素以 IPC 帧的形式送达，并合成到此 canvas 中；
-		// 若捕获 API 不可用，则保留安全的空媒体状态，确保录制操作仍能正常结束。
-		const canvas = document.createElement('canvas')
-		canvas.width = 960
-		canvas.height = 540
-		const ctx = canvas.getContext('2d')
-		if (!ctx || typeof canvas.captureStream !== 'function' || typeof MediaRecorder === 'undefined') {
-			state.mediaCapture = { canvas, ctx, chunks: [], screenshots: [], recorder: null, frame: null }
-			return
-		}
-		const chunks = []
-		const stream = canvas.captureStream(10)
-		const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((value) =>
-			MediaRecorder.isTypeSupported(value),
-		)
-		const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined)
-		recorder.ondataavailable = (event) => {
-			if (event.data?.size) chunks.push(event.data)
-		}
-		recorder.start(500)
-		ctx.fillStyle = '#101416'
-		ctx.fillRect(0, 0, canvas.width, canvas.height)
-		state.mediaCapture = { canvas, ctx, chunks, screenshots: [], recorder, stream, frame: null }
-	}
-	function withMediaDeadline(promise, timeoutMs = 1500) {
-		let timer
-		const deadline = new Promise((resolve) => {
-			timer = setTimeout(() => resolve(null), timeoutMs)
-		})
-		return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
-	}
-
-	stopRecordingMedia = async function (state) {
-		// 为录制器关闭和 data URL 转换都设置超时：平台回调可能永远不会触发，
-		// 不能让 Stop 因任一环节而无限等待。
-		const media = state.mediaCapture
-		if (!media) return { videoURL: '', videoDataUrl: '', screenshots: [] }
-		const emptyResult = () => ({ videoURL: '', videoDataUrl: '', screenshots: media.screenshots || [] })
-		if (!media.recorder || media.recorder.state !== 'recording') {
-			media.stream?.getTracks().forEach((track) => track.stop())
-			state.mediaCapture = null
-			return emptyResult()
-		}
-		const stopped = await withMediaDeadline(new Promise((resolve) => {
-			media.recorder.onstop = () => resolve(true)
-			try {
-				media.recorder.stop()
-			} catch {
-				resolve(false)
-			}
-		}))
-		media.stream?.getTracks().forEach((track) => track.stop())
-		state.mediaCapture = null
-		if (stopped !== true) return emptyResult()
-
-		const blob = new Blob(media.chunks, { type: media.recorder.mimeType || 'video/webm' })
-		if (!blob.size) return emptyResult()
-		const videoURL = URL.createObjectURL(blob)
-		const videoDataUrl = await withMediaDeadline(new Promise((resolve) => {
-			const reader = new FileReader()
-			reader.onload = () => resolve(String(reader.result || ''))
-			reader.onerror = () => resolve('')
-			reader.onabort = () => resolve('')
-			reader.readAsDataURL(blob)
-		}))
-		if (typeof videoDataUrl !== 'string' || !videoDataUrl) {
-			URL.revokeObjectURL(videoURL)
-			return emptyResult()
-		}
-		return { videoURL, videoDataUrl, screenshots: media.screenshots || [] }
+	// 旧「canvas + MediaRecorder 合成 webm」管线已随截屏管线一并删除：
+	// 录制视频由主进程的 rrweb DOM 事件录制产出（recording:loadRrweb 回放）。
+	// 此处保留 no-op 覆盖，压住 app.js 原型的同名实现。
+	startRecordingMedia = function () {}
+	stopRecordingMedia = async function () {
+		return { videoURL: '', screenshots: [] }
 	}
 	requestRecordingSnapshot = function () {}
 
@@ -1409,6 +1326,9 @@
 					aiCompleted: item.lastTakeover.aiCompleted,
 					failedSteps,
 					aiSteps,
+					...(item.lastTakeover.artifactDir
+						? { artifactDir: item.lastTakeover.artifactDir }
+						: {}),
 				},
 			})
 			// 不覆盖当前录制：修复后的完整 Flow（主进程已 parseFlow 校验）另存为
@@ -1452,6 +1372,39 @@
 				)
 			}
 			renderSummaryWorkspace()
+			// ---- Phase 5 闭环：REPAIRED 生成后自动回跑一轮 Test（最多 2 轮，UI 明示轮次）----
+			const newItem = state.items.find((entry) => entry.recordingId === recording.id)
+			const round = (item.autoVerifyRound || 0) + 1
+			if (newItem) newItem.autoVerifyRound = round
+			if (newItem && round <= 2) {
+				if (typeof appendAIMessage === 'function') {
+					appendAIMessage(
+						newItem,
+						'assistant',
+						`自动回跑验证（第 ${round}/2 轮）：正在对修复后的流程运行一次 Test…`,
+					)
+				}
+				renderSummaryWorkspace()
+				await window.runFlowlinkTest(newItem)
+				const finalResults = newItem.testResults || []
+				const hasFail = finalResults.some((result) => result?.status === 'fail')
+				if (typeof appendAIMessage === 'function') {
+					appendAIMessage(
+						newItem,
+						'assistant',
+						hasFail
+							? `自动回跑（第 ${round}/2 轮）仍有失败步骤。可以再次点 AI Continue 接管，或直接人工处理；${round >= 2 ? '自动回跑轮次已用完，之后的 Test 请手动运行。' : '修复链会继续计数轮次。'}`
+							: `自动回跑（第 ${round}/2 轮）全部通过，修复后的流程可以直接使用。`,
+					)
+				}
+				renderSummaryWorkspace()
+			} else if (typeof appendAIMessage === 'function') {
+				appendAIMessage(
+					item,
+					'assistant',
+					'自动回跑轮次已达上限（2 轮），本次修复不再自动运行 Test，请手动验证。',
+				)
+			}
 		} catch (err) {
 			const message = err?.message || String(err)
 			if (typeof appendAIMessage === 'function')
@@ -1580,42 +1533,8 @@
 		// 弹窗或原生打开操作会在 CDP 挂接后由引擎记录。
 	})
 
-	F.on('recording:captureFrame', ({ dataUrl, index, tabId, url }) => {
-		// 每个引擎帧只保存一次截图，并绘制到本地视频 canvas；
-		// 标签用于标明画面来自哪个原生标签页。
-		const state = recordingSession()
-		const media = state.mediaCapture
-		if (!media || state.stage !== 'recording' || typeof dataUrl !== 'string') return
-		const image = new Image()
-		image.onload = () => {
-			if (state.mediaCapture !== media || !media.ctx) return
-			const scale = Math.min(media.canvas.width / image.width, media.canvas.height / image.height)
-			const width = image.width * scale
-			const height = image.height * scale
-			media.ctx.fillStyle = '#101416'
-			media.ctx.fillRect(0, 0, media.canvas.width, media.canvas.height)
-			media.ctx.drawImage(image, (media.canvas.width - width) / 2, (media.canvas.height - height) / 2, width, height)
-			const page = state.browserTabs.find((item) => item.nativeId === tabId)
-			const tabIndex = page
-				? Math.max(0, state.browserTabs.findIndex((item) => item.id === page.id))
-				: 0
-			const activeUrl = url || page?.draftURL || page?.url || 'Browser'
-			const label = `Tab ${tabIndex + 1} · ${activeUrl}`
-			media.ctx.fillStyle = 'rgba(16, 20, 22, 0.92)'
-			media.ctx.fillRect(18, 18, Math.min(media.canvas.width - 36, 680), 44)
-			media.ctx.fillStyle = '#ffffff'
-			media.ctx.font = '600 20px Segoe UI, Arial'
-			media.ctx.fillText(label.length > 78 ? `${label.slice(0, 75)}…` : label, 34, 47, 648)
-		}
-		image.src = dataUrl
-		if (!media.screenshots.some((item) => item.index === index)) {
-			media.screenshots.push({
-				index,
-				image: dataUrl,
-				name: `Frame-${String(index).padStart(2, '0')}.png`,
-			})
-		}
-	})
+	// 旧「recording:captureFrame」帧消费已删除：主进程不再有周期性截屏，
+	// 录制画面由 rrweb 事件流落盘后在 Record 标签页回放。
 
 	/** 加载状态 → 更新 reload 按钮 */
 	F.on('browser:loading', ({ loading }) => {
@@ -1825,8 +1744,22 @@
 		}
 		if (stepIndex < 0 && Number.isInteger(event.stepIndex)) stepIndex = event.stepIndex
 		// 只写 pending/running 槽位，避免迟到/重复事件覆盖已定状态（pass/fail/skip）。
-		if (event.ok && slotOpen(stepIndex)) {
-			results[stepIndex] = { status: 'pass', ai: true }
+		if (event.ok && event.skipped && slotOpen(stepIndex)) {
+			// 网关路由跳过（接管前本地求值定子序列）：语义对齐执行器的分支 skip。
+			results[stepIndex] = { status: 'skip' }
+			const nextIndex = results.findIndex(
+				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
+			)
+			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
+		} else if (event.ok && event.manual && slotOpen(stepIndex)) {
+			// manual 步骤：用户在内嵌浏览器完成并确认（无 AI 徽标）。
+			results[stepIndex] = { status: 'pass', manual: true }
+			const nextIndex = results.findIndex(
+				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
+			)
+			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
+		} else if (event.ok && slotOpen(stepIndex)) {
+			results[stepIndex] = { status: 'pass', ai: true, ...(event.freeRun ? { freeRun: true } : {}) }
 			const nextIndex = results.findIndex(
 				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
 			)
@@ -1872,6 +1805,8 @@
 			summary: String(event.summary || ''),
 			aiCompleted: results.filter((result) => result?.ai && result.status === 'pass')
 				.length,
+			// 接管 artifact 目录：修复链路据此读取 ai-takeover.json 的元素证据（重锚定）。
+			artifactDir: String(event.artifactDir || ''),
 		}
 		if (typeof appendAIMessage === 'function') {
 			appendAIMessage(

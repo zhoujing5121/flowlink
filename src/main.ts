@@ -11,19 +11,21 @@
  */
 import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
 import { disposePiWorker, getPromptTemplates, getPiProxyOptions, getTakeoverModelConfig, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
-import { aiTakeoverInProgress, abortAiTakeover, startAiTakeover } from './ai-takeover.js'
+import { aiTakeoverInProgress, abortAiTakeover, startAiTakeover, type GateEvaluation, type TakeoverEvidence, type TakeoverEvidenceNode, type TakeoverEvidencePage } from './ai-takeover.js'
 import { perf, perfSinceAppStart } from './perf.js'
-import { generateRefinedFlow } from './ai-refine.js'
+import { elementKey, generateRefinedFlow, projectFlows, type ReanchorEntry } from './ai-refine.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
-import { flattenSteps, playOnPage, prefixSteps, type RunResult } from '../engine/executor/src/index.js'
-import { loadFlow, parseFlow, saveFlow, makeId } from '../engine/schema/src/index.js'
+import { evaluateAssertion, flattenSteps, playOnPage, prefixSteps, type RunResult, type VerifyDeps } from '../engine/executor/src/index.js'
+import { resolve as resolveElement } from '../engine/resolver/src/index.js'
+import { loadFlow, parseFlow, saveFlow, makeId, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
+import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
 
@@ -61,12 +63,10 @@ let recPromise: Promise<RecordResult> | null = null
 let recStopRequested = false
 let recTaskCode = ''
 let recOutPath = ''
-let recordingCaptureTimer: ReturnType<typeof setInterval> | null = null
+/* rrweb 录制根目录（recording-<ts>，沿用 captureDir 清理守卫）与 poster 单次截图 */
 let recordingCaptureRoot = ''
-let recordingCaptureDir = ''
-let recordingCaptureFrames: string[] = []
-let recordingCaptureBusy = false
-let recordingCaptureActive = false
+let recordingPosterTimer: ReturnType<typeof setTimeout> | null = null
+let recordingPosterFile = ''
 let recordingAdditionalPages: Page[] = []
 let recordingTabIds: string[] = []
 const recordingTabSnapshots = new Map<string, { url: string; title: string }>()
@@ -135,8 +135,11 @@ function resetRecordingState(): void {
 	recTaskCode = ''
 	recOutPath = ''
 	recordingCaptureRoot = ''
-	recordingCaptureDir = ''
-	recordingCaptureFrames = []
+	recordingPosterFile = ''
+	if (recordingPosterTimer) {
+		clearTimeout(recordingPosterTimer)
+		recordingPosterTimer = null
+	}
 	recordingAdditionalPages = []
 	recordingTabIds = []
 	recordingTabSnapshots.clear()
@@ -201,7 +204,7 @@ async function removeRecordingFiles(recording: RecordingMeta): Promise<void> {
 
 /** 启动被取消或没有记录到步骤时，清理本次会话产生的临时捕获文件。 */
 async function discardEmptyRecordingCapture(): Promise<void> {
-	await stopRecordingCapture().catch(() => undefined)
+	await stopRrwebRecording().catch(() => undefined)
 	// 只删除本次会话生成的独立目录，不触碰其它录制。
 	if (recordingCaptureRoot) {
 		await rm(recordingCaptureRoot, { recursive: true, force: true }).catch(() => undefined)
@@ -257,6 +260,11 @@ function registerBrowserTab(tabId: string, view: WebContentsView): void {
 		if ((recPromise || playPromise) && engine) {
 			void engine.pageFor(tabId, opened.webContents).then((page) => {
 				if (!recordingAdditionalPages.includes(page)) recordingAdditionalPages.push(page)
+				if (recPromise || recStartPromise) {
+					void attachRrwebPage({ page, tabId, label: recordingTabLabel(tabId) }).catch((err) => {
+						console.warn(`[flowlink] rrweb 挂接新标签页失败：`, (err as Error).message)
+					})
+				}
 			}).catch((err) => {
 				console.warn(`[flowlink] popup 标签页录制附着失败：`, (err as Error).message)
 			})
@@ -406,72 +414,46 @@ function ensureBrowserBounds(): void {
 	}
 }
 
-/** 采一帧：截图 + 落盘 + 推给渲染端。busy 标记串行化，保证帧的写入顺序与采集顺序一致。 */
-function captureRecordingFrame(force = false): Promise<void> {
-	if (recordingCaptureBusy) return Promise.resolve()
-	if (!force && (!recordingCaptureActive || browserViews.size === 0)) return Promise.resolve()
-	recordingCaptureBusy = true
-	const view = browserView
+/** rrweb manifest 与播放器标签按钮使用的标签页显示名（编号与录制时标签顺序一致）。 */
+function recordingTabLabel(tabId: string): string {
+	const index = recordingTabIds.indexOf(tabId)
+	const view = browserViews.get(tabId)
+	const url =
+		view && !view.webContents.isDestroyed()
+			? view.webContents.getURL()
+			: (recordingTabSnapshots.get(tabId)?.url || '')
+	const title =
+		view && !view.webContents.isDestroyed()
+			? view.webContents.getTitle()
+			: (recordingTabSnapshots.get(tabId)?.title || '')
+	const text = (title && title !== url ? title : url) || 'Tab'
+	return `Tab ${index >= 0 ? index + 1 : 1} · ${text}`.slice(0, 120)
+}
+
+/**
+ * 录制开始后约 1.2s 单次截取 poster（Record 列表缩略图兼容旧格式）。
+ * 单次 capturePage 不构成闪烁/点击丢失源（旧管线的问题是 800ms 周期轮询）。
+ */
+function scheduleRecordingPoster(): void {
+	if (recordingPosterTimer) clearTimeout(recordingPosterTimer)
+	const root = recordingCaptureRoot
 	const tabId = activeBrowserTabId
-	return view.webContents
-		.capturePage()
-		.then(async (image) => {
-			const png = image.toPNG()
-			if (!png.length) return
-			const framePath = join(recordingCaptureDir, `frame-${String(recordingCaptureFrames.length + 1).padStart(4, '0')}.png`)
-			await writeFile(framePath, png)
-			recordingCaptureFrames.push(framePath)
-			if (!mainWindow.isDestroyed()) {
-				mainWindow.webContents.send('recording:captureFrame', {
-					dataUrl: image.toDataURL(),
-					index: recordingCaptureFrames.length,
-					tabId,
-					url: view.webContents.getURL(),
-				})
-			}
-		})
-		.catch(() => {})
-		.finally(() => {
-			recordingCaptureBusy = false
-		})
-}
-
-async function startRecordingCapture(flowId: string): Promise<void> {
-	recordingCaptureRoot = join(artifactsRoot, flowId)
-	recordingCaptureDir = join(recordingCaptureRoot, 'record', 'video')
-	recordingCaptureFrames = []
-	await mkdir(recordingCaptureDir, { recursive: true })
-	recordingCaptureActive = true
-	recordingCaptureTimer = setInterval(() => {
-		void captureRecordingFrame()
-	}, 800)
-}
-
-async function stopRecordingCapture(): Promise<{ frames: string[]; poster: string }> {
-	if (recordingCaptureTimer) {
-		clearInterval(recordingCaptureTimer)
-		recordingCaptureTimer = null
-	}
-	const hadSession = recordingCaptureActive
-	recordingCaptureActive = false
-	if (!hadSession) {
-		return {
-			frames: [...recordingCaptureFrames],
-			poster: recordingCaptureFrames[0] ?? '',
-		}
-	}
-	// 事件有界收尾：等正在落盘的最后一帧完成，再补一帧停止瞬间的画面。
-	// 硬上限仍是 850ms（原固定 sleep 的时长）：快机器不空等，慢机器也不会提前返回。
-	const deadline = Date.now() + 850
-	while (recordingCaptureBusy && Date.now() < deadline) await sleep(25)
-	if (Date.now() < deadline - 150) {
-		await captureRecordingFrame(true)
-		while (recordingCaptureBusy && Date.now() < deadline) await sleep(25)
-	}
-	return {
-		frames: [...recordingCaptureFrames],
-		poster: recordingCaptureFrames[0] ?? '',
-	}
+	recordingPosterTimer = setTimeout(() => {
+		recordingPosterTimer = null
+		const view = browserViews.get(tabId)
+		if (!root || root !== recordingCaptureRoot || !view || view.webContents.isDestroyed()) return
+		void view.webContents
+			.capturePage()
+			.then(async (image) => {
+				const png = image.toPNG()
+				if (!png.length) return
+				const posterDir = join(root, 'record')
+				await mkdir(posterDir, { recursive: true })
+				recordingPosterFile = join(posterDir, 'poster.png')
+				await writeFile(recordingPosterFile, png)
+			})
+			.catch(() => undefined)
+	}, 1200)
 }
 
 /** 有界轮询 Electron 异步生成的端口文件，超时后明确报告启动失败。 */
@@ -589,6 +571,11 @@ async function createWindow(): Promise<void> {
 		if ((recPromise || playPromise) && engine) {
 			void engine.pageFor(tabId, opened.webContents).then((page) => {
 				if (!recordingAdditionalPages.includes(page)) recordingAdditionalPages.push(page)
+				if (recPromise || recStartPromise) {
+					void attachRrwebPage({ page, tabId, label: recordingTabLabel(tabId) }).catch((err) => {
+						console.warn(`[flowlink] rrweb 挂接新标签页失败：`, (err as Error).message)
+					})
+				}
 			}).catch((err) => {
 				console.warn(`[flowlink] popup 标签页录制附着失败：`, (err as Error).message)
 			})
@@ -760,7 +747,16 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 			await writeFlowForgeArchive(result.rawPath, result.flow, captureTabs, result.artifactsDir, recordingHostEvents).catch((error) => {
 				console.warn('[flowlink] FlowForge evidence archive could not be written:', (error as Error).message)
 			})
-			const capture = await stopRecordingCapture()
+			// poster 单次截图到此为止；rrweb 收尾（页面停录 + 事件流 flush + 终版 manifest）。
+			if (recordingPosterTimer) {
+				clearTimeout(recordingPosterTimer)
+				recordingPosterTimer = null
+			}
+			const rrweb = await stopRrwebRecording().catch(() => ({
+				dir: '',
+				tabCount: 0,
+				eventCount: 0,
+			}))
 			let stepScreenshots: string[] = []
 			try {
 				// 录制步骤截图由 recorder 写入；读取失败不影响 Flow 保存，
@@ -776,11 +772,13 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				name: generatedRecordingName(),
 				flowFile: recOutPath,
 				artifactsDir: result.artifactsDir,
-				captureDir: recordingCaptureRoot,
+				captureDir: recordingCaptureRoot || undefined,
+				rrwebDir: rrweb.dir || undefined,
 				createdAt: result.flow.createdAt,
 				steps: result.flow.steps.length,
-				posterFile: capture.poster,
-				frames: capture.frames,
+				posterFile: recordingPosterFile,
+				// 旧字段保留兼容旧数据；新录制不再产出 PNG 帧序列
+				frames: [],
 				stepScreenshots,
 			}
 			await taskStore.addRecording(recTaskCode, recording)
@@ -799,7 +797,7 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				await discardEmptyRecordingCapture()
 				return { recording: null, reason: 'empty' }
 			}
-			await stopRecordingCapture().catch(() => undefined)
+			await stopRrwebRecording().catch(() => undefined)
 			const message = (err as Error).message
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('recording:error', { message })
@@ -830,6 +828,335 @@ async function attachPlaybackPages(): Promise<Page[]> {
 	}
 	if (!seedPages.length) throw new Error('没有可用的内嵌浏览器标签页用于回放')
 	return seedPages
+}
+
+/* ---------------- AI 接管辅助：页面枚举 / 网关求值 / 证据抓取 ---------------- */
+
+/** 接管现场可用的 Playwright 页面（活动标签页优先，去重、容忍个别附着失败）。 */
+async function attachedTakeoverPages(): Promise<Page[]> {
+	const pages: Page[] = []
+	const seen = new Set<Page>()
+	const tryAdd = async (tabId: string): Promise<void> => {
+		const view = browserViews.get(tabId)
+		if (!view || view.webContents.isDestroyed()) return
+		try {
+			const page = await engine.pageFor(tabId, view.webContents)
+			if (!seen.has(page)) {
+				seen.add(page)
+				pages.push(page)
+			}
+		} catch {
+			/* 单个标签页附着失败不影响其余页面 */
+		}
+	}
+	await tryAdd(activeBrowserTabId)
+	for (const tabId of browserViews.keys()) {
+		if (tabId !== activeBrowserTabId) await tryAdd(tabId)
+	}
+	return pages
+}
+
+/**
+ * 网关 condition 本地求值（执行器同款 evaluateAssertion + resolver 解析）。
+ * 逐页尝试：任一页面命中即视为 matches（登录网关语义 = 目标页元素在任一打开的
+ * 标签页上可见）；所有页面都无法给出确定答案时返回 null（接管保守线性继续）。
+ */
+async function evaluateTakeoverGate(
+	assertion: Assertion,
+	target: ElementRef | undefined,
+): Promise<GateEvaluation | null> {
+	try {
+		const pages = await attachedTakeoverPages()
+		if (!pages.length) return null
+		let definitive = false
+		for (const page of pages) {
+			const verifyDeps: VerifyDeps = {
+				page,
+				timeoutMs: 5_000,
+				log: () => {},
+				resolveTarget: (ref, opts) =>
+					resolveElement(ref, {
+						page,
+						log: () => {},
+						options: {
+							requireVisible: opts?.requireVisible ?? false,
+							allowAi: false,
+							elementWaitMs: opts?.elementWaitMs ?? 1_500,
+						},
+					}),
+				pollResolveMs: 1_000,
+			}
+			try {
+				const outcome = await evaluateAssertion(verifyDeps, assertion, target)
+				definitive = true
+				if (outcome.matches) return outcome
+			} catch {
+				/* 该页面导航中/不可评估：换下一页 */
+			}
+		}
+		return definitive
+			? { matches: false, note: `${assertion.kind} did not match on any open page` }
+			: null
+	} catch {
+		return null
+	}
+}
+
+/** 证据采集用的页面脚本：交互元素摘要（不读任何输入值，secret 不可能进入证据）。 */
+const TAKEOVER_EVIDENCE_SCRIPT = `(() => {
+	const nodes = []
+	const selector = 'a[href], button, input, select, textarea, [role], [data-testid], [data-test-id], [aria-label]'
+	for (const el of document.querySelectorAll(selector)) {
+		if (nodes.length >= 40) break
+		const tag = el.tagName.toLowerCase()
+		let role = el.getAttribute('role')
+		if (!role) {
+			if (tag === 'a') role = 'link'
+			else if (tag === 'button') role = 'button'
+			else if (tag === 'select') role = 'combobox'
+			else if (tag === 'textarea') role = 'textbox'
+			else if (tag === 'input') {
+				const type = (el.getAttribute('type') || 'text').toLowerCase()
+				role = type === 'button' || type === 'submit' ? 'button' : type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : 'textbox'
+			}
+		}
+		const name = String(el.getAttribute('aria-label') || el.getAttribute('placeholder') || (el.labels && el.labels[0] ? el.labels[0].textContent : '') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80)
+		const testid = el.getAttribute('data-testid') || el.getAttribute('data-test-id') || ''
+		const text = String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80)
+		const id = el.id || ''
+		if (!role && !name && !testid && !text) continue
+		nodes.push({ tag, ...(role ? { role } : {}), ...(name ? { name } : {}), ...(testid ? { testid } : {}), ...(text && text !== name ? { text } : {}), ...(id ? { id } : {}) })
+	}
+	return nodes
+})()`
+
+/**
+ * 接管证据抓取：当前打开页面的交互元素摘要（活动页优先，页数与节点数有上限）。
+ * 只在 agent 运行间隙调用（不与 agent 的 CDP 会话并发操作同一页面）。
+ */
+async function captureTakeoverEvidence(): Promise<TakeoverEvidence | null> {
+	try {
+		const pages = await attachedTakeoverPages()
+		const out: TakeoverEvidencePage[] = []
+		for (const page of pages.slice(0, 5)) {
+			try {
+				const url = page.url()
+				if (!/^https?:/i.test(url)) continue
+				const nodes = (await page.evaluate(TAKEOVER_EVIDENCE_SCRIPT)) as TakeoverEvidenceNode[]
+				if (!Array.isArray(nodes) || !nodes.length) continue
+				let title = ''
+				try {
+					title = await page.title()
+				} catch {
+					/* 标题拿不到不影响证据 */
+				}
+				out.push({ url, title, nodes })
+			} catch {
+				/* 页面导航中：跳过 */
+			}
+		}
+		return out.length ? { pages: out } : null
+	} catch {
+		return null
+	}
+}
+
+/** 宿主侧「等待用户操作/人工步骤确认」：token + playback:userOperation 事件。 */
+function hostWaitForUserOperation(opts: {
+	stepId: string
+	prompt: string
+	signal?: AbortSignal
+}): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const token = makeId('user-operation')
+		const cleanup = (): void => {
+			pendingUserOperationWaits.delete(token)
+			opts.signal?.removeEventListener('abort', onAbort)
+		}
+		const onAbort = (): void => {
+			cleanup()
+			reject(new Error('用户操作等待已取消'))
+		}
+		if (opts.signal?.aborted) {
+			onAbort()
+			return
+		}
+		pendingUserOperationWaits.set(token, () => {
+			cleanup()
+			resolve()
+		})
+		opts.signal?.addEventListener('abort', onAbort, { once: true })
+		if (mainWindow.isDestroyed()) {
+			cleanup()
+			reject(new Error('应用窗口已关闭，无法继续用户操作等待'))
+			return
+		}
+		mainWindow.webContents.send('playback:userOperation', { token, stepId: opts.stepId, prompt: opts.prompt })
+	})
+}
+
+/* ---------------- 修复链路的证据匹配与候选重锚定（Phase 4） ---------------- */
+
+function normalizeEvidenceName(value: string | undefined): string {
+	return String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function describeEvidenceNode(node: TakeoverEvidenceNode): string {
+	const bits = [node.tag]
+	if (node.role) bits.push(`role="${node.role}"`)
+	if (node.name) bits.push(`name="${node.name}"`)
+	if (node.testid) bits.push(`testid="${node.testid}"`)
+	if (node.id) bits.push(`id="${node.id}"`)
+	if (node.text && node.text !== node.name) bits.push(`text="${node.text.slice(0, 40)}"`)
+	return `<${bits.join(' ')}>`
+}
+
+/** 证据节点 → 候选（只做语义形态：testid / role+name / text；不让模型发明选择器）。 */
+function reanchorCandidates(node: TakeoverEvidenceNode): Candidate[] {
+	const out: Candidate[] = []
+	if (node.testid) out.push({ kind: 'testid', value: node.testid, score: 0, source: 'ai' })
+	if (node.role && node.name) {
+		out.push({ kind: 'role', value: { role: node.role, name: node.name }, score: 0, source: 'ai' })
+	} else if (node.text) {
+		out.push({ kind: 'text', value: node.text.slice(0, 60), score: 0, source: 'ai' })
+	}
+	return out
+}
+
+/**
+ * 元素证据匹配（主进程做的简单归一化比对）：
+ * 想要的 role/name/tag 与证据节点比对打分，top1 超阈值才算命中；
+ * 证据节点上与录制 testid 候选完全一致的直接强命中。
+ */
+function matchEvidenceNode(
+	ref: ElementRef,
+	pages: TakeoverEvidencePage[],
+): { node: TakeoverEvidenceNode; url: string } | null {
+	const wantRole = String(ref.fingerprint?.role ?? '').toLowerCase()
+	const wantName = normalizeEvidenceName(
+		ref.fingerprint?.accessibleName || ref.observed?.text || ref.description || '',
+	)
+	const wantTag = String(ref.observed?.tag ?? ref.fingerprint?.tag ?? '').toLowerCase()
+	const recordedTestids = (ref.candidates ?? [])
+		.filter((candidate) => candidate.kind === 'testid' && typeof candidate.value === 'string')
+		.map((candidate) => candidate.value as string)
+	let best: { node: TakeoverEvidenceNode; url: string; score: number } | null = null
+	for (const page of pages) {
+		for (const node of page.nodes) {
+			let score = 0
+			const nodeName = normalizeEvidenceName(node.name || node.text || '')
+			if (wantName && nodeName) {
+				if (nodeName === wantName) score += 2
+				else if (nodeName.includes(wantName) || wantName.includes(nodeName)) score += 1
+			}
+			if (wantRole && node.role && node.role.toLowerCase() === wantRole) score += 1
+			if (wantTag && node.tag === wantTag) score += 0.5
+			if (node.testid && recordedTestids.includes(node.testid)) score += 3
+			if (!best || score > best.score) best = { node, url: page.url, score }
+		}
+	}
+	// 阈值 2.5：testid 一致（3）、name 精确 + role（3）、name 精确 + tag（2.5）、
+	// name 包含 + role（2）不行——宁可漏报交给模型，也不误锚定。
+	return best && best.score >= 2.5 ? { node: best.node, url: best.url } : null
+}
+
+interface RepairEvidence {
+	/** 注入修复 instruction 的证据行。 */
+	lines: string[]
+	/** 元素身份键 → 前插候选（source:'ai'）。 */
+	reanchor: ReanchorEntry[]
+}
+
+/**
+ * 读取接管 artifact 的证据，与源流程元素库匹配：
+ * 命中 → 证据行（“=> library eN”）+ 重锚定候选；未命中 → 作为新元素证据行。
+ */
+async function buildRepairEvidence(flowFile: string, artifactDir: string): Promise<RepairEvidence | null> {
+	const dir = resolve(artifactDir)
+	const rel = relative(resolve(artifactsRoot), dir)
+	if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+		throw new Error('接管证据目录不在 artifacts 根内，拒绝读取')
+	}
+	const raw = JSON.parse(await readFile(join(dir, 'ai-takeover.json'), 'utf8')) as {
+		steps?: Array<{
+			ok?: boolean
+			stepIndex?: number
+			skipped?: boolean
+			freeRun?: boolean
+			evidencePages?: TakeoverEvidencePage[]
+		}>
+	}
+	const flow = await loadFlow(flowFile)
+	const flat = flattenSteps(flow.steps)
+	const projection = projectFlows([flow])
+	const libByKey = new Map(projection.library.map((entry) => [elementKey(entry.ref), entry]))
+	const lines: string[] = []
+	const reanchorByKey = new Map<string, Candidate[]>()
+	// free-run 标记记录自身没有证据页；用汇总记录（stepIndex=-1）的最终现场兜底。
+	const freeRunEvidence = (raw.steps ?? []).find(
+		(record) =>
+			record?.freeRun === true &&
+			record.stepIndex === -1 &&
+			Array.isArray(record.evidencePages) &&
+			record.evidencePages.length > 0,
+	)?.evidencePages
+	for (const record of raw.steps ?? []) {
+		if (!record?.ok || record.skipped) continue
+		if (!Number.isInteger(record.stepIndex) || (record.stepIndex as number) < 0) continue
+		const evidencePages =
+			Array.isArray(record.evidencePages) && record.evidencePages.length
+				? record.evidencePages
+				: record.freeRun === true && Array.isArray(freeRunEvidence)
+					? freeRunEvidence
+					: null
+		if (!evidencePages) continue
+		const flatStep = flat[record.stepIndex as number]
+		const stepRefs: ElementRef[] = []
+		const step = flatStep?.step as
+			| { target?: ElementRef; from?: ElementRef; to?: { target?: ElementRef }; expect?: { target?: ElementRef } }
+			| undefined
+		if (step?.target) stepRefs.push(step.target)
+		if (step?.from) stepRefs.push(step.from)
+		if (step?.to?.target) stepRefs.push(step.to.target)
+		if (step?.expect?.target) stepRefs.push(step.expect.target)
+		const stepLabel = flatStep?.step.label ? ` (${flatStep.step.label})` : ''
+		const stepName = `step ${flatStep?.stepId ?? record.stepIndex}${stepLabel}`
+		const hits = stepRefs
+			.map((ref) => ({ ref, hit: matchEvidenceNode(ref, evidencePages) }))
+			.filter((entry): entry is { ref: ElementRef; hit: { node: TakeoverEvidenceNode; url: string } } => !!entry.hit)
+		if (!hits.length) {
+			const page = evidencePages[0]!
+			const sample = page.nodes
+				.slice(0, 3)
+				.map((node) => describeEvidenceNode(node))
+				.join(' ')
+			lines.push(`- ${stepName}: no library element matched; page ${page.url} showed (sample) ${sample}`)
+			continue
+		}
+		for (const { ref, hit } of hits) {
+			const libEntry = libByKey.get(elementKey(ref))
+			lines.push(
+				`- ${stepName}: page ${hit.url} — ${describeEvidenceNode(hit.node)}${libEntry ? ` => library ${libEntry.id}` : ''}`,
+			)
+			if (libEntry) {
+				const candidates = reanchorCandidates(hit.node)
+				if (candidates.length) {
+					const key = elementKey(ref)
+					const existing = reanchorByKey.get(key) ?? []
+					for (const candidate of candidates) {
+						if (!existing.some((item) => JSON.stringify(item) === JSON.stringify(candidate))) {
+							existing.push(candidate)
+						}
+					}
+					reanchorByKey.set(key, existing)
+				}
+			}
+		}
+	}
+	return {
+		lines: lines.slice(0, 60),
+		reanchor: [...reanchorByKey.entries()].map(([key, candidates]) => ({ key, candidates })),
+	}
 }
 
 function registerIpc(): void {
@@ -922,6 +1249,9 @@ function registerIpc(): void {
 				const view = browserViews.get(tabId)!
 				const page = await engine.pageFor(tabId, view.webContents)
 				if (!recordingAdditionalPages.includes(page)) recordingAdditionalPages.push(page)
+				if (recPromise || recStartPromise) {
+					await attachRrwebPage({ page, tabId, label: recordingTabLabel(tabId) })
+				}
 			} catch (err) {
 				console.warn(`[flowlink] 新标签页录制附着失败：`, (err as Error).message)
 			}
@@ -935,7 +1265,10 @@ function registerIpc(): void {
 			browserView.setVisible(false)
 			browserView = next
 			activeBrowserTabId = tabId
-			if (recPromise) recordingHostEvents.push({ action: 'tabActivated', ts: Date.now(), tabId, url: next.webContents.getURL(), title: next.webContents.getTitle() })
+			if (recPromise) {
+				recordingHostEvents.push({ action: 'tabActivated', ts: Date.now(), tabId, url: next.webContents.getURL(), title: next.webContents.getTitle() })
+				recordRrwebActivation(tabId)
+			}
 		}
 		browserView.setBounds(browserBounds)
 		browserSurfaceVisible = true
@@ -965,16 +1298,61 @@ function registerIpc(): void {
 		return true
 	})
 
-	ipcMain.handle('recording:saveVideo', async (_event, opts: { recordingId: string; taskCode: string; dataUrl: string }) => {
-		if (!opts?.dataUrl?.startsWith('data:video/webm')) return null
-		const comma = opts.dataUrl.indexOf(',')
-		if (comma < 0) return null
-		const videoDir = join(artifactsRoot, opts.recordingId, 'record', 'video')
-		await mkdir(videoDir, { recursive: true })
-		const videoFile = join(videoDir, 'recording.webm')
-		await writeFile(videoFile, Buffer.from(opts.dataUrl.slice(comma + 1), 'base64'))
-		await taskStore.patchRecording(opts.taskCode, opts.recordingId, { videoFile })
-		return videoFile
+	/** 读取一段 rrweb 录制（manifest + 各标签页事件流）供 Record 标签页回放。
+	 * 目录必须位于 artifacts 管辖的 recording-<id> / record / rrweb 内，防路径注入。 */
+	ipcMain.handle('recording:loadRrweb', async (_event, dir: string) => {
+		const root = resolve(artifactsRoot)
+		const target = resolve(String(dir || ''))
+		const rel = relative(root, target)
+		const parts = typeof rel === 'string' && rel && !rel.startsWith('..') ? rel.split(sep) : []
+		if (parts.length !== 3 || !parts[0].startsWith('recording-') || parts[1] !== 'record' || parts[2] !== 'rrweb') {
+			throw new Error('Refusing to load an rrweb capture outside its managed directory')
+		}
+		const manifest = JSON.parse(await readFile(join(target, 'manifest.json'), 'utf8')) as {
+			startedAt?: number
+			tabs?: Array<{ tabId?: string; label?: string; file?: string }>
+			activations?: unknown
+		}
+		const loadedTabs: Array<{ tabId: string; label: string; events: unknown[] }> = []
+		for (const tab of manifest.tabs ?? []) {
+			if (typeof tab.file !== 'string' || !/^[\w.-]+\.jsonl$/i.test(tab.file)) continue
+			let raw = ''
+			try {
+				raw = await readFile(join(target, tab.file), 'utf8')
+			} catch {
+				continue
+			}
+			const events: unknown[] = []
+			for (const line of raw.split('\n')) {
+				const trimmed = line.trim()
+				if (!trimmed) continue
+				try {
+					const parsed = JSON.parse(trimmed) as { event?: unknown }
+					if (parsed && typeof parsed === 'object' && 'event' in parsed) events.push(parsed.event)
+				} catch {
+					/* 尾部残行（崩溃截断）跳过 */
+				}
+			}
+			loadedTabs.push({
+				tabId: String(tab.tabId ?? ''),
+				label: String(tab.label ?? tab.tabId ?? 'Tab'),
+				events,
+			})
+		}
+		const activations = Array.isArray(manifest.activations)
+			? manifest.activations.filter(
+					(item): item is { ts: number; tabId: string } =>
+						!!item &&
+						typeof item === 'object' &&
+						typeof (item as { ts?: unknown }).ts === 'number' &&
+						typeof (item as { tabId?: unknown }).tabId === 'string',
+				)
+			: []
+		return {
+			startedAt: typeof manifest.startedAt === 'number' ? manifest.startedAt : 0,
+			activations,
+			tabs: loadedTabs,
+		}
 	})
 
 	ipcMain.handle(
@@ -1066,6 +1444,8 @@ function registerIpc(): void {
 					aiCompleted?: number
 					failedSteps?: Array<{ stepId: string; label?: string; error?: string }>
 					aiSteps?: string[]
+					/** 本次接管的 artifact 目录（ai-takeover.json 所在；主进程做路径白名单校验）。 */
+					artifactDir?: string
 				}
 			},
 		) => {
@@ -1092,6 +1472,27 @@ function registerIpc(): void {
 				)
 				.join('\n')
 			const aiDone = (takeover.aiSteps ?? []).map((label) => `- ${label}`).join('\n')
+			// 结构化元素证据 + 受控重锚定（Phase 4）：证据目录由渲染端从接管 artifact 传入，
+			// 主进程校验路径在 artifacts 根内后读取 ai-takeover.json 并与源流程元素匹配。
+			let evidenceSection = ''
+			let reanchor: ReanchorEntry[] | undefined
+			if (typeof takeover.artifactDir === 'string' && takeover.artifactDir.trim()) {
+				const evidence = await buildRepairEvidence(recording.flowFile, takeover.artifactDir).catch(
+					(error) => {
+						console.warn(`[pi:repairFlow] 接管证据读取失败（忽略，继续无证据修复）: ${(error as Error).message}`)
+						return null
+					},
+				)
+				if (evidence) {
+					if (evidence.reanchor.length) reanchor = evidence.reanchor
+					if (evidence.lines.length) {
+						evidenceSection = [
+							'Structured element evidence from the AI takeover (what the live pages actually showed when the agent succeeded; "=> library eN" marks the matching library element, which is also re-anchored automatically by prepending a new high-priority "ai" candidate - keep observed evidence unchanged):',
+							...evidence.lines,
+						].join('\n')
+					}
+				}
+			}
 			const instruction = [
 				'Repair this workflow so the next replay succeeds without AI takeover.',
 				'The previous replay failed at these steps:',
@@ -1102,6 +1503,7 @@ function registerIpc(): void {
 				aiDone
 					? `Steps the AI agent completed (evidence of what actually works on the page):\n${aiDone}`
 					: '',
+				evidenceSection,
 				'Apply the smallest set of changes that makes replay reliable: adjust verification targets following the invariants, add settle/timeout waits around the slow transitions involved in the failures, reorder or remove steps only when the evidence supports it. Never invent selectors or URLs; keep the recorded element references, variable templates, isOptional flags, and the gate-condition + tolerant sign-in structure. Keep every step that already works unchanged.',
 			]
 				.filter(Boolean)
@@ -1110,6 +1512,7 @@ function registerIpc(): void {
 				flowFiles: [recording.flowFile],
 				instruction,
 				templates: getPromptTemplates().generation,
+				...(reanchor ? { reanchor } : {}),
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
 			})
 			if (!result.ok) throw new Error(result.error)
@@ -1189,19 +1592,23 @@ function registerIpc(): void {
 			timing.mark('pageFor-primary')
 			// 先附着当前页，再附着其他已打开页；标签页顺序必须与主进程
 			// browserViews 保持一致，供跨页录制和回放映射复用。
-			const additionalPages: Page[] = []
-			recordingAdditionalPages = additionalPages
+			// recordingAdditionalPages 数组实例直接交给 recorder（保持引用共享，
+			// 录制中途 windowOpenHandler/browser:createTab 追加的页面也能被看到）。
+			recordingAdditionalPages = []
 			recordingTabIds = [activeBrowserTabId]
+			const seedPages: RrwebPageSeed[] = [
+				{ page, tabId: activeBrowserTabId, label: recordingTabLabel(activeBrowserTabId) },
+			]
 			recordingTabSnapshots.clear()
 			recordingHostEvents = []
 			for (const [id, view] of browserViews) recordingTabSnapshots.set(id, { url: view.webContents.getURL(), title: view.webContents.getTitle() })
 			for (const [tabId, view] of browserViews) {
 				if (tabId === activeBrowserTabId) continue
 				try {
-					additionalPages.push(
-						await withAbort(engine.pageFor(tabId, view.webContents), controller.signal),
-					)
+					const extra = await withAbort(engine.pageFor(tabId, view.webContents), controller.signal)
+					recordingAdditionalPages.push(extra)
 					recordingTabIds.push(tabId)
+					seedPages.push({ page: extra, tabId, label: recordingTabLabel(tabId) })
 				} catch (err) {
 					if (controller.signal.aborted) throw err
 					console.warn(`[flowlink] 标签页 ${tabId} 未能附着：`, (err as Error).message)
@@ -1209,15 +1616,23 @@ function registerIpc(): void {
 			}
 			timing.mark('pages-attached')
 
-			// mkdir 很快完成；不要在 capture timer 尚未建立时让取消流程越过它。
-			await startRecordingCapture(`recording-${Date.now()}`)
-			timing.mark('capture-installed')
-			// 在 recorder 启动前再次检查取消，避免 Stop 与目录创建交错后仍开启录制。
+			// rrweb 会话先于 recorder 建立；目录策略沿用 recording-<ts> 前缀
+			// （removeRecordingFiles 的清理守卫直接兼容）。取消流程不会越过它。
+			recordingCaptureRoot = join(artifactsRoot, `recording-${Date.now()}`)
+			recordingPosterFile = ''
+			await startRrwebRecording({
+				rootDir: recordingCaptureRoot,
+				pages: seedPages,
+				activeTabId: activeBrowserTabId,
+			})
+			scheduleRecordingPoster()
+			timing.mark('rrweb-installed')
+			// 在 recorder 启动前再次检查取消，避免 Stop 与注入交错后仍开启录制。
 			if (controller.signal.aborted) throw new RecordingStartCancelledError()
 
 			recPromise = recordOnPage({
 				page,
-				pages: additionalPages,
+				pages: recordingAdditionalPages,
 				tabIds: recordingTabIds,
 				keepRaw: true,
 				startUrl: opts.startUrl,
@@ -1397,32 +1812,7 @@ function registerIpc(): void {
 			variables: opts.variables,
 			abortSignal: playAbortController.signal,
 			waitForUserOperation: ({ stepId, prompt, signal }) =>
-				new Promise<void>((resolve, reject) => {
-					const token = makeId('user-operation')
-					const cleanup = (): void => {
-						pendingUserOperationWaits.delete(token)
-						signal?.removeEventListener('abort', onAbort)
-					}
-					const onAbort = (): void => {
-						cleanup()
-						reject(new Error('用户操作等待已取消'))
-					}
-					if (signal?.aborted) {
-						onAbort()
-						return
-					}
-					pendingUserOperationWaits.set(token, () => {
-						cleanup()
-						resolve()
-					})
-					signal?.addEventListener('abort', onAbort, { once: true })
-					if (mainWindow.isDestroyed()) {
-						cleanup()
-						reject(new Error('应用窗口已关闭，无法继续用户操作等待'))
-						return
-					}
-					mainWindow.webContents.send('playback:userOperation', { token, stepId, prompt })
-				}),
+				hostWaitForUserOperation({ stepId, prompt, signal }),
 			openPage: createNativePlaybackPage(true, (msg) => console.log(`[playback:${flow.id}] ${msg}`)),
 			onStep: (r) => {
 				if (!mainWindow.isDestroyed())
@@ -1541,6 +1931,10 @@ function registerIpc(): void {
 					templates: getPromptTemplates().takeover,
 					proxy: getPiProxyOptions(),
 					resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
+					evaluateGateCondition: evaluateTakeoverGate,
+					waitForUserOperation: ({ stepId, prompt, signal }) =>
+						hostWaitForUserOperation({ stepId, prompt, signal }),
+					captureEvidence: captureTakeoverEvidence,
 					onStep: (event) => {
 						if (!mainWindow.isDestroyed())
 							mainWindow.webContents.send('playback:aiStep', {
@@ -1608,6 +2002,56 @@ function registerIpc(): void {
 		const flow: Flow = await loadFlow(flowFile)
 		return flow
 	})
+	/**
+	 * 只读 artifacts 通道：Instruction 目标查看器需要 crop 截图的 file:// URL。
+	 * 返回该录制的 artifacts 根与「stepId → crop 截图 URL」列表；crop.ref 的
+	 * 路径白名单校验（禁止绝对路径 / 越界）在主进程完成，渲染端不拼路径。
+	 */
+	ipcMain.handle(
+		'recording:artifactsPath',
+		async (_event, opts: { taskCode: string; recordingId: string }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string'
+			) {
+				throw new Error('Artifacts request is invalid')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const crops: Array<{ stepId: string; url: string }> = []
+			try {
+				const flow = await loadFlow(recording.flowFile)
+				const root = resolve(recording.artifactsDir)
+				const collect = (steps: unknown[]) => {
+					for (const raw of steps || []) {
+						const step = raw as {
+							id?: unknown
+							steps?: unknown[]
+							target?: { crop?: { ref?: unknown } }
+						}
+						if (Array.isArray(step.steps)) {
+							collect(step.steps)
+							continue
+						}
+						const ref = step.target?.crop?.ref
+						if (typeof step.id !== 'string' || typeof ref !== 'string' || !ref) continue
+						const abs = resolve(root, ref)
+						const rel = relative(root, abs)
+						if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
+						crops.push({
+							stepId: step.id,
+							url: `file:///${abs.split(sep).map(encodeURIComponent).join('/')}`,
+						})
+					}
+				}
+				collect(flow.steps as unknown[])
+			} catch (error) {
+				console.error(`[artifacts] 读取 crop 失败: ${(error as Error).message}`)
+			}
+			return { artifactsDir: recording.artifactsDir, crops }
+		},
+	)
 	ipcMain.handle(
 		'flow:updateVariables',
 		async (_event, opts: { taskCode: string; recordingId: string; variables: unknown[] }) => {

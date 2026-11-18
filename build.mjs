@@ -14,6 +14,7 @@
  *   - 使用 CJS 格式；仅调用 electron 的 contextBridge 与 ipcRenderer。
  */
 import { build } from 'esbuild'
+import { copyFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -67,7 +68,8 @@ await build({
 /* ---------- Renderer vendor（IIFE 浏览器全局）构建 ----------
  *
  * 渲染层无打包器（renderer/index.html 原样加载 app.js/bridge.js/flow-graph.js），
- * 新依赖（如 dagre）只能经此入口以 window.__flowlinkDagre 全局变量进入。
+ * 新依赖（如 dagre、rrweb Replayer）只能经此入口以全局变量进入：
+ * `window.__flowlinkDagre`、`window.__flowlinkRrweb`。
  * target 与 Electron 45 的 Chromium 匹配（es2022）。
  */
 await build({
@@ -80,3 +82,26 @@ await build({
 	sourcemap: true,
 	logLevel: 'info',
 })
+
+/* ---------- rrweb 注入 bundle（browser IIFE，主进程从磁盘读取后注入页面） ----------
+ *
+ * 仅含 rrweb record 与 boot 入口（src/rrweb-inject.ts），无外部依赖。
+ * src/rrweb-capture.ts 按 dist/main.js 的相对路径读取该产物并注入各标签页
+ * （先例：engine 的 capture.js 静态资源随包分发）。
+ */
+await build({
+	entryPoints: [here + 'src/rrweb-inject.ts'],
+	outfile: here + 'dist/rrweb-inject.js',
+	bundle: true,
+	platform: 'browser',
+	format: 'iife',
+	target: 'es2022',
+	sourcemap: true,
+	logLevel: 'info',
+})
+
+/* rrweb Replayer 的回放样式（鼠标轨迹等）：原样随包复制，index.html <link> 引用。 */
+await copyFile(
+	here + 'node_modules/rrweb/dist/style.css',
+	here + 'dist/rrweb-replay.css',
+)

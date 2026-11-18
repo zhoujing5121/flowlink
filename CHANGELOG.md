@@ -8,6 +8,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Added
 
+- **Pi:** AI takeover is branch-aware: before the agent starts, gate conditions are evaluated locally with the executor's own assertion logic to pick the step subsequence (skipped groups show as "Skipped" in the Test list, decisions are noted in the agent's task and the takeover summary), and `condition` steps are no longer handed to the agent to "make true".
+- **Pi:** Takeover can now finish tab-based flows — `openTab`/`switchTab`/`closeTab` steps execute through the agent (only `upload`/`script` still stop the takeover with a clear reason), `manual` steps pause for user confirmation through the same panel replay uses, a takeover that needs a secret variable the Reference page never saved refuses to start with a clear error, and the overall budget is extended from 10 to 15 minutes.
+- **Pi:** When a step fails twice, takeover degrades to free-run instead of stopping: the remaining steps become one goal task the agent completes on its own initiative, reporting each step as it lands (same AI badge in the Test list), with the takeover summary noting what was finished in free-run mode.
+- **Pi:** Every completed takeover step captures structured element evidence from the live pages (tag/role/name/testid of interactive elements — never input values) into `ai-takeover.json`; the automatic repair injects this evidence into the refinement instruction and, for elements it matches in the library, prepends `source: "ai"` re-anchor candidates ahead of the recorded candidate chain (observed evidence stays immutable, output still passes the full schema contract).
+- **Test:** After a repair creates a `REPAIRED-…` flow, FlowLink automatically re-runs the Test on it — at most 2 automatic rounds, shown as a "· 自动回跑 N/2" badge in the Test progress header and as messages in the AI pane; the original recording is never modified.
+
+- **Instruction:** The Instruction tab is now a two-layer view: every step renders as one editable plain-language sentence (inline edit writes the step's `label`; empty restores the auto-generated wording) inside group cards headed by the business stage name with tab/URL and branch-entry badges, plus Manual/Automation source, optional, and manual-execution step badges.
+- **Instruction:** Expanding a step opens a technical drawer of kind-specific structured fields — URL, value, key with modifier keys, wait condition and duration, assertions with condition branch targets, extract/upload/dialog/tab/scroll options, and the shared timeout, execution mode, isOptional, settle, and expect blocks; every edit saves to the Flow file through the validated `flow:updateSteps` contract (version bump and `.bak` backup) and rolls back with an inline row error when validation fails.
+- **Instruction:** The drawer's target is a read-only evidence viewer (crop screenshot, candidate list with kind/score/source, fingerprint summary, nearby text) served by a new path-validated read-only `recording:artifactsPath` IPC; retargeting a step is deliberately limited to re-recording its group or referencing an element already captured in the Flow, and password-field values stay masked.
+- **Instruction:** A per-step menu (⋯) offers editing the description, move up/down, delete, insert-after (reusing the Process manual step editor with the element library), and re-recording the step's group; an "AI 润色步骤描述" button asks Pi to rewrite only step labels and applies the per-line old→new diff after user confirmation.
+- **Recording:** Sessions now produce a true replayable screen capture: every tab's DOM events (rrweb) stream to disk as they happen, and the Record tab plays them back with play/pause, a seekable timeline, and per-tab switching (manual tab choice pauses auto-follow); known limits — cross-origin iframe/canvas content and closed shadow DOM internals are not captured, and non-password input values are recorded in plain text.
+- **UI (Record):** Recordings made before the rrweb switch keep playing their existing webm video or frame captures unchanged (no data migration).
+
 - **Process:** Contract-form condition steps (the trailing condition of a group) are extracted from their group card into a standalone diamond decision node connecting the two outgoing groups, so the graph reads like a real flowchart; groups that contained only a condition disappear into the diamond, and the missing branch of a decision ends at that segment's End.
 - **Pi:** After an AI takeover finishes, the flow is optimized automatically in the background and saved as a new `REPAIRED-…` recording through the validated persist contract — the original flow and its test results stay untouched, there is no button (progress and the repair summary land in the AI pane chat); refinement now also round-trips `execution`/`settle`/`sourceFlowId` step fields instead of silently dropping them.
 
@@ -23,7 +36,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **Recording:** Steps whose surviving target candidates are all structural selectors (no testid/role/label/text, only css-path/xpath level) are saved with `reviewRequired`/`reviewReason`, flagging replay-fragile steps at record time instead of discovering them after a failed replay; the flags also flow into AI refinement projections.
 - **Recording:** Single-select dropdowns record as `select_N` Reference variables with the recorded value as default (multi-select keeps inline values), so replay-time dropdown choices are editable like text inputs.
 - **Executor:** `isOptional` now applies to element steps too: when the target does not appear within a short wait, the step reports `skip` instead of failing, letting tolerant login groups absorb a remembered SSO session.
-- **Pi:** AI takeover after a failed Test run: a one-click "Run remaining steps with AI" action hands the failed step and all remaining steps to a `@browser_use/pi` agent attached to the embedded browser (failure scene preserved); steps complete with an AI badge, progress lands in the AI pane chat, secrets flow through the SDK's redacting `sensitiveData` channel, and guardrails (domain allowlist from the flow, per-step retry, 10-minute budget, Stop) bound the run. The source Flow is never modified.
+- **Pi:** AI takeover after a failed Test run: a one-click "Run remaining steps with AI" action hands the failed step and all remaining steps to a `@browser_use/pi` agent attached to the embedded browser (failure scene preserved); steps complete with an AI badge, progress lands in the AI pane chat, secrets flow through the SDK's redacting `sensitiveData` channel, and guardrails (domain allowlist from the flow, per-step retry, total time budget — now 15 minutes, Stop) bound the run. The source Flow is never modified.
 - **Pi:** Maintain every Pi prompt (session system prompt, auto-refine and refine generation, AI-pane advice) in `config/prompts.json` with `{{placeholder}}` templates; generation prompts now require business-stage grouping (2–6 labeled top-level groups) and plain-language step labels a non-technical user understands.
 - **UI:** Make Service Levels 1–4 required cascading dropdowns backed by the process landscape.
 - **Pi:** Auto-refine recordings after Stop: the main process generates a sanitized, stage-grouped `REFINED…` twin through the shared pipeline and reports it via toast; disable with `autoRefine: false` in `config/pi-settings.json`.
@@ -49,6 +62,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Changed
 
+- **Instruction:** Step row text and post-recording step summaries now come from the single `processStepLabel` source (label first, synthesized fallback), so Instruction, Process, and Test agree; recordings without labels keep their existing synthesized wording.
+
+- **Recording:** Recording no longer takes periodic screenshots — the 800 ms `capturePage` pipeline (and the renderer's canvas/MediaRecorder webm synthesis) is gone, removing the recording-time page flicker and lost clicks it caused; the list thumbnail now comes from a single poster screenshot taken shortly after recording starts.
+
 - **Browser:** Opening the embedded browser for recording or a Test is now always a fresh browser session — extra tabs close and the start URL reloads unconditionally (an already-open same URL no longer keeps its stale DOM), and opening a taskflow's workspace while idle resets the browser to that flow's start URL, so tabs and page state no longer bleed across taskflows or runs; restarting during a replay is refused at the process boundary.
 
 - **Recording:** Recorded navigation target URLs are saved as `url_N` Reference variables (default = the recorded URL), so users can retarget a flow — for example switch environment domains — from the Reference page before replay; replay behavior is unchanged because the default reproduces the recorded address.
@@ -72,8 +89,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 - **Flow:** Migrate existing schema v1 recordings to schema v2 for condition branches without changing their ordered replay behavior.
 - **Storage:** Delete a recording's Flow and artifacts with the recording, remove all recordings' files when deleting a taskflow, and discard generated files when closing a new unsaved taskflow.
 
+### Removed
+
+- **Recording:** The `recording:saveVideo` IPC and the renderer's frame-consumer channel are removed with the old video pipeline; existing webm files on disk are unaffected.
+
 ### Fixed
 
+- **Instruction:** Edits on the Instruction tab now truly persist — they previously only mutated a local draft that a loaded Flow's Test ignored, and the draft-rebuild path forged a single-text-candidate target so editing "目标" silently discarded the recorded evidence chain; that path is removed and all editing goes through the Flow loaded on tab open and the validated update contract, with unsaved edits flushed when switching tabs and tests rebuilt from the same flattened step index.
 - **Test:** The taskflow list's Run action now goes through the same entry as the Test panel — it initializes the step list and run flags and switches the view to Test before replaying; previously the replay ran in the background with no UI feedback because progress events were dropped (the item's run flags were never set).
 - **Test:** A second run of the same flow (or a flow whose start URL matches where the previous run ended) no longer stalls on an unopened start page — the pre-run reset previously skipped reloading when the browser already sat on that URL, while the embedded executor trusts that reset as its only load.
 
@@ -112,4 +134,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 ### Security
 
+- **Recording:** Password inputs are always masked in the rrweb capture (`maskInputOptions`), matching the product's secret-handling policy.
 - Storage-state handling preserves raw or wrapped profile shapes and treats credentials as sensitive data.

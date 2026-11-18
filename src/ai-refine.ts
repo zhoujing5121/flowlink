@@ -13,6 +13,7 @@ import {
 	parseFlow,
 	parseTemplate,
 	type Assertion,
+	type Candidate,
 	type ElementRef,
 	type Expect,
 	type Flow,
@@ -72,6 +73,11 @@ export interface GenerateFlowOptions {
 	sources?: FlowSourceMeta[]
 	/** 生成提示词模板（config/prompts.json 的 generation 段）。 */
 	templates: GenerationTemplates
+	/**
+	 * 修复链路的候选重锚定证据（元素身份键 → source:'ai' 候选）。
+	 * 只前插候选、observed/fingerprint 不动；生成结果照常过 parseFlow 契约校验。
+	 */
+	reanchor?: ReanchorEntry[]
 	runPrompt: PromptRunner
 }
 
@@ -90,7 +96,8 @@ function truncateText(value: unknown, max: number): string {
 	return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text
 }
 
-function elementKey(ref: ElementRef): string {
+/** 元素的稳定身份键（fingerprint.stableHash + 首候选）；跨投影重跑保持一致。 */
+export function elementKey(ref: ElementRef): string {
 	const first = ref.candidates?.[0]
 	const value = first
 		? typeof first.value === 'string'
@@ -453,6 +460,67 @@ export function rehydrateSteps(
 	return steps.map((step, index) => walk(step, `steps[${index}]`)) as Step[]
 }
 
+/* ---------------- 候选重锚定（受控通道：不让模型发明选择器） ---------------- */
+
+/** 一条重锚定证据：元素身份键 → 来自接管证据的新候选（source:'ai'）。 */
+export interface ReanchorEntry {
+	key: string
+	candidates: Candidate[]
+}
+
+function sameCandidate(a: Candidate, b: Candidate): boolean {
+	return (
+		a.kind === b.kind &&
+		JSON.stringify(a.value) === JSON.stringify(b.value)
+	)
+}
+
+function prependCandidates(ref: ElementRef, extra: Candidate[]): ElementRef {
+	if (!extra.length || !ref.candidates?.length) return ref
+	const head = Math.min(...ref.candidates.map((candidate) => candidate.score))
+	const additions = extra
+		.map((candidate) => ({ ...candidate, score: head, source: 'ai' as const }))
+		.filter((candidate) => !ref.candidates!.some((existing) => sameCandidate(existing, candidate)))
+	if (!additions.length) return ref
+	// 只前插 source:'ai' 候选；score 取现有最小值保持升序（parseFlow 契约校验兜底），
+	// observed/fingerprint 不动——旧候选链完整保留，回放定位能力不因误报而丢失。
+	return { ...ref, candidates: [...additions, ...ref.candidates!] }
+}
+
+/**
+ * 修复输出重锚定：仅当修复链路携带 reanchor 证据时，把「库元素 → 新候选」前插进
+ * 对应步骤的元素引用（target/from/to.target/expect.target）。证据键由主进程按
+ * 源流程元素身份计算（elementKey），再水化克隆不改变键值，可稳定对上。
+ */
+export function applyReanchor(steps: Step[], entries: ReanchorEntry[]): Step[] {
+	if (!entries.length) return steps
+	const byKey = new Map(entries.map((entry) => [entry.key, entry.candidates]))
+	const reanchorRef = (ref: ElementRef): ElementRef => {
+		const extra = byKey.get(elementKey(ref))
+		return extra ? prependCandidates(ref, extra) : ref
+	}
+	const walk = (step: Step): Step => {
+		if (step.kind === 'group') {
+			return { ...step, steps: step.steps.map(walk) }
+		}
+		const out: Record<string, unknown> = { ...structuredClone(step) }
+		const source = step as unknown as Record<string, unknown>
+		if (source.target !== undefined) out.target = reanchorRef(source.target as ElementRef)
+		if (source.from !== undefined) out.from = reanchorRef(source.from as ElementRef)
+		if (source.to && typeof source.to === 'object') {
+			const to = { ...(source.to as Record<string, unknown>) }
+			if (to.target !== undefined) to.target = reanchorRef(to.target as ElementRef)
+			out.to = to
+		}
+		const expect = source.expect as { target?: ElementRef } | undefined
+		if (expect && typeof expect === 'object' && expect.target !== undefined) {
+			out.expect = { ...expect, target: reanchorRef(expect.target) }
+		}
+		return out as unknown as Step
+	}
+	return steps.map(walk)
+}
+
 /* ---------------- 变量合并 ---------------- */
 
 const VARIABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -692,9 +760,11 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 			throw new Error('Pi response is not a JSON object; the source was left unchanged.')
 		}
 		const refIdsByStep = new Map<Record<string, unknown>, string[]>()
-		const steps = rehydrateSteps(parsed.steps, projection.library, {
+		let steps = rehydrateSteps(parsed.steps, projection.library, {
 			onStepRefs: (step, refIds) => refIdsByStep.set(step, refIds),
 		})
+		// 受控重锚定：修复证据命中库元素 → 前插 source:'ai' 候选（observed 不动）。
+		if (options.reanchor?.length) steps = applyReanchor(steps, options.reanchor)
 		const sources = options.sources?.length ? options.sources : undefined
 		if (sources) annotateSourceFlowIds(steps, projection.library, refIdsByStep)
 		const variables = mergeVariables(flows, parsed.variables)

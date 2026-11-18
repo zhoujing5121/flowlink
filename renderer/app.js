@@ -748,7 +748,6 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#categoryField")) closePopup("category");
   if (!e.target.closest(".form-select")) closePopup("service");
   if (!e.target.closest(".service-line-control")) closeServicePickers();
-  if (!e.target.closest(".step-type-picker")) closeStepTypePickers();
 });
 
 function validateProfileServices() {
@@ -1617,229 +1616,1511 @@ function fillProcessPanel(panel, item) {
   }
 }
 
-/** Instruction 各输入框的适用范围：无目标 / 无填写值的操作类型禁用对应字段，避免误导 */
-const STEP_ELEMENT_KINDS = new Set([
-  "click",
-  "input",
-  "select",
-  "hover",
-  "upload",
-  "extract",
-  "assert",
-  "condition",
-  "key",
-  "scroll",
-  "wait",
-  "drag",
-]);
-const STEP_VALUE_KINDS = new Set(["input", "select"]);
+/* ============================================================
+ * Instruction：行层自然语言 + 技术抽屉（双层呈现，编辑真落盘）
+ *
+ * 唯一编辑管线：渲染直接读 processFlow.steps（与 Test/Process 共用
+ * FlowGraph.flattenFlowSteps 的展平索引，杜绝索引漂移）；任何字段编辑
+ * 改步骤对象后防抖 500ms 经 persistProcessFlow → flow:updateSteps 落盘
+ * （主进程 parseFlow 校验 + .bak 备份）。失败时用编辑前快照回滚步骤、
+ * 恢复输入框并内联报错。旧的「本地草稿伪 target 重建测试流」路径
+ * （rebuildTestFlowFromItem）已删除——改「目标」不再破坏录制证据链。
+ * ============================================================ */
 
-/** Instruction 操作类型选择器：与 Profile 的 Service Level 选择器同款交互（搜索 + 选中标记）。
- *  行由模板克隆生成，无法在启动时绑定，改为每次填充时接线；aria-controls 用行号生成唯一 id。 */
-function closeStepTypePickers() {
-  document
-    .querySelectorAll(".type-picker-trigger[aria-expanded='true']")
-    .forEach((trigger) => {
-      const popup = document.getElementById(
-        trigger.getAttribute("aria-controls") || "",
-      );
-      if (popup) popup.hidden = true;
-      trigger.setAttribute("aria-expanded", "false");
-    });
+/** 按 item.id 隔离的待落盘编辑：taskCode 在编辑时快照（防切换 Flow 后落错任务）；snapshots 供失败回滚。 */
+const instructionPending = new Map();
+
+function instructionEditable(item) {
+  const state = recordingSession();
+  return Boolean(
+    item?.processFlow &&
+      item.recordingId &&
+      state.stage !== "recording" &&
+      state.stage !== "preparing" &&
+      !item.testRunning &&
+      state.playbackInFlight !== true,
+  );
 }
 
-function wireStepTypePicker(row, index, rawValue) {
-  const trigger = row.querySelector(".type-picker-trigger");
-  const popup = row.querySelector(".type-picker-popup");
-  if (!trigger || !popup) return;
-  const popupId = `step-type-popup-${index}`;
-  popup.id = popupId;
-  trigger.setAttribute("aria-controls", popupId);
-  trigger.dataset.stepIndex = index;
-  const search = popup.querySelector("input[type=search]");
-  const clearButton = popup.querySelector(".type-picker-toolbar button");
-  const list = popup.querySelector(".type-picker-options");
-  const kinds = Object.keys(STEP_KIND_TEXT);
-  const normalized = normalizeStepKind(String(rawValue || ""));
-  // 当前值在选中后会变化：用可变变量跟踪，避免重开弹层时用闭包里的初始值渲染
-  let currentKind = kinds.includes(normalized) ? normalized : "";
-  let currentRaw = String(rawValue || "");
+function instructionStepEntry(item, flatIndex) {
+  if (!item?.processFlow?.steps) return null;
+  const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+  const entry = flat.entries[Number(flatIndex)];
+  return entry ? { entry, flat } : null;
+}
 
-  const close = () => {
-    popup.hidden = true;
-    trigger.setAttribute("aria-expanded", "false");
-  };
-  const renderOptions = () => {
-    list.replaceChildren(
-      ...kinds.map((kind) => {
-        const option = document.createElement("button");
-        option.type = "button";
-        option.className = "type-picker-option";
-        option.dataset.typeValue = kind;
-        option.setAttribute("role", "option");
-        option.setAttribute("aria-selected", String(kind === currentKind));
-        const label = document.createElement("span");
-        label.textContent = STEP_KIND_TEXT[kind];
-        const check = document.createElement("span");
-        check.className = "type-picker-check";
-        check.setAttribute("aria-hidden", "true");
-        check.innerHTML =
-          '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>';
-        option.append(label, check);
-        return option;
-      }),
+/** 记录快照后原地变更步骤对象；返回该 item 的待落盘状态（未找到步骤时返回 null）。 */
+function mutateInstructionStep(item, flatIndex, field, mutate) {
+  const found = instructionStepEntry(item, flatIndex);
+  if (!found) return null;
+  const { entry } = found;
+  const key = entry.flattenedStepId;
+  let state = instructionPending.get(item.id);
+  if (!state) {
+    state = {
+      timer: 0,
+      taskCode: currentFlow?.code || activeFlowKey,
+      snapshots: new Map(),
+      fields: new Map(),
+    };
+    instructionPending.set(item.id, state);
+  }
+  if (!state.snapshots.has(key))
+    state.snapshots.set(key, structuredClone(entry.step));
+  mutate(entry.step);
+  const edited = state.fields.get(key) || new Set();
+  edited.add(field);
+  state.fields.set(key, edited);
+  return state;
+}
+
+function scheduleInstructionPersist(item) {
+  const state = instructionPending.get(item.id);
+  if (!state) return;
+  clearTimeout(state.timer);
+  state.timer = setTimeout(() => void flushInstructionEdits(item), 500);
+}
+
+async function flushInstructionEdits(item) {
+  const state = instructionPending.get(item?.id);
+  if (!state) return;
+  clearTimeout(state.timer);
+  instructionPending.delete(item.id);
+  try {
+    await persistProcessFlow(item, state.taskCode);
+    updateInstructionRowTexts(item);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    item.processFlowError = message;
+    // 快照原地写回步骤对象（引用不变，testFlowSteps 等派生持有同一对象）。
+    const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+    for (const [key, snapshot] of state.snapshots) {
+      const entry = flat.entries.find((e) => e.flattenedStepId === key);
+      if (!entry) continue;
+      for (const name of Object.keys(entry.step)) delete entry.step[name];
+      Object.assign(entry.step, snapshot);
+    }
+    syncProcessFlowPresentation(item);
+    void rebuildItemTestFlow(item);
+    restoreInstructionRows(item, state, message);
+    showFlowlinkNotice("保存步骤修改失败：" + message, "warn");
+  }
+}
+
+function flushAllInstructionEdits() {
+  const state = recordingSession();
+  for (const id of [...instructionPending.keys()]) {
+    const item = state.items.find((entry) => entry.id === id);
+    if (item) void flushInstructionEdits(item);
+    else instructionPending.delete(id);
+  }
+}
+window.addEventListener("beforeunload", flushAllInstructionEdits);
+
+/** 落盘成功后原地刷新行文本（不整页重渲染，避免打断正在进行的输入）。 */
+function updateInstructionRowTexts(item) {
+  if (currentAssistantItem() !== item || item.resultTab !== "Instruction") return;
+  const panel = $("summaryResultPanel");
+  if (!panel) return;
+  const flat = FlowGraph.flattenFlowSteps(item.processFlow?.steps || []);
+  const groups = ensureProcessGroups(item);
+  panel.querySelectorAll(".instruction-step").forEach((row) => {
+    const entry = flat.entries[Number(row.dataset.stepIndex)];
+    if (!entry) return;
+    row.querySelector(".step-row-text").textContent = processStepLabel(
+      entry.step,
+      entry.index,
+      groups,
     );
-  };
-  const filterOptions = () => {
-    const query = search.value.trim().toLowerCase();
-    let visible = 0;
-    list.querySelectorAll(".type-picker-option").forEach((option) => {
-      const match =
-        option.textContent.toLowerCase().includes(query) ||
-        option.dataset.typeValue.toLowerCase().includes(query);
-      option.hidden = !match;
-      if (match) visible++;
-    });
-    let empty = list.querySelector(".type-picker-empty");
-    if (visible) {
-      empty?.remove();
-      return;
+    row.classList.remove("is-dirty");
+    const error = row.querySelector(".instruction-step-error");
+    if (error) {
+      error.hidden = true;
+      error.textContent = "";
     }
-    if (!empty) {
-      empty = document.createElement("p");
-      empty.className = "type-picker-empty";
-      list.append(empty);
-    }
-    empty.textContent = "无匹配选项";
-  };
-  const showValue = (kind, raw) => {
-    trigger.dataset.value = kind || raw || "";
-    trigger.querySelector("span").textContent = kind
-      ? STEP_KIND_TEXT[kind]
-      : raw
-        ? `${raw}（不受支持）`
-        : "请选择";
-    trigger.classList.toggle("is-empty", !kind && !raw);
-  };
-
-  renderOptions();
-  showValue(currentKind, currentRaw);
-
-  trigger.onclick = () => {
-    const opening = popup.hidden;
-    closeStepTypePickers();
-    if (!opening) return;
-    search.value = "";
-    renderOptions();
-    showValue(currentKind, currentRaw);
-    filterOptions();
-    popup.hidden = false;
-    trigger.setAttribute("aria-expanded", "true");
-    search.focus();
-  };
-  search.oninput = filterOptions;
-  search.onkeydown = (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      return;
-    }
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (search.value) {
-      search.value = "";
-      filterOptions();
-    } else {
-      close();
-      trigger.focus();
-    }
-  };
-  popup.onkeydown = (e) => {
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
-    close();
-    trigger.focus();
-  };
-  clearButton.onclick = () => {
-    search.value = "";
-    filterOptions();
-    search.focus();
-  };
-  list.onclick = (e) => {
-    const option = e.target.closest("[data-type-value]");
-    if (!option) return;
-    const kind = option.dataset.typeValue;
-    currentKind = kind;
-    currentRaw = "";
-    showValue(kind, "");
-    list
-      .querySelectorAll(".type-picker-option")
-      .forEach((node) =>
-        node.setAttribute("aria-selected", String(node === option)),
-      );
-    close();
-    // 复用 Instruction 的通用编辑管道：触发一次冒泡 input，让 bindStepEditor
-    // 更新草稿、启停字段并重建 Test 流。
-    trigger.value = kind;
-    trigger.dispatchEvent(new Event("input", { bubbles: true }));
-    trigger.focus();
-  };
+  });
 }
 
-function applyStepFieldStates(row, rawType) {
-  const kind = normalizeStepKind(String(rawType || ""));
-  const targetField = row.querySelector('[data-step-field="target"]');
-  const valueField = row.querySelector('[data-step-field="value"]');
-  if (targetField) targetField.disabled = !STEP_ELEMENT_KINDS.has(kind);
-  if (valueField) valueField.disabled = !STEP_VALUE_KINDS.has(kind);
+/** 落盘失败后：恢复受影响行的文本与抽屉输入框，并显示行内错误。 */
+function restoreInstructionRows(item, state, message) {
+  if (currentAssistantItem() !== item || item.resultTab !== "Instruction") return;
+  const panel = $("summaryResultPanel");
+  if (!panel) return;
+  const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+  const groups = ensureProcessGroups(item);
+  for (const key of state.fields.keys()) {
+    const index = flat.entries.find((e) => e.flattenedStepId === key)?.index;
+    if (index === undefined) continue;
+    const row = panel.querySelector(
+      `.instruction-step[data-step-index="${index}"]`,
+    );
+    const entry = flat.entries[index];
+    if (!row || !entry) continue;
+    row.querySelector(".step-row-text").textContent = processStepLabel(
+      entry.step,
+      index,
+      groups,
+    );
+    row.classList.remove("is-dirty");
+    const fields = row.querySelector(".step-detail-fields");
+    if (fields.dataset.built)
+      renderInstructionDrawer(fields, item, entry, flat);
+    showInstructionRowError(row, "保存失败，已还原编辑前内容：" + message);
+  }
+}
+
+function showInstructionRowError(row, message) {
+  const error = row?.querySelector(".instruction-step-error");
+  if (!error) return;
+  error.hidden = false;
+  error.textContent = message;
+}
+
+/** 输入事件入口：把输入框的值写入步骤对象并安排防抖落盘。 */
+function applyInstructionFieldEdit(input) {
+  const row = input.closest(".instruction-step");
+  const item = currentAssistantItem();
+  if (!row || !instructionEditable(item)) return;
+  const error = row.querySelector(".instruction-step-error");
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
+  const field = input.dataset.stepField;
+  const state = mutateInstructionStep(
+    item,
+    Number(row.dataset.stepIndex),
+    field,
+    (step) => {
+      applyInstructionFieldValue(step, field, row, item);
+    },
+  );
+  if (!state) return;
+  row.classList.add("is-dirty");
+  scheduleInstructionPersist(item);
+}
+
+function instructionInputValue(row, field) {
+  const first = row.querySelector(`[data-step-field="${field}"]`);
+  if (!first) return "";
+  if (first.type === "checkbox") {
+    if (field === "modifiers")
+      return [...row.querySelectorAll('[data-step-field="modifiers"]')]
+        .filter((box) => box.checked)
+        .map((box) => box.value);
+    return first.checked;
+  }
+  return first.value;
+}
+
+/** 字段 → 步骤对象的写入规则。UI 只做基本类型约束；跨字段契约由 flow:updateSteps 的 parseFlow 校验兜底。 */
+function applyInstructionFieldValue(step, field, row, item) {
+  const raw = instructionInputValue(row, field);
+  const text = typeof raw === "string" ? raw : String(raw ?? "");
+  const trimmed = text.trim();
+  const intOr = (value, fallback) => {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? n : fallback;
+  };
+  switch (field) {
+    case "label":
+      if (trimmed) step.label = trimmed;
+      else delete step.label;
+      break;
+    case "url":
+      if (trimmed) step.url = trimmed;
+      else if (step.kind !== "navigate") delete step.url;
+      break;
+    case "value":
+      step.value = text;
+      break;
+    case "valueLines": {
+      const lines = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length) step.value = lines.length > 1 ? lines : lines[0];
+      break;
+    }
+    case "files": {
+      const lines = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length) step.files = lines;
+      break;
+    }
+    case "clear":
+      step.clear = raw === true;
+      break;
+    case "key":
+      if (trimmed) step.key = trimmed;
+      break;
+    case "modifiers":
+      if (Array.isArray(raw) && raw.length) step.modifiers = raw;
+      else delete step.modifiers;
+      break;
+    case "button":
+      step.button = ["left", "right", "middle"].includes(text)
+        ? text
+        : "left";
+      break;
+    case "clickCount": {
+      const n = intOr(text, 1);
+      if (n >= 1 && n <= 3) step.clickCount = n;
+      break;
+    }
+    case "timeout":
+      if (!trimmed) delete step.timeout;
+      else {
+        const n = intOr(text, 0);
+        if (n > 0) step.timeout = n;
+      }
+      break;
+    case "isOptional":
+      if (raw === true) step.isOptional = true;
+      else delete step.isOptional;
+      break;
+    case "execution":
+      if (text === "manual") step.execution = "manual";
+      else delete step.execution;
+      break;
+    case "waitCondition":
+      if (
+        ["element", "networkIdle", "timeout", "userOperation"].includes(text)
+      ) {
+        step.condition = text;
+        if (text !== "timeout") delete step.ms;
+        if (text !== "userOperation") delete step.prompt;
+      }
+      break;
+    case "ms":
+      if (!trimmed) delete step.ms;
+      else {
+        const n = intOr(text, -1);
+        if (n >= 0) step.ms = n;
+      }
+      break;
+    case "prompt":
+      if (trimmed) step.prompt = trimmed;
+      else delete step.prompt;
+      break;
+    case "dialogAction":
+      step.action = text === "dismiss" ? "dismiss" : "accept";
+      break;
+    case "dialogPromptText":
+      if (trimmed) step.promptText = trimmed;
+      else delete step.promptText;
+      break;
+    case "tabIndex":
+      if (!trimmed) {
+        if (step.kind === "closeTab") delete step.index;
+        break;
+      }
+      {
+        const n = intOr(text, -1);
+        if (n >= 0) step.index = n;
+      }
+      break;
+    case "into":
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) step.into = trimmed;
+      break;
+    case "prop":
+      if (["text", "value", "attr"].includes(text)) {
+        step.prop = text;
+        if (text !== "attr") delete step.attr;
+      }
+      break;
+    case "attr":
+      if (trimmed && step.prop === "attr") step.attr = trimmed;
+      else delete step.attr;
+      break;
+    case "scrollTo":
+      if (text === "top" || text === "bottom") step.to = text;
+      else delete step.to;
+      break;
+    case "deltaX":
+    case "deltaY": {
+      const x = String(instructionInputValue(row, "deltaX") ?? "").trim();
+      const y = String(instructionInputValue(row, "deltaY") ?? "").trim();
+      if (!x && !y) delete step.delta;
+      else {
+        const delta = {};
+        if (x) delta.x = intOr(x, 0);
+        if (y) delta.y = intOr(y, 0);
+        step.delta = delta;
+      }
+      break;
+    }
+    case "settleNetworkIdle":
+    case "settleDomQuietMs":
+    case "settleMaxMs": {
+      const networkIdle =
+        instructionInputValue(row, "settleNetworkIdle") === true;
+      const domText = String(
+        instructionInputValue(row, "settleDomQuietMs") ?? "",
+      ).trim();
+      const maxText = String(
+        instructionInputValue(row, "settleMaxMs") ?? "",
+      ).trim();
+      const next = {};
+      if (networkIdle) next.networkIdle = true;
+      if (domText) {
+        const n = intOr(domText, 0);
+        if (n >= 100 && n <= 5000) next.domQuietMs = n;
+      }
+      if (maxText) {
+        const n = intOr(maxText, 0);
+        if (n >= 500 && n <= 30000) next.maxMs = n;
+      }
+      if (Object.keys(next).length) step.settle = next;
+      else delete step.settle;
+      break;
+    }
+    case "assertionKind":
+    case "assertionEquals":
+    case "assertionContains":
+      rebuildStepAssertion(step, row);
+      break;
+    case "expectKind":
+    case "expectParam":
+      rebuildStepExpect(step, row);
+      break;
+    case "trueGroupId":
+      if (text) step.trueGroupId = text;
+      else delete step.trueGroupId;
+      break;
+    case "falseGroupId":
+      if (text) step.falseGroupId = text;
+      else delete step.falseGroupId;
+      break;
+    case "targetRef": {
+      const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+      const source = text !== "" ? flat.steps[Number(text)] : undefined;
+      if (source?.target) step.target = structuredClone(source.target);
+      break;
+    }
+  }
+}
+
+/** 断言三元组（类型 + 期望值 + 包含文本）→ step.assertion；缺必需值时保持原值不动。 */
+function rebuildStepAssertion(step, row) {
+  const kind = String(instructionInputValue(row, "assertionKind") ?? "");
+  if (!kind) {
+    delete step.assertion;
+    return;
+  }
+  const equals = String(
+    instructionInputValue(row, "assertionEquals") ?? "",
+  ).trim();
+  const contains = String(
+    instructionInputValue(row, "assertionContains") ?? "",
+  ).trim();
+  if (kind === "text") {
+    const assertion = { kind: "text" };
+    if (equals) assertion.equals = equals;
+    if (contains) assertion.contains = contains;
+    step.assertion = assertion;
+  } else if (kind === "value") {
+    if (equals) step.assertion = { kind: "value", equals };
+  } else if (kind === "count") {
+    const n = Math.round(Number(equals));
+    if (Number.isInteger(n) && n >= 0)
+      step.assertion = { kind: "count", equals: n };
+  } else if (kind === "visible" || kind === "hidden") {
+    step.assertion = { kind };
+  }
+}
+
+/** 期望结果（类型 + 参数）→ step.expect；元素类期望复用步骤自身的元素证据。 */
+function rebuildStepExpect(step, row) {
+  const kind = String(instructionInputValue(row, "expectKind") ?? "");
+  if (!kind) {
+    delete step.expect;
+    return;
+  }
+  const param = String(
+    instructionInputValue(row, "expectParam") ?? "",
+  ).trim();
+  if (kind === "urlChange") {
+    if (param) step.expect = { kind: "urlChange", pattern: param };
+  } else if (kind === "domSignature") {
+    if (param) step.expect = { kind: "domSignature", hash: param };
+  } else if (kind === "download") {
+    step.expect = param
+      ? { kind: "download", filenamePattern: param }
+      : { kind: "download" };
+  } else if (kind === "textChange") {
+    const target =
+      step.expect?.kind === "textChange" ? step.expect.target : step.target;
+    if (param && target)
+      step.expect = {
+        kind: "textChange",
+        target: structuredClone(target),
+        to: param,
+      };
+  } else if (kind === "elementVisible" || kind === "elementHidden") {
+    const target =
+      step.expect?.kind === kind ? step.expect.target : step.target;
+    if (target)
+      step.expect = { kind, target: structuredClone(target) };
+  }
 }
 
 function fillInstructionPanel(panel, item) {
-  const container = panel.querySelector('[data-result-tab="Instruction"]');
+  const view = panel.querySelector('[data-result-tab="Instruction"]');
+  if (!view) return;
+  const container = view.querySelector(".grouped-steps");
+  const status = view.querySelector(".instruction-status:not(.error)");
+  const errorBox = view.querySelector(".instruction-status.error");
+  const polish = view.querySelector("#instructionAiPolish");
+  status.hidden = true;
+  errorBox.hidden = true;
   if (!item) {
     container.replaceChildren();
+    if (polish) polish.hidden = true;
     return;
   }
-  ensureStepDetails(item);
+  ensureInstructionArtifacts(item);
+  if (polish) {
+    polish.hidden = !item.processFlow;
+    polish.disabled =
+      !item.recordingId ||
+      !window.flowlink?.pi?.generateFlow ||
+      !!item.processFlowLoading;
+  }
+  if (!item.processFlow) {
+    container.replaceChildren();
+    if (item.processFlowError) {
+      errorBox.textContent = item.processFlowError;
+      errorBox.hidden = false;
+    } else if (item.processFlowLoading || (item.recordingId && item.flowFile)) {
+      status.textContent = "正在加载已保存的 Flow…";
+      status.hidden = false;
+    } else {
+      renderInstructionReadonly(container, item);
+      status.textContent = "该条目尚未保存为可执行 Flow，以下为只读展示。";
+      status.hidden = false;
+    }
+    return;
+  }
+  const groups = ensureProcessGroups(item);
+  const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
   item.instructionExpanded ??= [];
+  item.instructionStepOpen ??= [];
+  const editable = instructionEditable(item);
   container.replaceChildren(
-    ...ensureProcessGroups(item).map((group) => {
+    ...groups.map((group) => {
       const expanded = item.instructionExpanded.includes(group.id);
       const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
       section.dataset.instructionGroup = group.id;
       section.querySelector("h3").textContent = group.number + " " + group.name;
+      section.querySelector(".instruction-group-tab").textContent = group.url
+        ? urlBadgeText(group.url, group.tab)
+        : `Tab ${group.tab}`;
+      const branchEntries = group.branchEntries || [];
+      const branch = section.querySelector(".instruction-group-branch");
+      branch.hidden = !branchEntries.length;
+      if (branchEntries.length)
+        branch.textContent =
+          "分支 · " +
+          branchEntries
+            .map(
+              (entry) =>
+                `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+            )
+            .join("；");
       const expand = section.querySelector(".instruction-expand");
       expand.dataset.instructionExpand = group.id;
       expand.setAttribute("aria-expanded", String(expanded));
       expand.querySelector("span").textContent = expanded
         ? "Collapse"
         : "Expand";
+      flat.entries
+        .slice(group.start, group.start + group.count)
+        .forEach((entry, offset) => {
+          const step = entry.step;
+          const el = rowTemplate("instructionStepTemplate").cloneNode(true);
+          el.dataset.stepIndex = entry.index;
+          el.querySelector(".step-row-number").textContent =
+            group.number + "-" + String(offset + 1).padStart(3, "0");
+          el.querySelector(".step-row-text").textContent = processStepLabel(
+            step,
+            entry.index,
+            groups,
+          );
+          // 徽标规则与 Process 图一致：原始录制 = Manual 来源；REFINED/AI 细化
+          // = Automation；显式 execution: manual 或手动新增步骤始终 Manual。
+          const manual =
+            step.execution === "manual" ||
+            String(step.id || "").startsWith("manual_") ||
+            item.summary !== true;
+          const icon = el.querySelector(".execution-mode-icon");
+          icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
+          icon.title = manual ? "Manual" : "Automated";
+          setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
+          setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
+          const badges = el.querySelector(".step-badges");
+          if (step.isOptional) badges.appendChild(instructionChip("可跳过"));
+          if (step.execution === "manual")
+            badges.appendChild(instructionChip("人工执行"));
+          if (step.kind === "condition") el.classList.add("condition-step");
+          const fields = el.querySelector(".step-detail-fields");
+          const open = item.instructionStepOpen.includes(
+            entry.flattenedStepId,
+          );
+          fields.hidden = !(expanded || open);
+          if (!fields.hidden) renderInstructionDrawer(fields, item, entry, flat);
+          el.querySelector(".instruction-step-menu").disabled = !editable;
+          section.appendChild(el);
+        });
+      return section;
+    }),
+  );
+}
+
+function instructionChip(text) {
+  const chip = document.createElement("span");
+  chip.className = "instruction-chip";
+  chip.textContent = text;
+  return chip;
+}
+
+function urlBadgeText(url, tab) {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `Tab ${tab} · ${parsed.hostname}${path}`;
+  } catch {
+    return `Tab ${tab} · ${String(url)
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "")}`;
+  }
+}
+
+/** 未保存为 Flow 的条目（演示 / 草稿）：只读行文本，不提供编辑。 */
+function renderInstructionReadonly(container, item) {
+  const groups = ensureProcessGroups(item);
+  container.replaceChildren(
+    ...groups.map((group) => {
+      const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
+      section.dataset.instructionGroup = group.id;
+      section.querySelector("h3").textContent = group.number + " " + group.name;
+      section.querySelector(".instruction-group-tab").textContent = group.url
+        ? urlBadgeText(group.url, group.tab)
+        : `Tab ${group.tab}`;
+      section.querySelector(".instruction-expand").hidden = true;
       group.steps.forEach((text, offset) => {
-        const index = group.start + offset,
-          detail = item.stepDetails[index],
-          code = group.number + "-" + String(offset + 1).padStart(3, "0");
-        const step = rowTemplate("instructionStepTemplate").cloneNode(true);
-        step.querySelector(".step-row-number").textContent = code;
-        step.querySelector(".step-row-text").textContent = text;
-        const fields = step.querySelector(".step-detail-fields");
-        fields.hidden = !expanded;
-        const textarea = step.querySelector('[data-step-field="text"]');
-        textarea.dataset.stepIndex = index;
-        textarea.setAttribute("aria-label", code + " 操作内容");
-        textarea.value = text;
-        wireStepTypePicker(step, index, detail.type);
-        for (const field of ["target", "value"]) {
-          const input = step.querySelector('[data-step-field="' + field + '"]');
-          input.dataset.stepIndex = index;
-          input.value = detail[field];
-        }
-        applyStepFieldStates(step, detail.type);
-        section.appendChild(step);
+        const el = rowTemplate("instructionStepTemplate").cloneNode(true);
+        el.dataset.stepIndex = group.start + offset;
+        el.querySelector(".step-row-number").textContent =
+          group.number + "-" + String(offset + 1).padStart(3, "0");
+        el.querySelector(".step-row-text").textContent = text;
+        el.querySelector(".instruction-step-menu").hidden = true;
+        el.querySelector(".step-detail-fields")?.remove();
+        el.querySelector(".instruction-step-error")?.remove();
+        section.appendChild(el);
       });
       return section;
     }),
   );
+}
+
+/** 只读 artifacts（crop 截图 URL）：主进程做路径白名单校验；结果缓存在录制项上。 */
+function ensureInstructionArtifacts(item) {
+  if (!item || item.instructionArtifacts || item.instructionArtifactsLoading)
+    return;
+  if (!item.recordingId || !window.flowlink?.recording?.artifactsPath) return;
+  item.instructionArtifactsLoading = true;
+  window.flowlink.recording
+    .artifactsPath({
+      taskCode: currentFlow?.code || activeFlowKey,
+      recordingId: item.recordingId,
+    })
+    .then((result) => {
+      item.instructionArtifacts = result;
+    })
+    .catch((error) => {
+      item.instructionArtifacts = { artifactsDir: "", crops: [] };
+      console.error("[instruction] 加载目标截图失败:", error);
+    })
+    .finally(() => {
+      item.instructionArtifactsLoading = false;
+      if (currentAssistantItem() === item && item.resultTab === "Instruction")
+        renderSummaryWorkspace();
+    });
+}
+
+/** 步骤 value 的掩码：密码字段的明文输入以圆点展示，secret 变量模板串原样展示。 */
+function maskedInputValue(item, step) {
+  const raw = String(step.value ?? "");
+  const match = raw.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/);
+  if (
+    match &&
+    (item.processFlow?.variables || []).some(
+      (variable) => variable.name === match[1] && variable.secret,
+    )
+  )
+    return { value: raw, masked: false };
+  const isPassword =
+    step.target?.observed?.attributes?.type?.toLowerCase() === "password";
+  if (isPassword && !match) return { value: "••••••••", masked: true };
+  return { value: raw, masked: false };
+}
+
+function candidateValueText(candidate) {
+  const value = candidate?.value;
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object")
+    return value.name || value.text || value.role || JSON.stringify(value);
+  return String(value);
+}
+
+/** 技术抽屉：按 kind 输出结构化字段（字段矩阵见 docs/plan-instruction-revamp.md §3.2）。 */
+function renderInstructionDrawer(fieldsEl, item, entry, flat) {
+  const step = entry.step;
+  fieldsEl.dataset.built = "true";
+  fieldsEl.replaceChildren();
+  const editable = instructionEditable(item);
+  const esc = (value) => escapeHTML(String(value ?? ""));
+  const dis = editable ? "" : " disabled";
+  const groups = item.processFlow.steps.filter(
+    (candidate) => candidate?.kind === "group",
+  );
+  const text = (field, label, value, extra = "") =>
+    `<label>${label}<input type="text" data-step-field="${field}" value="${esc(value)}"${dis}${extra}></label>`;
+  const number = (field, label, value, extra = "") =>
+    `<label>${label}<input type="number" data-step-field="${field}" value="${value === undefined || value === null ? "" : esc(value)}"${dis}${extra}></label>`;
+  const select = (field, label, options, current) =>
+    `<label>${label}<select data-step-field="${field}"${dis}>${options
+      .map(
+        (option) =>
+          `<option value="${esc(option.value)}"${String(option.value) === String(current ?? "") ? " selected" : ""}>${esc(option.label)}</option>`,
+      )
+      .join("")}</select></label>`;
+  const check = (field, label, checked, extra = "") =>
+    `<label class="instruction-check">${label}<input type="checkbox" data-step-field="${field}"${checked ? " checked" : ""}${dis}${extra}></label>`;
+  const area = (field, label, value, extra = "") =>
+    `<label>${label}<textarea data-step-field="${field}" rows="3"${dis}${extra}>${esc(value)}</textarea></label>`;
+
+  fieldsEl.insertAdjacentHTML(
+    "beforeend",
+    `<p class="instruction-kind-line">操作类型 · ${esc(
+      STEP_KIND_TEXT[step.kind] || step.kind,
+    )}${step.id ? ` <span class="instruction-step-id">#${esc(step.id)}</span>` : ""}</p>`,
+  );
+
+  const grid = [];
+  switch (step.kind) {
+    case "navigate":
+      grid.push(
+        text("url", "URL", step.url ?? "", ` required placeholder="https://…"`),
+      );
+      break;
+    case "openTab":
+      grid.push(text("url", "URL（可选）", step.url ?? ""));
+      break;
+    case "click":
+      grid.push(
+        select(
+          "button",
+          "鼠标按键",
+          [
+            { value: "left", label: "left" },
+            { value: "right", label: "right" },
+            { value: "middle", label: "middle" },
+          ],
+          step.button || "left",
+        ),
+      );
+      grid.push(
+        number("clickCount", "点击次数", step.clickCount ?? 1, ` min="1" max="3" step="1"`),
+      );
+      if (step.position)
+        grid.push(
+          `<label>点击坐标（closed shadow · 只读）<input value="${esc(
+            `${step.position.x} , ${step.position.y}`,
+          )}" disabled></label>`,
+        );
+      break;
+    case "input": {
+      const display = maskedInputValue(item, step);
+      grid.push(
+        text(
+          "value",
+          display.masked ? "填写内容（密码字段 · 输入新值替换）" : "填写内容",
+          display.value,
+          display.masked ? ` autocomplete="new-password"` : "",
+        ),
+      );
+      grid.push(check("clear", "填前清空", step.clear !== false));
+      break;
+    }
+    case "select":
+      grid.push(
+        area(
+          "valueLines",
+          "选项值（多选时每行一个）",
+          Array.isArray(step.value) ? step.value.join("\n") : (step.value ?? ""),
+        ),
+      );
+      break;
+    case "key":
+      grid.push(text("key", "按键", step.key ?? "", ` required`));
+      grid.push(
+        `<div class="instruction-modifiers"><span>组合键</span>${["Alt", "Control", "Meta", "Shift"]
+          .map(
+            (mod) =>
+              `<label class="instruction-check"><input type="checkbox" data-step-field="modifiers" value="${mod}"${(step.modifiers || []).includes(mod) ? " checked" : ""}${dis}>${mod}</label>`,
+          )
+          .join("")}</div>`,
+      );
+      break;
+    case "wait":
+      grid.push(
+        select(
+          "waitCondition",
+          "等待条件",
+          [
+            { value: "element", label: "元素出现" },
+            { value: "networkIdle", label: "网络空闲" },
+            { value: "timeout", label: "固定时长" },
+            { value: "userOperation", label: "用户操作" },
+          ],
+          step.condition,
+        ),
+      );
+      if (step.condition === "timeout")
+        grid.push(number("ms", "时长（毫秒）", step.ms ?? 1000, ` min="0" step="1"`));
+      if (step.condition === "userOperation")
+        grid.push(text("prompt", "提示语", step.prompt ?? ""));
+      break;
+    case "assert":
+    case "condition": {
+      const assertion = step.assertion;
+      const assertionKind = assertion?.kind ?? "";
+      grid.push(
+        select(
+          "assertionKind",
+          step.kind === "assert" ? "断言" : "条件判断",
+          [
+            { value: "", label: "（无）" },
+            { value: "visible", label: "可见" },
+            { value: "hidden", label: "隐藏" },
+            { value: "text", label: "文本" },
+            { value: "value", label: "值" },
+            { value: "count", label: "数量" },
+          ],
+          assertionKind,
+        ),
+      );
+      const showEquals =
+        !assertionKind || ["text", "value", "count"].includes(assertionKind);
+      const showContains = !assertionKind || assertionKind === "text";
+      grid.push(
+        `<label${showEquals ? "" : " hidden"}>${
+          assertionKind === "count" ? "期望数量" : "期望值"
+        }<input type="text" data-step-field="assertionEquals" value="${esc(
+          assertion && "equals" in assertion ? String(assertion.equals) : "",
+        )}"${dis}></label>`,
+      );
+      grid.push(
+        `<label${showContains ? "" : " hidden"}>包含文本<input type="text" data-step-field="assertionContains" value="${esc(
+          assertion?.contains ?? "",
+        )}"${dis}></label>`,
+      );
+      if (step.kind === "condition") {
+        const groupOptions = [
+          { value: "", label: "（结束分支）" },
+          ...groups.map((group) => ({
+            value: group.id,
+            label: group.label,
+          })),
+        ];
+        grid.push(
+          select("trueGroupId", "为真跳转到", groupOptions, step.trueGroupId),
+        );
+        grid.push(
+          select("falseGroupId", "为假跳转到", groupOptions, step.falseGroupId),
+        );
+      }
+      break;
+    }
+    case "extract":
+      grid.push(text("into", "存入变量", step.into ?? "", ` placeholder="变量名"`));
+      grid.push(
+        select(
+          "prop",
+          "提取属性",
+          [
+            { value: "text", label: "text" },
+            { value: "value", label: "value" },
+            { value: "attr", label: "attr" },
+          ],
+          step.prop || "text",
+        ),
+      );
+      if ((step.prop || "text") === "attr")
+        grid.push(text("attr", "属性名", step.attr ?? ""));
+      break;
+    case "upload":
+      grid.push(area("files", "文件（模板串，每行一个）", (step.files || []).join("\n")));
+      break;
+    case "dialog":
+      grid.push(
+        select(
+          "dialogAction",
+          "弹窗操作",
+          [
+            { value: "accept", label: "accept（确认）" },
+            { value: "dismiss", label: "dismiss（取消）" },
+          ],
+          step.action,
+        ),
+      );
+      grid.push(text("dialogPromptText", "prompt 输入（可选）", step.promptText ?? ""));
+      break;
+    case "switchTab":
+      grid.push(
+        number("tabIndex", "目标标签页序号（0 起）", step.index ?? 0, ` min="0" step="1"`),
+      );
+      break;
+    case "closeTab":
+      grid.push(
+        number(
+          "tabIndex",
+          "标签页序号（0 起，留空 = 当前）",
+          step.index ?? "",
+          ` min="0" step="1"`,
+        ),
+      );
+      break;
+    case "scroll":
+      grid.push(
+        select(
+          "scrollTo",
+          "滚动到",
+          [
+            { value: "", label: "按偏移" },
+            { value: "top", label: "顶部" },
+            { value: "bottom", label: "底部" },
+          ],
+          step.to ?? "",
+        ),
+      );
+      grid.push(number("deltaX", "横向偏移（px）", step.delta?.x ?? "", ` step="1"`));
+      grid.push(number("deltaY", "纵向偏移（px）", step.delta?.y ?? "", ` step="1"`));
+      break;
+    default:
+      break;
+  }
+  if (!["wait", "assert", "condition"].includes(step.kind))
+    grid.push(
+      select(
+        "execution",
+        "执行方式",
+        [
+          { value: "automated", label: "自动执行" },
+          { value: "manual", label: "人工执行（回放时暂停确认）" },
+        ],
+        step.execution === "manual" ? "manual" : "automated",
+      ),
+    );
+  grid.push(
+    number("timeout", "校验等待上限（毫秒，可选）", step.timeout ?? "", ` min="1" step="1" placeholder="5000"`),
+  );
+  grid.push(check("isOptional", "可跳过（目标未出现时跳过不报错）", !!step.isOptional));
+
+  // 目标查看器：元素证据只读展示（crop 截图 + 候选 + 指纹），不支持自由文本改定位。
+  const ELEMENT_KINDS = new Set([
+    "click",
+    "input",
+    "select",
+    "hover",
+    "upload",
+    "extract",
+    "assert",
+    "condition",
+    "drag",
+  ]);
+  if (
+    ELEMENT_KINDS.has(step.kind) ||
+    (["key", "scroll", "wait"].includes(step.kind) && step.target)
+  )
+    appendTargetViewer(fieldsEl, item, entry);
+
+  const gridEl = document.createElement("div");
+  gridEl.className = "step-field-grid";
+  gridEl.innerHTML = grid.join("");
+  fieldsEl.appendChild(gridEl);
+
+  const settle = step.settle || {};
+  fieldsEl.insertAdjacentHTML(
+    "beforeend",
+    `<fieldset class="instruction-fieldset"><legend>执行前沉降（可选）</legend><div class="step-field-grid">
+      ${check("settleNetworkIdle", "等待网络空闲", !!settle.networkIdle)}
+      ${number("settleDomQuietMs", "DOM 静默毫秒（100–5000）", settle.domQuietMs ?? "", ` min="100" max="5000" step="1"`)}
+      ${number("settleMaxMs", "总上限毫秒（500–30000）", settle.maxMs ?? "", ` min="500" max="30000" step="1"`)}
+    </div></fieldset>`,
+  );
+  const expect = step.expect;
+  const expectParamValue = !expect
+    ? ""
+    : expect.kind === "urlChange"
+      ? expect.pattern
+      : expect.kind === "domSignature"
+        ? expect.hash
+        : expect.kind === "download"
+          ? expect.filenamePattern
+          : expect.kind === "textChange"
+            ? expect.to
+            : "";
+  const expectParamLabel = !expect
+    ? "参数"
+    : expect.kind === "urlChange"
+      ? "URL 模式"
+      : expect.kind === "domSignature"
+        ? "DOM 签名哈希"
+        : expect.kind === "download"
+          ? "文件名模式（可选）"
+          : "变为文本";
+  const showExpectParam =
+    expect &&
+    ["urlChange", "domSignature", "download", "textChange"].includes(expect.kind);
+  fieldsEl.insertAdjacentHTML(
+    "beforeend",
+    `<fieldset class="instruction-fieldset"><legend>期望结果（可选）</legend><div class="step-field-grid">
+      ${select(
+        "expectKind",
+        "类型",
+        [
+          { value: "", label: "（无）" },
+          { value: "urlChange", label: "URL 变化" },
+          { value: "elementVisible", label: "元素可见" },
+          { value: "elementHidden", label: "元素隐藏" },
+          { value: "textChange", label: "文本变化" },
+          { value: "domSignature", label: "DOM 签名" },
+          { value: "download", label: "触发下载" },
+        ],
+        expect?.kind ?? "",
+      )}
+      <label${showExpectParam ? "" : " hidden"}>${esc(expectParamLabel)}<input type="text" data-step-field="expectParam" value="${esc(
+        expectParamValue,
+      )}"${dis}></label>
+    </div></fieldset>`,
+  );
+  const hint = document.createElement("p");
+  hint.className = "instruction-drawer-hint";
+  hint.textContent = editable
+    ? "编辑自动保存到 Flow 文件（校验失败会还原并提示）。"
+    : "录制或回放进行中：字段为只读。";
+  fieldsEl.appendChild(hint);
+}
+
+/** 目标查看器：证据展示 + 元素库引用 + 重录该组；不可自由文本改定位。 */
+function appendTargetViewer(fieldsEl, item, entry) {
+  const step = entry.step;
+  const ref = step.kind === "drag" ? step.from : step.target;
+  const box = document.createElement("div");
+  box.className = "target-viewer";
+  const title = document.createElement("p");
+  title.className = "target-viewer-title";
+  title.textContent =
+    step.kind === "drag" ? "起点目标 · 元素证据（只读）" : "目标 · 元素证据（只读）";
+  box.appendChild(title);
+  if (!ref) {
+    const empty = document.createElement("p");
+    empty.className = "target-viewer-empty";
+    empty.textContent = "该步骤没有元素目标。";
+    box.appendChild(empty);
+  } else {
+    const crop = (item.instructionArtifacts?.crops || []).find(
+      (candidate) => candidate.stepId === step.id,
+    );
+    if (crop) {
+      const img = document.createElement("img");
+      img.className = "target-crop";
+      img.src = crop.url;
+      img.alt = "目标元素截图";
+      img.loading = "lazy";
+      box.appendChild(img);
+    } else {
+      const none = document.createElement("p");
+      none.className = "target-viewer-empty";
+      none.textContent = item.instructionArtifactsLoading
+        ? "目标截图加载中…"
+        : "无目标截图（旧录制或 crop 缺失）。";
+      box.appendChild(none);
+    }
+    const facts = document.createElement("dl");
+    facts.className = "target-facts";
+    const addFact = (term, detail) => {
+      if (!detail) return;
+      const dt = document.createElement("dt");
+      dt.textContent = term;
+      const dd = document.createElement("dd");
+      dd.textContent = detail;
+      facts.append(dt, dd);
+    };
+    addFact("描述", ref.description);
+    const fingerprint = ref.fingerprint;
+    if (fingerprint)
+      addFact(
+        "指纹",
+        [fingerprint.tag, fingerprint.role, fingerprint.accessibleName]
+          .filter(Boolean)
+          .join(" · ") +
+          (fingerprint.stableHash
+            ? ` · #${String(fingerprint.stableHash).slice(0, 8)}`
+            : ""),
+      );
+    if (ref.observed?.shadowRootType === "closed")
+      addFact("Shadow", "closed（按坐标回放）");
+    addFact("邻近文本", (ref.nearbyText || []).join(" / "));
+    if (facts.children.length) box.appendChild(facts);
+    const list = document.createElement("ul");
+    list.className = "target-candidates";
+    for (const candidate of ref.candidates || []) {
+      const li = document.createElement("li");
+      li.textContent = `${candidate.kind} · ${candidateValueText(candidate)}${
+        candidate.score != null ? ` · score ${candidate.score}` : ""
+      }${candidate.source ? ` · ${candidate.source}` : ""}`;
+      list.appendChild(li);
+    }
+    if (list.children.length) box.appendChild(list);
+  }
+  const actions = document.createElement("div");
+  actions.className = "target-viewer-actions";
+  if (instructionEditable(item) && step.kind !== "drag") {
+    const refs = FlowGraph.flattenFlowSteps(item.processFlow.steps)
+      .steps.map((other, index) => ({ other, index }))
+      .filter(({ other }) => other?.target && other !== step);
+    if (refs.length) {
+      const selectEl = document.createElement("select");
+      selectEl.dataset.stepField = "targetRef";
+      selectEl.setAttribute("aria-label", "从元素库引用目标");
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "从元素库引用目标…";
+      selectEl.appendChild(placeholder);
+      for (const { other, index } of refs) {
+        const option = document.createElement("option");
+        option.value = String(index);
+        option.textContent = `${other.kind} · ${
+          other.target.description ||
+          candidateValueText(other.target.candidates?.[0]) ||
+          other.id
+        }`;
+        selectEl.appendChild(option);
+      }
+      actions.appendChild(selectEl);
+    }
+    if (item.recordingId && entry.groupId) {
+      const rerecord = document.createElement("button");
+      rerecord.type = "button";
+      rerecord.className = "target-rerecord";
+      rerecord.dataset.instructionRerecord = entry.groupId;
+      rerecord.textContent = "重录这一步（替换所在组）";
+      actions.appendChild(rerecord);
+    }
+  }
+  box.appendChild(actions);
+  fieldsEl.appendChild(box);
+}
+
+/** 行内编辑一句话描述：Enter/失焦保存（写 step.label 并立即落盘），Esc 取消。 */
+function beginInlineLabelEdit(row, item, entry) {
+  if (!instructionEditable(item)) return;
+  if (row.querySelector(".instruction-label-editor")) return;
+  const textEl = row.querySelector(".step-row-text");
+  const editor = document.createElement("textarea");
+  editor.className = "instruction-label-editor";
+  editor.rows = 1;
+  editor.value = entry.step.label ?? "";
+  editor.placeholder = "用一句话描述这一步；留空恢复自动生成的描述";
+  editor.setAttribute("aria-label", "步骤描述");
+  textEl.hidden = true;
+  textEl.after(editor);
+  const autoSize = () => {
+    editor.style.height = "auto";
+    editor.style.height = Math.max(28, editor.scrollHeight) + "px";
+  };
+  autoSize();
+  editor.oninput = autoSize;
+  let done = false;
+  const close = (apply) => {
+    if (done) return;
+    done = true;
+    const value = editor.value;
+    editor.remove();
+    textEl.hidden = false;
+    if (!apply) return;
+    const state = mutateInstructionStep(
+      item,
+      row.dataset.stepIndex,
+      "label",
+      (step) => {
+        if (value.trim()) step.label = value.trim();
+        else delete step.label;
+      },
+    );
+    if (state) void flushInstructionEdits(item);
+  };
+  editor.onblur = () => close(true);
+  editor.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close(false);
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      close(true);
+    }
+  };
+  editor.focus();
+}
+
+let instructionMenuEl = null;
+function onInstructionMenuKey(e) {
+  if (e.key === "Escape") closeInstructionStepMenu();
+}
+function onInstructionMenuPointerDown(e) {
+  if (instructionMenuEl && !instructionMenuEl.contains(e.target))
+    closeInstructionStepMenu();
+}
+function closeInstructionStepMenu() {
+  instructionMenuEl?.remove();
+  instructionMenuEl = null;
+  document.removeEventListener("keydown", onInstructionMenuKey);
+  document.removeEventListener("pointerdown", onInstructionMenuPointerDown);
+}
+
+function openInstructionStepMenu(button) {
+  const item = currentAssistantItem();
+  const row = button.closest(".instruction-step");
+  const found = item && row ? instructionStepEntry(item, row.dataset.stepIndex) : null;
+  if (!found || !instructionEditable(item)) return;
+  const { entry } = found;
+  closeInstructionStepMenu();
+  const group = item.processFlow.steps.find(
+    (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
+  );
+  if (!group) return;
+  const index = group.steps.indexOf(entry.step);
+  const isCondition = entry.step.kind === "condition";
+  const items = [
+    { key: "edit", label: "编辑描述", disabled: false },
+    {
+      key: "toggle",
+      label: item.instructionStepOpen.includes(entry.flattenedStepId)
+        ? "收起技术字段"
+        : "展开技术字段",
+      disabled: false,
+    },
+    { key: "up", label: "上移", disabled: isCondition || index <= 0 },
+    {
+      key: "down",
+      label: "下移",
+      disabled:
+        isCondition ||
+        index >= group.steps.length - 1 ||
+        group.steps[index + 1]?.kind === "condition",
+    },
+    {
+      key: "insert",
+      label: "在此后插入步骤",
+      disabled: isCondition && index === group.steps.length - 1,
+    },
+    { key: "delete", label: "删除步骤", disabled: false },
+    {
+      key: "rerecord",
+      label: "重录这一步（替换所在组）",
+      disabled: !item.recordingId,
+    },
+  ];
+  const menu = document.createElement("div");
+  menu.className = "instruction-menu";
+  menu.setAttribute("role", "menu");
+  for (const entryItem of items) {
+    const buttonItem = document.createElement("button");
+    buttonItem.type = "button";
+    buttonItem.setAttribute("role", "menuitem");
+    buttonItem.dataset.menuKey = entryItem.key;
+    buttonItem.disabled = entryItem.disabled;
+    buttonItem.textContent = entryItem.label;
+    menu.appendChild(buttonItem);
+  }
+  const rect = button.getBoundingClientRect();
+  document.body.appendChild(menu);
+  menu.style.left =
+    Math.min(window.innerWidth - menu.offsetWidth - 8, Math.max(8, rect.left)) +
+    "px";
+  menu.style.top = Math.min(window.innerHeight - menu.offsetHeight - 8, rect.bottom + 4) + "px";
+  instructionMenuEl = menu;
+  document.addEventListener("keydown", onInstructionMenuKey);
+  document.addEventListener("pointerdown", onInstructionMenuPointerDown);
+  menu.onclick = (e) => {
+    const target = e.target.closest("button[data-menu-key]");
+    if (!target || target.disabled) return;
+    closeInstructionStepMenu();
+    switch (target.dataset.menuKey) {
+      case "edit":
+        beginInlineLabelEdit(row, item, entry);
+        break;
+      case "toggle":
+        toggleInstructionDrawer(item, row, entry);
+        break;
+      case "up":
+        void moveInstructionStep(item, entry.index, -1);
+        break;
+      case "down":
+        void moveInstructionStep(item, entry.index, 1);
+        break;
+      case "insert":
+        showManualStepEditor(item, entry.groupId, index + 1);
+        break;
+      case "delete":
+        void deleteInstructionStep(item, entry.index);
+        break;
+      case "rerecord":
+        void beginGroupRecording(item, entry.groupId, "replace");
+        break;
+    }
+  };
+}
+
+function toggleInstructionDrawer(item, row, entry) {
+  const fields = row.querySelector(".step-detail-fields");
+  if (!fields) return;
+  const id = entry.flattenedStepId;
+  const wasOpen = !fields.hidden;
+  fields.hidden = wasOpen;
+  if (!wasOpen && !fields.dataset.built) {
+    const found = instructionStepEntry(item, row.dataset.stepIndex);
+    if (found) renderInstructionDrawer(fields, item, found.entry, found.flat);
+  }
+  item.instructionStepOpen = wasOpen
+    ? item.instructionStepOpen.filter((value) => value !== id)
+    : [...item.instructionStepOpen, id];
+}
+
+/** 组内上移/下移：condition 始终保持组尾（schema 契约）。失败还原并提示。 */
+async function moveInstructionStep(item, flatIndex, delta) {
+  const found = instructionStepEntry(item, flatIndex);
+  if (!found) return;
+  await flushInstructionEdits(item); // 先落盘防抖中的编辑，避免结构变更与回滚快照交叉
+  const { entry } = found;
+  const group = item.processFlow.steps.find(
+    (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
+  );
+  if (!group) return;
+  const index = group.steps.indexOf(entry.step);
+  const target = index + delta;
+  if (
+    target < 0 ||
+    target >= group.steps.length ||
+    entry.step.kind === "condition" ||
+    group.steps[target]?.kind === "condition"
+  )
+    return;
+  const snapshot = structuredClone(item.processFlow.steps);
+  const [moved] = group.steps.splice(index, 1);
+  group.steps.splice(target, 0, moved);
+  try {
+    await persistProcessFlow(item);
+    renderSummaryWorkspace();
+  } catch (error) {
+    item.processFlow = { ...item.processFlow, steps: snapshot };
+    syncProcessFlowPresentation(item);
+    void rebuildItemTestFlow(item);
+    item.processFlowError =
+      error instanceof Error ? error.message : String(error);
+    showFlowlinkNotice(
+      "移动步骤失败：" + item.processFlowError,
+      "warn",
+    );
+    renderSummaryWorkspace();
+  }
+}
+
+async function deleteInstructionStep(item, flatIndex) {
+  const found = instructionStepEntry(item, flatIndex);
+  if (!found) return;
+  const { entry } = found;
+  const group = item.processFlow.steps.find(
+    (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
+  );
+  if (!group) return;
+  if (
+    !(await confirmWorkspaceAction(
+      `删除步骤「${processStepLabel(entry.step, entry.index, ensureProcessGroups(item))}」？`,
+    ))
+  )
+    return;
+  await flushInstructionEdits(item); // 确认对话框期间可能已有防抖编辑，先落盘
+  const snapshot = structuredClone(item.processFlow.steps);
+  group.steps.splice(group.steps.indexOf(entry.step), 1);
+  try {
+    await persistProcessFlow(item);
+    renderSummaryWorkspace();
+  } catch (error) {
+    item.processFlow = { ...item.processFlow, steps: snapshot };
+    syncProcessFlowPresentation(item);
+    void rebuildItemTestFlow(item);
+    item.processFlowError =
+      error instanceof Error ? error.message : String(error);
+    showFlowlinkNotice(
+      "删除步骤失败：" + item.processFlowError,
+      "warn",
+    );
+    renderSummaryWorkspace();
+  }
+}
+
+/** AI 润色：pi:generateFlow 限定「只写 label」；diff 预览确认后写回当前录制。 */
+async function beginInstructionPolish(item) {
+  if (!item?.processFlow?.steps || !item.recordingId) return;
+  const bridge = window.flowlink?.pi;
+  if (!bridge?.generateFlow) {
+    showFlowlinkNotice("Pi 生成通道不可用。", "warn");
+    return;
+  }
+  let status;
+  try {
+    status = await bridge.status();
+  } catch {
+    status = { available: false, error: "Pi 状态检查失败" };
+  }
+  if (!status.available) {
+    showFlowlinkNotice(
+      "Pi 不可用：" + (status.error || "请检查模型配置"),
+      "warn",
+    );
+    return;
+  }
+  const button = document.getElementById("instructionAiPolish");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Pi 正在润色…";
+  }
+  try {
+    const result = await bridge.generateFlow({
+      taskCode: currentFlow?.code || activeFlowKey,
+      recordingIds: [item.recordingId],
+      instruction:
+        "For each step, write a short plain-language business label in the source labels' language. Do not change step structure, ids, elements, variables, groups, or any other field — only add/rewrite the `label` field of each step.",
+    });
+    const proposed = new Map();
+    const walk = (steps, prefix) => {
+      for (const step of steps || []) {
+        const flatId = prefix ? prefix + "/" + step.id : step.id;
+        if (step.kind === "group") walk(step.steps, flatId);
+        else if (typeof step.label === "string" && step.label.trim())
+          proposed.set(flatId, step.label.trim());
+      }
+    };
+    walk(result.flow?.steps || [], "");
+    const groups = ensureProcessGroups(item);
+    const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+    const diffs = [];
+    for (const entry of flat.entries) {
+      const next = proposed.get(entry.flattenedStepId);
+      if (next === undefined) continue;
+      const old = entry.step.label?.trim() || "";
+      if (next === old) continue;
+      diffs.push({
+        flatId: entry.flattenedStepId,
+        next,
+        old: old || processStepLabel(entry.step, entry.index, groups),
+      });
+    }
+    if (!diffs.length) {
+      showFlowlinkNotice("Pi 未提出任何描述修改。");
+      return;
+    }
+    await confirmInstructionPolish(item, diffs);
+  } catch (error) {
+    showFlowlinkNotice(
+      "AI 润色失败：" + (error instanceof Error ? error.message : String(error)),
+      "warn",
+    );
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "AI 润色步骤描述";
+    }
+  }
+}
+
+function confirmInstructionPolish(item, diffs) {
+  return new Promise((resolve) => {
+    const dialog = rowTemplate("instructionPolishTemplate").cloneNode(true);
+    const list = dialog.querySelector(".instruction-polish-diff");
+    list.replaceChildren(
+      ...diffs.map((diff) => {
+        const li = document.createElement("li");
+        const old = document.createElement("span");
+        old.className = "polish-diff-old";
+        old.textContent = diff.old;
+        const arrow = document.createElement("span");
+        arrow.className = "polish-diff-arrow";
+        arrow.textContent = " → ";
+        const next = document.createElement("span");
+        next.className = "polish-diff-new";
+        next.textContent = diff.next;
+        li.append(old, arrow, next);
+        return li;
+      }),
+    );
+    const error = dialog.querySelector(".process-step-error");
+    const close = () => {
+      dialog.close();
+      dialog.remove();
+      resolve();
+    };
+    dialog.oncancel = (event) => {
+      event.preventDefault();
+      close();
+    };
+    dialog.querySelector("[data-polish-cancel]").onclick = close;
+    dialog.querySelector("[data-polish-apply]").onclick = () => {
+      void (async () => {
+        try {
+          // 先冲掉未保存的防抖编辑（flush 会替换 steps 引用），再按 id 写回 label。
+          await flushInstructionEdits(item);
+          const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
+          const byId = new Map(
+            flat.entries.map((entry) => [entry.flattenedStepId, entry.step]),
+          );
+          let applied = false;
+          for (const diff of diffs) {
+            const step = byId.get(diff.flatId);
+            if (step) {
+              step.label = diff.next;
+              applied = true;
+            }
+          }
+          if (!applied) {
+            error.hidden = false;
+            error.textContent = "Pi 结果与当前步骤无法对齐，未做修改。";
+            return;
+          }
+          await persistProcessFlow(item);
+          close();
+          renderSummaryWorkspace();
+        } catch (applyError) {
+          error.hidden = false;
+          error.textContent =
+            "写入失败：" +
+            (applyError instanceof Error
+              ? applyError.message
+              : String(applyError));
+        }
+      })();
+    };
+    document.body.appendChild(dialog);
+    dialog.showModal();
+  });
 }
 
 function fillReferencePanel(panel, item) {
@@ -1918,11 +3199,28 @@ function fillRecordPanel(panel, item) {
   const section = panel.querySelector('[data-result-tab="Record"]');
   const media = item?.media || {},
     screenshots = media.screenshots || [];
+  const name = item?.name || "Recording";
+  const playerRoot = section.querySelector(".rrweb-player-root");
+  const video = section.querySelector("video");
+  const preview = section.querySelector(
+    ".recording-frame-preview:not(.recording-frame-empty)",
+  );
+  if (media.rrwebDir) {
+    // rrweb 录制：DOM 事件回放优先，旧 video/poster 管线隐藏。
+    video.hidden = true;
+    video.removeAttribute("src");
+    preview.hidden = true;
+    section.querySelector(".recording-frame-empty").hidden = true;
+    section.querySelector(".recording-media-name").textContent =
+      name + " - rrweb replay";
+    renderRecordingScreenshots(section, screenshots);
+    mountRrwebPlayer(playerRoot, media.rrwebDir);
+    return;
+  }
+  teardownRrwebPlayer(playerRoot);
   const poster = media.posterFile
     ? "file:///" + String(media.posterFile).replace(/\\/g, "/")
     : screenshots[0]?.image || "";
-  const name = item?.name || "Recording";
-  const video = section.querySelector("video");
   video.hidden = !media.videoURL;
   if (media.videoURL) {
     video.setAttribute("aria-label", name + " video");
@@ -1930,9 +3228,6 @@ function fillRecordPanel(panel, item) {
   } else {
     video.removeAttribute("src");
   }
-  const preview = section.querySelector(
-    ".recording-frame-preview:not(.recording-frame-empty)",
-  );
   const showPreview = !media.videoURL && !!poster;
   preview.hidden = !showPreview;
   if (showPreview) {
@@ -1944,6 +3239,10 @@ function fillRecordPanel(panel, item) {
     !!media.videoURL || !!poster;
   section.querySelector(".recording-media-name").textContent =
     name + (media.videoURL ? ".webm" : " - frame recording");
+  renderRecordingScreenshots(section, screenshots);
+}
+
+function renderRecordingScreenshots(section, screenshots) {
   section.querySelector(".recording-screenshots").replaceChildren(
     ...screenshots.map((file) => {
       const shot = rowTemplate("recordingScreenshotTemplate").cloneNode(true);
@@ -1956,6 +3255,313 @@ function fillRecordPanel(panel, item) {
       return shot;
     }),
   );
+}
+
+/* ================================================================
+ * rrweb 回放器（Record 标签页）：每个标签页一个 Replayer 实例，
+ * 由统一主时钟按 activation 时间线驱动显示与播放。
+ * ================================================================ */
+let rrwebPlayerSession = null;
+let rrwebPlayerMountId = 0;
+
+function teardownRrwebPlayer(root) {
+  if (rrwebPlayerSession) {
+    const session = rrwebPlayerSession;
+    rrwebPlayerSession = null;
+    session.destroy();
+  }
+  if (!root) return;
+  root.hidden = true;
+  root.querySelector(".rrweb-player-stage")?.replaceChildren();
+  root.querySelector(".rrweb-tabs")?.replaceChildren();
+  const errorBox = root.querySelector(".rrweb-error");
+  if (errorBox) {
+    errorBox.hidden = true;
+    errorBox.textContent = "";
+  }
+}
+
+function rrwebPlayerNotice(text) {
+  const node = document.createElement("div");
+  node.className = "rrweb-notice";
+  node.textContent = text;
+  return node;
+}
+
+function rrwebTimeLabel(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+async function mountRrwebPlayer(root, rrwebDir) {
+  if (!root) return;
+  teardownRrwebPlayer(root);
+  root.hidden = false;
+  const mountId = ++rrwebPlayerMountId;
+  const stage = root.querySelector(".rrweb-player-stage");
+  const tabsRow = root.querySelector(".rrweb-tabs");
+  const toggleBtn = root.querySelector(".rrweb-toggle");
+  const seek = root.querySelector(".rrweb-seek");
+  const timeLabel = root.querySelector(".rrweb-time");
+  const followBtn = root.querySelector(".rrweb-follow");
+  const errorBox = root.querySelector(".rrweb-error");
+  const showError = (message) => {
+    stage.replaceChildren();
+    tabsRow.replaceChildren();
+    errorBox.hidden = false;
+    errorBox.textContent = message;
+    timeLabel.textContent = "0:00 / 0:00";
+    seek.max = 0;
+    seek.value = 0;
+  };
+  stage.replaceChildren(rrwebPlayerNotice("正在加载录制数据…"));
+  errorBox.hidden = true;
+
+  let data;
+  try {
+    data = await window.flowlink.recording.loadRrweb(rrwebDir);
+  } catch (err) {
+    showError(`录制数据加载失败：${err?.message || err}`);
+    return;
+  }
+  if (mountId !== rrwebPlayerMountId) return; // 用户已切换到其他录制
+  const Replayer = window.__flowlinkRrweb?.Replayer;
+  if (typeof Replayer !== "function") {
+    showError(
+      "rrweb 播放器不可用（dist/renderer-vendor.js 缺失或未包含 Replayer），请重新构建。",
+    );
+    return;
+  }
+  const usableTabs = (data.tabs || []).filter(
+    (tab) => Array.isArray(tab.events) && tab.events.length >= 2,
+  );
+  if (!usableTabs.length) {
+    showError("这段录制没有可回放的 rrweb 事件。");
+    return;
+  }
+
+  const session = {
+    players: new Map(),
+    activationOffsets: [],
+    base: 0,
+    duration: 0,
+    time: 0,
+    playing: false,
+    manualTab: null,
+    current: null,
+    raf: 0,
+    lastTick: 0,
+    destroy() {
+      cancelAnimationFrame(this.raf);
+      for (const entry of this.players.values()) {
+        try {
+          entry.replayer.pause(0);
+        } catch {}
+        try {
+          entry.replayer.destroy?.();
+        } catch {}
+        entry.isPlaying = false;
+      }
+      this.players.clear();
+    },
+  };
+  rrwebPlayerSession = session;
+
+  // 逐标签页建 Replayer；全部建完后统一量取首个快照尺寸再缩放、再隐藏非活动页。
+  let reference = null;
+  for (const tab of usableTabs) {
+    const container = document.createElement("div");
+    container.className = "rrweb-tab-view";
+    stage.appendChild(container);
+    let replayer;
+    try {
+      replayer = new Replayer(tab.events, {
+        root: container,
+        mouseTail: true,
+        showWarning: false,
+      });
+    } catch (err) {
+      container.remove();
+      console.error("[rrweb] Replayer 创建失败：", err);
+      continue;
+    }
+    const meta = replayer.getMetaData();
+    const entry = {
+      tabId: tab.tabId,
+      label: tab.label || `Tab ${session.players.size + 1}`,
+      container,
+      replayer,
+      // 该标签页时间轴在全局时间轴上的偏移与时长（毫秒）
+      offset: 0,
+      duration: Math.max(0, meta.totalTime),
+      isPlaying: false,
+      btn: null,
+    };
+    session.players.set(entry.tabId, entry);
+    try {
+      replayer.pause(0);
+    } catch {}
+    if (!reference) reference = entry;
+  }
+  if (!session.players.size) {
+    showError("rrweb 事件无法解析为可回放的时间轴。");
+    return;
+  }
+
+  session.base = Math.min(
+    ...[...session.players.values()].map((entry) => {
+      const meta = entry.replayer.getMetaData();
+      return meta.startTime;
+    }),
+  );
+  for (const entry of session.players.values()) {
+    entry.offset = entry.replayer.getMetaData().startTime - session.base;
+  }
+  session.duration = Math.max(
+    ...[...session.players.values()].map(
+      (entry) => entry.offset + entry.duration,
+    ),
+    0,
+  );
+  session.activationOffsets = (data.activations || [])
+    .filter((a) => typeof a?.ts === "number" && session.players.has(a.tabId))
+    .map((a) => ({ offset: a.ts - session.base, tabId: a.tabId }))
+    .sort((a, b) => a.offset - b.offset);
+
+  // 缩放：按第一个标签页的录制视口比例适配舞台宽度。
+  try {
+    const docWidth = reference.replayer.iframe.getBoundingClientRect().width || 1280;
+    const docHeight = reference.replayer.iframe.getBoundingClientRect().height || 720;
+    const stageWidth = Math.max(240, stage.clientWidth || 800);
+    const scale = Math.min(2, stageWidth / docWidth);
+    for (const entry of session.players.values()) {
+      entry.replayer.wrapper.style.transformOrigin = "top left";
+      entry.replayer.wrapper.style.transform = `scale(${scale})`;
+    }
+    stage.style.height = `${Math.min(560, Math.round(docHeight * scale))}px`;
+  } catch {}
+
+  // 标签按钮
+  for (const entry of session.players.values()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rrweb-tab-btn";
+    btn.textContent = entry.label;
+    btn.title = entry.label;
+    btn.addEventListener("click", () => {
+      session.manualTab = entry.tabId;
+      followBtn.hidden = false;
+      applyView();
+    });
+    entry.btn = btn;
+    tabsRow.appendChild(btn);
+  }
+  followBtn.addEventListener("click", () => {
+    session.manualTab = null;
+    followBtn.hidden = true;
+    applyView();
+  });
+
+  const activeTabAt = (time) => {
+    let winner = null;
+    for (const a of session.activationOffsets) {
+      if (time >= a.offset) winner = session.players.get(a.tabId);
+      else break;
+    }
+    return winner || reference;
+  };
+
+  const updateTimeUi = () => {
+    seek.max = String(Math.max(0, Math.round(session.duration)));
+    seek.value = String(Math.min(session.duration, Math.round(session.time)));
+    timeLabel.textContent = `${rrwebTimeLabel(session.time)} / ${rrwebTimeLabel(session.duration)}`;
+  };
+
+  const setToggleLabel = () => {
+    toggleBtn.textContent = session.playing ? "Pause" : "Play";
+  };
+
+  function applyView() {
+    const desired = session.manualTab
+      ? session.players.get(session.manualTab) || reference
+      : activeTabAt(session.time);
+    session.current = desired;
+    for (const entry of session.players.values()) {
+      const show = entry === desired;
+      entry.container.hidden = !show;
+      entry.btn?.classList.toggle("is-active", show);
+      if (!show && entry.isPlaying) {
+        try {
+          entry.replayer.pause();
+        } catch {}
+        entry.isPlaying = false;
+      }
+    }
+    const local = Math.min(
+      desired.duration,
+      Math.max(0, session.time - desired.offset),
+    );
+    if (session.playing && local < desired.duration) {
+      try {
+        desired.replayer.play(local);
+        desired.isPlaying = true;
+      } catch {}
+    } else {
+      try {
+        desired.replayer.pause(local);
+      } catch {}
+      desired.isPlaying = false;
+    }
+    updateTimeUi();
+  }
+
+  const startPlayback = () => {
+    if (session.time >= session.duration) session.time = 0;
+    session.playing = true;
+    session.lastTick = performance.now();
+    setToggleLabel();
+    applyView();
+  };
+  const pausePlayback = () => {
+    session.playing = false;
+    setToggleLabel();
+    applyView();
+  };
+
+  toggleBtn.addEventListener("click", () => {
+    if (session.playing) pausePlayback();
+    else startPlayback();
+  });
+  seek.addEventListener("input", () => {
+    session.time = Math.min(session.duration, Math.max(0, Number(seek.value) || 0));
+    applyView();
+  });
+
+  const tick = (now) => {
+    session.raf = requestAnimationFrame(tick);
+    const dt = session.lastTick ? now - session.lastTick : 0;
+    session.lastTick = now;
+    if (!session.playing) return;
+    session.time = Math.min(session.duration, session.time + dt);
+    if (!session.manualTab && activeTabAt(session.time) !== session.current) {
+      applyView();
+    } else {
+      updateTimeUi();
+    }
+    if (session.time >= session.duration) {
+      session.playing = false;
+      setToggleLabel();
+      applyView();
+    }
+  };
+  session.raf = requestAnimationFrame(tick);
+
+  stage.replaceChildren(
+    ...[...session.players.values()].map((entry) => entry.container),
+  );
+  applyView();
 }
 
 let activeFlowKey = "TASKFLOW-001",
@@ -3004,6 +4610,8 @@ function renderSummaryWorkspace() {
     return;
   }
   const active = item.resultTab || "Process";
+  // 切走标签页/录制项前，冲掉 Instruction 未保存的防抖编辑（best effort）。
+  flushAllInstructionEdits();
   state.view = "analysis";
   if (active === "Test" && state.testBrowserResetKey !== item.id) {
     state.testBrowserResetKey = item.id;
@@ -3061,19 +4669,22 @@ function renderSummaryWorkspace() {
   bindStepEditor();
   bindProcessMap();
   if (
-    (active === "Process" || active === "Test") &&
+    (active === "Process" || active === "Test" || active === "Instruction") &&
     item?.recordingId &&
     !item.processFlowLoaded &&
     !item.processFlowLoading &&
     !item.processFlowError
   ) {
     // Test 标签页也加载已保存 Flow：进度列表分组化需要组名/编号
-    // （与 Process 图共用 ensureProcessGroups 视图）。
+    // （与 Process 图共用 ensureProcessGroups 视图）；Instruction 的编辑
+    // 管线同样挂在 processFlow 上（编辑真落盘的前置条件）。
     void hydrateProcessFlow(item).then((loaded) => {
       if (
         loaded &&
         currentAssistantItem() === item &&
-        (item.resultTab === "Process" || item.resultTab === "Test")
+        (item.resultTab === "Process" ||
+          item.resultTab === "Test" ||
+          item.resultTab === "Instruction")
       )
         renderSummaryWorkspace();
     });
@@ -3600,6 +5211,19 @@ function renderAIPanel() {
       results.filter((result) => result?.status === "pass").length +
       " / " +
       testSteps.length;
+    // 修复链自动回跑轮次（REPAIRED 后自动 Test，最多 2 轮；见 bridge.js）
+    const roundHeading = stepsHost.querySelector(".test-progress-heading");
+    let roundNote = roundHeading.querySelector(".test-round-note");
+    if (recording?.autoVerifyRound) {
+      if (!roundNote) {
+        roundNote = document.createElement("span");
+        roundNote.className = "test-round-note";
+        roundHeading.appendChild(roundNote);
+      }
+      roundNote.textContent = `· 自动回跑 ${recording.autoVerifyRound}/2`;
+    } else if (roundNote) {
+      roundNote.remove();
+    }
     const list = stepsHost.querySelector(".assistant-test-steps");
     stepsHost.querySelector("[data-test-empty]").hidden = !!testSteps.length;
     // 进度列表分组化：组标题行（编号+名称+组级状态）+ 组内步骤行；
@@ -4413,11 +6037,11 @@ async function hydrateProcessFlow(item) {
       item.processGroups = ensureProcessGroups(item);
   }
 
-  async function persistProcessFlow(item) {
+  async function persistProcessFlow(item, taskCode = currentFlow?.code || activeFlowKey) {
       if (!item?.processFlow || !item.recordingId || !item.flowFile)
         throw new Error("Save this recording before editing its Process flow.");
       const flow = await window.flowlink.flow.updateSteps({
-        taskCode: currentFlow?.code || activeFlowKey,
+        taskCode,
         recordingId: item.recordingId,
         steps: item.processFlow.steps,
       });
@@ -4530,64 +6154,6 @@ function buildTabGroupsForItem(item) {
       ];
 }
 
-function normalizeStepKind(type) {
-  if (type === "open" || type === "navigate" || type === "打开页面")
-    return "navigate";
-  if (type === "input" || type === "填写" || type === "输入") return "input";
-  if (type === "select" || type === "选择") return "select";
-  if (type === "click" || type === "点击") return "click";
-  if (type === "key") return "key";
-  if (type === "hover") return "hover";
-  if (type === "scroll") return "scroll";
-  if (type === "switchTab") return "switchTab";
-  if (type === "openTab") return "openTab";
-  if (type === "closeTab") return "closeTab";
-  if (type === "dialog") return "dialog";
-  if (type === "upload" || type === "上传") return "upload";
-  if (type === "wait") return "wait";
-  if (type === "assert") return "assert";
-  if (type === "extract") return "extract";
-  return type || "action";
-}
-
-function rebuildTestFlowFromItem(item) {
-  if (!item?.stepDetails) {
-    item.testFlowSteps = [];
-    item.testResults = [];
-    return;
-  }
-  const oldResults = item.testResults || [];
-  item.testFlowSteps = item.stepDetails.map((detail, index) => {
-    const text = item.steps?.[index] || "";
-    const kind = normalizeStepKind(detail.type);
-    return {
-      id: `step-${index}`,
-      kind,
-      url: detail.url || "",
-      value: detail.value || "",
-      text,
-      target: detail.target
-        ? {
-            description: detail.target,
-            candidates: [
-              {
-                kind: "text",
-                value: detail.target,
-                score: 0,
-                source: "record",
-              },
-            ],
-            observed: { tag: "div", text: detail.target },
-          }
-        : undefined,
-      page: detail.tab > 1 ? { index: detail.tab - 1 } : undefined,
-    };
-  });
-  item.testResults = item.testFlowSteps.map(
-    (_, index) => oldResults[index] || { status: "pending" },
-  );
-}
-
 async function rebuildItemTestFlow(item) {
   if (!item) return;
   if (item.processFlow?.steps) {
@@ -4608,40 +6174,96 @@ async function rebuildItemTestFlow(item) {
       }
     } catch {}
   }
-  // 回退使用当前界面草稿，让 Process/Instruction 的编辑结果能在 Test 中体现。
-  rebuildTestFlowFromItem(item);
+  // 不再从界面草稿伪重建测试流：该路径把「目标」降级为单一 text 候选，
+  // 破坏录制证据链（docs/plan-instruction-revamp.md §2）。演示/草稿条目
+  // 的 Test 列表退回本地文本行展示。
+  item.testFlowSteps = [];
+  item.testResults = [];
 }
 
 function bindStepEditor() {
-  // 编辑会立即更新录制项的本地草稿；测试从草稿重建，未编辑时则使用已保存的 Flow，
-  // 使 Test 始终反映最新内容。
+  // Instruction 的唯一编辑管道：输入 → 更新 processFlow.steps 内的步骤对象
+  // → 防抖 500ms 经 persistProcessFlow(flow:updateSteps) 落盘；失败回滚并内联报错。
   const panel = $("summaryResultPanel");
   if (!panel) return;
   panel.oninput = (e) => {
-    const field = e.target.dataset.stepField,
-      index = Number(e.target.dataset.stepIndex),
-      item = currentAssistantItem();
-    if (!field || !item) return;
-    ensureStepDetails(item);
-    if (field === "text") {
-      item.steps[index] = e.target.value;
-      const summary = e.target
-        .closest(".instruction-step")
-        ?.querySelector(".step-row-text");
-      if (summary) summary.textContent = e.target.value;
-    } else item.stepDetails[index][field] = e.target.value;
-    if (field === "type") {
-      const row = e.target.closest(".instruction-step");
-      if (row) applyStepFieldStates(row, e.target.value);
-    }
-    item.nodeUpdates = true;
-    rebuildItemTestFlow(item);
-    renderAIPanel();
+    const input = e.target.closest("[data-step-field]");
+    if (input) applyInstructionFieldEdit(input);
   };
+  panel.onchange = (e) => {
+    const input = e.target.closest("[data-step-field]");
+    if (!input) return;
+    applyInstructionFieldEdit(input);
+    const field = input.dataset.stepField;
+    const row = input.closest(".instruction-step");
+    const item = currentAssistantItem();
+    if (!row || !item) return;
+    if (field === "assertionKind") {
+      // 只切换可见性，不整格重渲染：value/count 缺期望值时保持用户的选择，
+      // 等期望值补齐后 rebuildStepAssertion 才写入 step.assertion。
+      const kind = input.value;
+      const equalsLabel = row
+        .querySelector('[data-step-field="assertionEquals"]')
+        ?.closest("label");
+      if (equalsLabel)
+        equalsLabel.hidden = !["text", "value", "count"].includes(kind);
+      const containsLabel = row
+        .querySelector('[data-step-field="assertionContains"]')
+        ?.closest("label");
+      if (containsLabel) containsLabel.hidden = kind !== "text";
+      if (
+        (kind === "value" || kind === "count") &&
+        !String(instructionInputValue(row, "assertionEquals") ?? "").trim()
+      )
+        showInstructionRowError(row, "该断言需要填写期望值后才能保存。");
+      return;
+    }
+    if (
+      ["waitCondition", "prop", "expectKind", "execution", "targetRef"].includes(
+        field,
+      )
+    ) {
+      const fields = row.querySelector(".step-detail-fields");
+      if (fields?.dataset.built) {
+        const found = instructionStepEntry(item, row.dataset.stepIndex);
+        if (found)
+          renderInstructionDrawer(fields, item, found.entry, found.flat);
+      }
+    }
+  };
+  const view = panel.querySelector('[data-result-tab="Instruction"]');
+  const polish = view?.querySelector("#instructionAiPolish");
+  if (polish)
+    polish.onclick = () => void beginInstructionPolish(currentAssistantItem());
   if (!panel.dataset.instructionExpandBound) {
     panel.addEventListener("click", (e) => {
-      const button = e.target.closest("[data-instruction-expand]"),
-        item = currentAssistantItem();
+      const menuButton = e.target.closest(".instruction-step-menu");
+      if (menuButton) {
+        openInstructionStepMenu(menuButton);
+        return;
+      }
+      const rerecord = e.target.closest("[data-instruction-rerecord]");
+      if (rerecord) {
+        const item = currentAssistantItem();
+        const groupId = rerecord.dataset.instructionRerecord;
+        if (item && groupId) {
+          void flushInstructionEdits(item); // 重录按磁盘 Flow 回放前缀，先落盘编辑
+          void beginGroupRecording(item, groupId, "replace");
+        }
+        return;
+      }
+      const item = currentAssistantItem();
+      const textEl = e.target.closest(".step-row-text");
+      if (textEl && item) {
+        const row = textEl.closest(".instruction-step");
+        const found = row
+          ? instructionStepEntry(item, row.dataset.stepIndex)
+          : null;
+        if (found && instructionEditable(item))
+          beginInlineLabelEdit(row, item, found.entry);
+        return;
+      }
+      const button = e.target.closest("[data-instruction-expand]");
       if (!button || !item) return;
       const id = button.dataset.instructionExpand,
         expanded = button.getAttribute("aria-expanded") !== "true";
@@ -4656,8 +6278,16 @@ function bindStepEditor() {
         : "Expand";
       button
         .closest(".steps-group")
-        .querySelectorAll("[data-group-details]")
-        .forEach((detail) => (detail.hidden = !expanded));
+        .querySelectorAll(".instruction-step")
+        .forEach((row) => {
+          const fields = row.querySelector("[data-group-details]");
+          fields.hidden = !expanded;
+          if (expanded && !fields.dataset.built) {
+            const found = instructionStepEntry(item, row.dataset.stepIndex);
+            if (found)
+              renderInstructionDrawer(fields, item, found.entry, found.flat);
+          }
+        });
     });
     panel.dataset.instructionExpandBound = "true";
   }
@@ -5213,12 +6843,17 @@ async function addProcessGroupAfter(item, groupId) {
   }
 }
 
-function showManualStepEditor(item, groupId) {
+function showManualStepEditor(item, groupId, insertAtIndex) {
   const group = item.processFlow?.steps.find(
     (step) => step.kind === "group" && step.id === groupId,
   );
   if (!group) return;
-  if (group.steps.at(-1)?.kind === "condition") {
+  // 组尾追加时 condition 必须保持末位；指定插入位置（Instruction「在此后插入」）
+  // 时钳到 condition 之前，而不是拒绝。
+  if (
+    group.steps.at(-1)?.kind === "condition" &&
+    insertAtIndex === undefined
+  ) {
     void showWorkspaceNotice(
       "A condition must remain the final step in its group, so steps cannot be added after it. Add steps to another group instead.",
     );
@@ -5226,7 +6861,9 @@ function showManualStepEditor(item, groupId) {
   }
   const dialog = rowTemplate("processStepEditorTemplate").cloneNode(true);
   dialog.querySelector("[data-step-editor-title]").textContent =
-    `Add step to ${group.label}`;
+    insertAtIndex === undefined
+      ? `Add step to ${group.label}`
+      : `Insert step into ${group.label}`;
   const form = dialog.querySelector("form");
   const groups = item.processFlow.steps.filter((step) => step.kind === "group");
   const groupOptions = groups
@@ -5332,6 +6969,8 @@ function showManualStepEditor(item, groupId) {
   dialog.querySelector("[data-step-cancel]").onclick = close;
   form.onsubmit = async (event) => {
     event.preventDefault();
+    // Instruction 抽屉可能有防抖中的编辑：先落盘，避免本表单的失败回滚波及它们。
+    await flushInstructionEdits(item);
     const values = form.elements;
     const kind = values.kind.value;
     const page = group.steps.at(-1)?.page;
@@ -5459,13 +7098,16 @@ function showManualStepEditor(item, groupId) {
     // flow:updateSteps 的契约错误在对话框内联展示：先记录本地长度再提交，
     // 失败时回滚步骤与变量，磁盘 Flow 未变，用户输入原地保留可改后重试。
     const variablesBefore = item.processFlow.variables?.length ?? 0;
-    group.steps.push(step);
+    const insertAt = group.steps.at(-1)?.kind === "condition"
+      ? Math.min(insertAtIndex ?? group.steps.length, group.steps.length - 1)
+      : insertAtIndex ?? group.steps.length;
+    group.steps.splice(insertAt, 0, step);
     try {
       await persistProcessFlow(item);
       close();
       renderSummaryWorkspace();
     } catch (error) {
-      group.steps.pop();
+      group.steps.splice(insertAt, 1);
       if (item.processFlow.variables && item.processFlow.variables.length > variablesBefore)
         item.processFlow.variables.length = variablesBefore;
       showError(error instanceof Error ? error.message : String(error));

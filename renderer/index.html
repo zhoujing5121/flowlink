@@ -6,6 +6,7 @@
     <title>FlowLink</title>
     <link rel="icon" href="assets/icon.svg" />
     <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="../dist/rrweb-replay.css" />
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -816,7 +817,7 @@
                 rows="2"
               ></textarea>
               <div class="assistant-send-row">
-                <svg class="assistant-mic" aria-hidden="true" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M95.8339 158.176C69.2422 156.155 48.013 134.926 45.9922 108.335H54.3547C56.4589 131.697 76.0922 150.001 100.001 150.001C123.909 150.001 143.542 131.697 145.646 108.335H154.009C151.988 134.926 130.759 156.155 104.167 158.176V175.001H137.501V183.335H62.5005V175.001H95.8339V158.176ZM100.001 16.668C109.946 16.668 119.484 20.6188 126.517 27.6515C133.55 34.6841 137.501 44.2224 137.501 54.168V104.168C137.501 114.114 133.55 123.652 126.517 130.684C119.484 137.717 109.946 141.668 100.001 141.668C90.0549 141.668 80.5166 137.717 73.484 130.684C66.4514 123.652 62.5005 114.114 62.5005 104.168V54.168C62.5005 44.2224 66.4514 34.6841 73.484 27.6515C80.5166 20.6188 90.0549 16.668 100.001 16.668ZM100.001 25.0013C92.265 25.0013 84.8464 28.0742 79.3766 33.544C73.9068 39.0138 70.8339 46.4325 70.8339 54.168V104.168C70.8339 111.903 73.9068 119.322 79.3766 124.792C84.8464 130.262 92.265 133.335 100.001 133.335C107.736 133.335 115.155 130.262 120.624 124.792C126.094 119.322 129.167 111.903 129.167 104.168V54.168C129.167 50.3377 128.413 46.545 126.947 43.0064C125.481 39.4677 123.333 36.2524 120.624 33.544C117.916 30.8356 114.701 28.6872 111.162 27.2215C107.623 25.7557 103.831 25.0013 100.001 25.0013Z" fill="black"></path></svg>
+                <img class="assistant-mic" src="assets/microphone.svg" alt="Microphone" />
                 <button
                   class="assistant-send"
                   id="assistantSend"
@@ -1097,11 +1098,21 @@
                     <button data-canvas-fit>Fit to canvas</button>
                   </div>
                 </div>
-                <div
-                  class="grouped-steps"
-                  data-result-tab="Instruction"
-                  hidden
-                ></div>
+                <div class="instruction-view" data-result-tab="Instruction" hidden>
+                  <div class="instruction-header">
+                    <div class="instruction-status" role="status" hidden></div>
+                    <div class="instruction-status error" role="alert" hidden></div>
+                    <button
+                      id="instructionAiPolish"
+                      class="instruction-polish"
+                      type="button"
+                      hidden
+                    >
+                      AI 润色步骤描述
+                    </button>
+                  </div>
+                  <div class="grouped-steps"></div>
+                </div>
                 <div
                   class="reference-management"
                   data-result-tab="Reference"
@@ -1214,6 +1225,37 @@
                   data-result-tab="Record"
                   hidden
                 >
+                  <div class="rrweb-player-root" hidden>
+                    <div class="rrweb-player-stage"></div>
+                    <div class="rrweb-player-bar">
+                      <button
+                        type="button"
+                        class="btn rrweb-toggle"
+                        aria-label="Play recording replay"
+                      >
+                        Play
+                      </button>
+                      <input
+                        type="range"
+                        class="rrweb-seek"
+                        min="0"
+                        max="0"
+                        step="200"
+                        value="0"
+                        aria-label="Recording replay position"
+                      />
+                      <span class="rrweb-time">0:00 / 0:00</span>
+                      <div class="rrweb-tabs"></div>
+                      <button
+                        type="button"
+                        class="btn rrweb-follow"
+                        hidden
+                      >
+                        Follow tabs
+                      </button>
+                    </div>
+                    <div class="rrweb-error" hidden></div>
+                  </div>
                   <section class="recording-video">
                     <video
                       controls
@@ -1668,7 +1710,13 @@
     <template id="instructionGroupTemplate">
       <section class="steps-group">
         <div class="instruction-group-heading">
-          <h3></h3>
+          <div class="instruction-group-title">
+            <h3></h3>
+            <div class="instruction-group-meta">
+              <span class="instruction-group-tab"></span>
+              <span class="instruction-group-branch" hidden></span>
+            </div>
+          </div>
           <button class="instruction-expand" type="button" aria-expanded="false">
             <span>Expand</span>
             <svg
@@ -1684,54 +1732,61 @@
       </section>
     </template>
     <template id="instructionStepTemplate">
-      <div class="instruction-step">
+      <div class="instruction-step" tabindex="-1">
         <div class="instruction-row">
           <span class="step-row-number"></span>
           <span class="step-row-text"></span>
+          <span class="step-badges">
+            <span
+              class="execution-mode-icon"
+              role="img"
+              aria-label="Automated"
+              title="Automated"
+            >
+              <svg data-mode-icon="automated" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="7" width="16" height="13" rx="2"></rect>
+                <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
+                <circle cx="9" cy="12" r=".5"></circle>
+                <circle cx="15" cy="12" r=".5"></circle>
+              </svg>
+              <svg data-mode-icon="manual" viewBox="0 0 24 24" aria-hidden="true" hidden>
+                <circle cx="12" cy="7" r="4"></circle>
+                <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
+              </svg>
+            </span>
+          </span>
+          <button
+            class="instruction-step-menu"
+            type="button"
+            aria-haspopup="menu"
+            aria-label="步骤操作"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="5" r="1.6"></circle>
+              <circle cx="12" cy="12" r="1.6"></circle>
+              <circle cx="12" cy="19" r="1.6"></circle>
+            </svg>
+          </button>
         </div>
-        <div class="step-detail-fields" data-group-details hidden>
-          <label
-            >操作内容<textarea data-step-field="text"></textarea
-          ></label>
-          <div class="step-field-grid">
-            <label>操作类型<span class="step-type-picker">
-                <button
-                  type="button"
-                  class="type-picker-trigger"
-                  data-step-field="type"
-                  aria-haspopup="listbox"
-                  aria-expanded="false"
-                >
-                  <span>请选择</span></button
-                ><svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m5 9 7 7 7-7" />
-                </svg>
-                <div class="popup type-picker-popup" hidden>
-                  <div class="type-picker-toolbar">
-                    <input
-                      type="search"
-                      placeholder="搜索"
-                      aria-label="搜索操作类型选项"
-                      autocomplete="off"
-                    />
-                    <button type="button" aria-label="清空搜索">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="m6 6 12 12M18 6 6 18" />
-                      </svg>
-                    </button>
-                  </div>
-                  <div
-                    class="type-picker-options"
-                    role="listbox"
-                    aria-label="操作类型选项"
-                  ></div>
-                </div>
-              </span></label>
-            <label>目标<input data-step-field="target" /></label>
-            <label>填写内容<input data-step-field="value" /></label>
-          </div>
-        </div>
+        <div class="step-detail-fields" data-group-details hidden></div>
+        <p class="instruction-step-error" role="alert" hidden></p>
       </div>
+    </template>
+    <template id="instructionPolishTemplate">
+      <dialog class="reference-dialog instruction-polish-dialog">
+        <h2>AI 润色步骤描述</h2>
+        <p class="instruction-polish-note">
+          Pi 只改写每一步的业务语言描述（label），不改动步骤结构、元素证据与变量。确认后写回当前录制并自动备份。
+        </p>
+        <ul class="instruction-polish-diff"></ul>
+        <p class="process-step-error" role="alert" hidden></p>
+        <div class="reference-dialog-actions">
+          <button type="button" class="btn" data-polish-apply>应用修改</button>
+          <button type="button" class="btn secondary" data-polish-cancel>
+            取消
+          </button>
+        </div>
+      </dialog>
     </template>
     <template id="referenceRowTemplate">
       <tr>

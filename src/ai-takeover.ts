@@ -2,12 +2,18 @@
  * AI 接管续跑（browser-use）：Test 回放失败后由用户触发，主进程用
  * @browser_use/pi agent 附着内嵌浏览器（CDP），按剩余步骤逐个执行。
  *
- * 边界（docs/plan-test-failure-ai-takeover-browser-use.md）：
+ * 边界（docs/plan-test-failure-ai-takeover-browser-use.md + 强化计划
+ * docs/plan-ai-takeover-hardening.md）：
  * - 只产生运行时执行轨迹与 artifact，绝不写回源 Flow（observed 不可变）。
- * - secret 变量只经 sensitiveData 通道（SDK 脱敏），不进任务文本/日志/artifact。
- * - 步骤完成 = agent 调用 mark_step_done 工具 + typed 结果 done=true 双门槛。
- * - 护栏：总时长 10 min、每步 1 次重试、连续失败即中止、AbortController 随
- *   playback:stop 触发。
+ * - secret 变量只经 sensitiveData 通道（SDK 脱敏），不进任务文本/日志/artifact；
+ *   剩余步骤引用了缺失值的 secret 变量时，接管开始前直接报错。
+ * - 分支感知：接管前按执行器同款路由语义求值网关 condition，决定线性子序列，
+ *   被跳过的组报 skip；condition 步骤不交给 agent「执行」。
+ * - 步骤完成 = agent 调用 mark_step_done 工具 + typed 结果 done=true 双门槛；
+ *   单步两败后降级 free-run（剩余步骤合并为 goal 任务，完成即报）。
+ * - manual 步骤暂停等待用户确认（复用 playback:userOperation 通道）。
+ * - 每步成功后由主进程回传元素证据（a11y/交互摘要），写入 ai-takeover.json。
+ * - 护栏：总时长 15 min、每步 1 次重试、AbortController 随 playback:stop 触发。
  */
 import { execFile as execFileCallback } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -20,9 +26,10 @@ import { BrowserUse, Type, type AgentTool } from '@browser_use/pi'
 import { createModels, createProvider } from '../node_modules/@browser_use/pi/node_modules/@earendil-works/pi-ai/dist/index.js'
 import { openAICompletionsApi } from '../node_modules/@browser_use/pi/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.lazy.js'
 
-import { makeId, type ElementRef, type Flow, type Step } from '../engine/schema/src/index.js'
+import { makeId, type Assertion, type ElementRef, type Flow, type Step } from '../engine/schema/src/index.js'
 import { defaultVariables, renderTemplateValue } from '../engine/executor/src/template.js'
-import { flattenSteps } from '../engine/executor/src/steps.js'
+import { flattenSteps, type FlatStep } from '../engine/executor/src/steps.js'
+import { collectTemplateRefs } from './ai-refine.js'
 import { formatTemplate, type TakeoverTemplates } from './prompts.js'
 
 const execFile = promisify(execFileCallback)
@@ -42,6 +49,38 @@ export interface AiTakeoverStepEvent {
 	note: string
 	ok: boolean
 	error?: string
+	/** 网关 condition 路由跳过的步骤（语义对齐执行器的 skip 报告）。 */
+	skipped?: boolean
+	/** free-run 降级模式中完成的步骤。 */
+	freeRun?: boolean
+	/** manual 步骤由用户确认完成（非 agent 执行，不带 AI 徽标）。 */
+	manual?: boolean
+}
+
+/** 主进程抓取的页面元素证据（repair 重锚定用；不含任何输入值/secret）。 */
+export interface TakeoverEvidenceNode {
+	tag: string
+	role?: string
+	name?: string
+	testid?: string
+	id?: string
+	text?: string
+}
+
+export interface TakeoverEvidencePage {
+	url: string
+	title?: string
+	nodes: TakeoverEvidenceNode[]
+}
+
+export interface TakeoverEvidence {
+	pages: TakeoverEvidencePage[]
+}
+
+/** 网关 condition 的本地求值结果；null = 求值失败（保守线性继续）。 */
+export interface GateEvaluation {
+	matches: boolean
+	note: string
 }
 
 export interface AiTakeoverDoneEvent {
@@ -64,6 +103,22 @@ export interface StartAiTakeoverDeps {
 		| { mode: 'explicit'; url: string }
 	/** system 模式下由主进程用 Electron resolveProxy 解析（保持本模块无 Electron 依赖）。 */
 	resolveSystemProxy: (url: string) => Promise<string>
+	/**
+	 * 网关 condition 本地求值（执行器同款 evaluateAssertion，由 main.ts 以
+	 * 依赖注入提供；返回 null 表示无法求值，接管保守线性继续）。
+	 */
+	evaluateGateCondition?: (
+		assertion: Assertion,
+		target: ElementRef | undefined,
+	) => Promise<GateEvaluation | null>
+	/** manual 步骤接管时暂停等用户确认（复用 playback:userOperation 通道）。 */
+	waitForUserOperation?: (opts: {
+		stepId: string
+		prompt: string
+		signal: AbortSignal
+	}) => Promise<void>
+	/** 每步成功后由主进程抓当前打开页面的元素证据摘要。 */
+	captureEvidence?: () => Promise<TakeoverEvidence | null>
 	onStep: (event: AiTakeoverStepEvent) => void
 	onDone: (event: AiTakeoverDoneEvent) => void
 }
@@ -76,15 +131,22 @@ export interface StartAiTakeoverOptions {
 	deps: StartAiTakeoverDeps
 }
 
-const TOTAL_BUDGET_MS = 10 * 60_000
+const TOTAL_BUDGET_MS = 15 * 60_000
 const STEP_MAX_STEPS = 14
 const STEP_TIMEOUT_MS = 150_000
+/** free-run 降级（goal 模式）单次 agent 运行的护栏；仍受总预算约束。 */
+const FREE_RUN_MAX_STEPS = 60
+const FREE_RUN_TIMEOUT_MS = 420_000
+/** 网关路由虚拟遍历的组访问上限（镜像执行器 FLOW_LOOP_LIMIT = 3）。 */
+const GATE_GROUP_VISIT_LIMIT = 3
 
 let activeTakeover: Promise<void> | null = null
 let activeAbort: AbortController | null = null
+/** 路由求值阶段的「启动中」标记：activeTakeover 尚未就位前也拒绝二次启动。 */
+let takeoverStarting = false
 
 export function aiTakeoverInProgress(): boolean {
-	return activeTakeover !== null
+	return activeTakeover !== null || takeoverStarting
 }
 
 /** playback:stop 调用：中止接管并等待收尾（agent.close 不会动内嵌浏览器）。 */
@@ -242,8 +304,10 @@ function expectText(step: Step): string {
 	return `; expect ${expect.kind}`
 }
 
-/** v1 不交给 agent 的步骤：遇到即中止接管（剩余步骤保持 pending）。 */
-const UNSUPPORTED_KINDS = new Set(['upload', 'switchTab', 'openTab', 'closeTab', 'script'])
+/** v1 不交给 agent 的步骤：遇到即中止接管（剩余步骤保持 pending）。
+ *  openTab/switchTab/closeTab 已解锁——browser-use agent 具备标签页能力，
+ *  投影里给出明确语义（agent 会用真实标签页操作完成）。 */
+const UNSUPPORTED_KINDS = new Set(['upload', 'script'])
 
 function projectStepText(step: Step, vars: Record<string, string>, secrets: Set<string>): string {
 	const label = step.label ? `"${step.label}"` : '(no recorded label)'
@@ -296,6 +360,21 @@ function projectStepText(step: Step, vars: Record<string, string>, secrets: Set<
 		case 'dialog':
 			detail = `Handle the browser dialog: ${step.action ?? 'accept'}${step.promptText !== undefined ? `, typing "${renderValue(step.promptText, vars, secrets)}"` : ''}`
 			break
+		case 'openTab':
+			detail = `Open a new browser tab${step.url ? ` to ${renderValue(step.url, vars, secrets)}` : ''} and make it the active tab`
+			break
+		case 'switchTab':
+			detail =
+				step.index === undefined
+					? 'Switch to the tab this step was recorded on and continue working there'
+					: `Switch to tab ${step.index + 1} (1-based tab number, in creation order) and continue working there`
+			break
+		case 'closeTab':
+			detail =
+				step.index === undefined
+					? 'Close the current tab; the previously open tab becomes active'
+					: `Close tab ${step.index + 1} (1-based tab number, in creation order); the previously open tab becomes active`
+			break
 		default:
 			detail = `${step.kind} step`
 			break
@@ -338,6 +417,121 @@ interface StepRecord {
 	agentSteps?: number
 	usageTotalTokens?: number
 	durationMs: number
+	/** 网关路由跳过（非 agent 执行）。 */
+	skipped?: boolean
+	/** manual 步骤（用户确认完成，非 agent 执行）。 */
+	manual?: boolean
+	/** free-run 降级模式中完成。 */
+	freeRun?: boolean
+	/** 主进程回传的元素证据（repair 重锚定用）。 */
+	evidencePages?: TakeoverEvidencePage[]
+}
+
+/** 接管前「跑一遍路由」的结果：选定子序列 + 被跳过步骤 + 网关决策记录。 */
+interface RoutingPlan {
+	selected: FlatStep[]
+	skipped: Array<{ step: FlatStep; reason: string }>
+	gateNotes: string[]
+}
+
+/**
+ * 分支感知路由（镜像 engine/executor/src/run.ts 的 branchCursor 语义）：
+ * 从 fromStepIndex 起虚拟遍历扁平步骤，遇到 condition 就用注入的
+ * evaluateGateCondition 本地求值并跳组；condition 步骤本身不进入选定序列。
+ * 求值失败 → 保守线性继续（不跳任何组），并在 gateNotes 里注明。
+ * 组访问上限镜像执行器 FLOW_LOOP_LIMIT（3 次），超出即停止规划。
+ */
+async function planRouting(
+	flow: Flow,
+	fromStepIndex: number,
+	evaluateGate: StartAiTakeoverDeps['evaluateGateCondition'],
+): Promise<RoutingPlan> {
+	const flat = flattenSteps(flow.steps)
+	const selected: FlatStep[] = []
+	const skipped: Array<{ step: FlatStep; reason: string }> = []
+	const gateNotes: string[] = []
+
+	// 顶层 group 起点 → 扁平下标（与 run.ts 的 groupStartIndices 同构）。
+	const groupStartIndices = new Map<string, number>()
+	let nextGroupStart = 0
+	for (const top of flow.steps) {
+		if (top.kind === 'group') {
+			groupStartIndices.set(top.id, nextGroupStart)
+			nextGroupStart += flattenSteps([top]).length
+		} else {
+			nextGroupStart += 1
+		}
+	}
+	const visits = new Map<string, number>()
+
+	let cursor = fromStepIndex
+	while (cursor < flat.length) {
+		const item = flat[cursor]!
+		// 组访问计数：仅当游标落在组起点时计一次（与执行器一致）。
+		if (item.groupId && groupStartIndices.get(item.groupId) === cursor) {
+			const count = (visits.get(item.groupId) ?? 0) + 1
+			visits.set(item.groupId, count)
+			if (count > GATE_GROUP_VISIT_LIMIT) {
+				gateNotes.push(
+					`gate routing stopped at group "${item.groupId}": loop limit (${GATE_GROUP_VISIT_LIMIT} visits) reached`,
+				)
+				cursor = flat.length
+				break
+			}
+		}
+		if (item.step.kind === 'condition') {
+			const condition = item.step as Extract<Step, { kind: 'condition' }>
+			const outcome = evaluateGate
+				? await evaluateGate(condition.assertion, condition.target).catch(() => null)
+				: null
+			if (!outcome) {
+				gateNotes.push(
+					`gate condition at step ${cursor + 1} could not be evaluated; continue linearly`,
+				)
+				cursor += 1
+				continue
+			}
+			const targetGroupId = outcome.matches ? condition.trueGroupId : condition.falseGroupId
+			gateNotes.push(
+				`gate condition at step ${cursor + 1} evaluated ${outcome.matches} (${outcome.note}); routing to ${
+					targetGroupId ?? 'end of flow'
+				}`,
+			)
+			if (targetGroupId === undefined) {
+				// 缺省分支 = 结束整个运行：之后所有步骤跳过。
+				for (let i = cursor + 1; i < flat.length; i++) {
+					skipped.push({ step: flat[i]!, reason: 'gate condition ended the run' })
+				}
+				cursor = flat.length
+				break
+			}
+			const branchCursor = groupStartIndices.get(targetGroupId)
+			if (branchCursor === undefined) {
+				gateNotes.push(
+					`gate condition at step ${cursor + 1} referenced missing group "${targetGroupId}"; continue linearly`,
+				)
+				cursor += 1
+				continue
+			}
+			// 跳转目标之后的步骤补 skip（回跳不跳过任何步骤，语义同执行器）。
+			const skipEnd = branchCursor >= flat.length ? flat.length : branchCursor
+			for (let i = cursor + 1; i < skipEnd; i++) {
+				skipped.push({
+					step: flat[i]!,
+					reason: `gate condition chose the ${outcome.matches ? 'true' : 'false'} branch`,
+				})
+			}
+			if (branchCursor >= flat.length) {
+				cursor = flat.length
+				break
+			}
+			cursor = branchCursor
+			continue
+		}
+		selected.push(item)
+		cursor += 1
+	}
+	return { selected, skipped, gateNotes }
 }
 
 interface StepRunResult {
@@ -356,12 +550,20 @@ function describeRunFailure(result: StepRunResult): string {
 }
 
 export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<void> {
-	if (activeTakeover) throw new Error('AI takeover is already running')
+	if (activeTakeover || takeoverStarting) throw new Error('AI takeover is already running')
+	takeoverStarting = true
+	try {
+		await runTakeover(options)
+	} finally {
+		takeoverStarting = false
+	}
+}
+
+async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 	const { flow, deps } = options
 	const flattened = flattenSteps(flow.steps)
 	const fromStepIndex = Math.max(0, Math.min(options.fromStepIndex, flattened.length - 1))
-	const remaining = flattened.slice(fromStepIndex)
-	if (!remaining.length) throw new Error('No remaining steps to take over.')
+	if (!flattened.slice(fromStepIndex).length) throw new Error('No remaining steps to take over.')
 
 	const vars = { ...defaultVariables(flow.variables ?? []), ...options.variables }
 	const secretNames = new Set((flow.variables ?? []).filter((v) => v.secret).map((v) => v.name))
@@ -372,26 +574,66 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 	const hosts = collectHosts(flow, vars)
 	for (const entry of Object.values(sensitiveData)) entry.domains = hosts
 
+	// abort 通道尽早可用；总预算计时从 agent 阶段开始（路由求值只需数秒）。
+	const controller = new AbortController()
+	activeAbort = controller
+
+	// ---- 分支感知路由：接管前先按执行器同款语义「跑一遍路由」定子序列 ----
+	const routing = await planRouting(flow, fromStepIndex, deps.evaluateGateCondition)
+
+	// secret 缺失前置检查：剩余（选定子序列）步骤真的引用了未提供值的 secret
+	// 变量时直接报错，避免跑到登录步才发现必然卡死。
+	const { used: usedVariables } = collectTemplateRefs(routing.selected.map((item) => item.step))
+	const missingSecrets = [...secretNames].filter(
+		(name) => usedVariables.has(name) && !vars[name],
+	)
+	if (missingSecrets.length) {
+		throw new Error(
+			`接管无法开始：剩余步骤引用了未保存的密码变量 {${missingSecrets.join('}}, {{')}}}（Reference 页未保存对应值），登录段必然卡死。请先在 Reference 页保存后再试。`,
+		)
+	}
+
 	const runId = makeId('run')
 	const runDir = join(deps.artifactsRoot, flow.id, 'runs', runId)
 	const records: StepRecord[] = []
 	const completed: number[] = []
 	const aborted = new Set<string>()
+	let seq = 0
 
-	const controller = new AbortController()
-	activeAbort = controller
-	const deadline = setTimeout(() => controller.abort(), TOTAL_BUDGET_MS)
+	// 被网关跳过的步骤：立即报 skip（语义对齐执行器的分支跳过报告）。
+	for (const skip of routing.skipped) {
+		seq += 1
+		records.push({
+			seq,
+			stepIndex: skip.step.index,
+			ok: true,
+			note: skip.reason,
+			skipped: true,
+			durationMs: 0,
+		})
+		deps.onStep({
+			seq,
+			stepIndex: skip.step.index,
+			stepId: skip.step.stepId,
+			note: 'skipped by gate condition',
+			ok: true,
+			skipped: true,
+		})
+	}
 
 	let currentGlobalIndex = fromStepIndex
 	let markedEvidence: string | null = null
-	let seq = 0
 
-	const projections = remaining.map(({ step, stepId, index }) => ({
+	const projections = routing.selected.map(({ step, stepId, index }) => ({
 		step,
 		stepId,
 		globalIndex: index,
 		text: projectStepText(step, vars, secretNames),
 	}))
+
+	/** free-run 降级：mark_step_done 放宽为「完成即报」时的收账回调。 */
+	let freeRunActive = false
+	let freeRunOnMark: ((globalIndex: number, evidence: string) => void) | null = null
 
 	const markStepDoneSchema = Type.Object({
 		stepIndex: Type.Number(),
@@ -401,11 +643,39 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 		name: 'mark_step_done',
 		label: 'Mark workflow step done',
 		description:
-			'Mark the current workflow step as completed. Only call it after the step\'s business outcome is visible on the page. Params: stepIndex (the step number from the task) and one sentence of evidence.',
+			'Mark a workflow step as completed. Only call it after the step\'s business outcome is visible on the page. Params: stepIndex (the step number from the task) and one sentence of evidence. In step-by-step mode only the current step index is accepted; in free-run (goal) mode you may report any outstanding step index as soon as you finish it.',
 		parameters: markStepDoneSchema,
 		executionMode: 'sequential',
 		replay: 'never',
 		execute: async (_id, params) => {
+			if (freeRunActive) {
+				const entry = projections.find(
+					(candidate) =>
+						candidate.globalIndex + 1 === params.stepIndex &&
+						!completed.includes(candidate.globalIndex),
+				)
+				if (!entry) {
+					return {
+						content: [
+							{
+								type: 'text',
+								text: `Step ${params.stepIndex} is not an outstanding remaining step. Use the step numbers from the task.`,
+							},
+						],
+						details: { accepted: false },
+					}
+				}
+				freeRunOnMark?.(entry.globalIndex, String(params.evidence ?? '').trim())
+				return {
+					content: [
+						{
+							type: 'text',
+							text: 'Recorded. Continue with the next remaining step; finish with done=true when all are done.',
+						},
+					],
+					details: { accepted: true },
+				}
+			}
 			const expected = currentGlobalIndex + 1
 			if (!Number.isInteger(params.stepIndex) || params.stepIndex !== expected) {
 				return {
@@ -441,45 +711,56 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 		},
 	}
 
-	const failureContext = `Replay context: the workflow "${flow.title}" stopped at step ${fromStepIndex + 1}${options.failureSummary ? ` with failure: ${truncateText(options.failureSummary, 400)}` : ''}. The browser still holds that state; continue from there.`
+	const failureContext = `Replay context: the workflow "${flow.title}" stopped at step ${fromStepIndex + 1}${options.failureSummary ? ` with failure: ${truncateText(options.failureSummary, 400)}` : ''}. The browser still holds that state; continue from there.${
+		routing.gateNotes.length
+			? ` Routing decisions made before takeover (gate conditions evaluated locally, skipped groups are NOT yours to perform): ${routing.gateNotes.join('; ')}.`
+			: ''
+	}`
 
 	const run = (async () => {
-		await preferSystemNodeWorker()
-		if (!deps.modelConfig.baseUrl) {
-			throw new Error(
-				`AI takeover needs provider "${deps.modelConfig.provider}" with a baseUrl in config/models.json.`,
-			)
-		}
-		await applyProxyDispatcher(deps.proxy, deps.modelConfig.baseUrl, deps.resolveSystemProxy)
-		await mkdir(join(runDir, 'agent-workspace'), { recursive: true })
-		const agent = await BrowserUse.create({
-			model: `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
-			models: buildModelsCollection(deps.modelConfig),
-			browser: { kind: 'chrome', cdpUrl: deps.cdpUrl },
-			workspace: join(runDir, 'agent-workspace'),
-			instructions: deps.templates.systemInstructions,
-			tools: [markStepDone, getStepDetail],
-			sensitiveData,
-			...(hosts.length ? { allowedDomains: hosts } : {}),
-			telemetry: false,
-			redact: Object.values(sensitiveData).map((entry) => entry.value),
-			highlightActions: true,
-			operationTimeoutMs: 15_000,
-			cellTimeoutMs: 30_000,
-			modelTimeoutMs: 180_000,
-		})
-
-		const resultSchema = Type.Object({
-			done: Type.Boolean({
-				description: 'true only when this step\'s business outcome is visible on the page',
-			}),
-			note: Type.String({ description: 'one-sentence user-facing note in the step labels\' language' }),
-		})
-
-		let first = true
-		let previousNote = ''
-		let summary = ''
+		const deadline = setTimeout(() => controller.abort(), TOTAL_BUDGET_MS)
+		let agent: Awaited<ReturnType<typeof BrowserUse.create>> | null = null
 		try {
+			await preferSystemNodeWorker()
+			if (!deps.modelConfig.baseUrl) {
+				throw new Error(
+					`AI takeover needs provider "${deps.modelConfig.provider}" with a baseUrl in config/models.json.`,
+				)
+			}
+			await applyProxyDispatcher(deps.proxy, deps.modelConfig.baseUrl, deps.resolveSystemProxy)
+			await mkdir(join(runDir, 'agent-workspace'), { recursive: true })
+
+			const resultSchema = Type.Object({
+				done: Type.Boolean({
+					description: 'true only when this step\'s business outcome is visible on the page',
+				}),
+				note: Type.String({ description: 'one-sentence user-facing note in the step labels\' language' }),
+			})
+
+			let agentStarted = false
+			let previousNote = ''
+			let summary = ''
+			// 剩余步骤全部被网关跳过时 projections 为空：不起 agent，直接收尾。
+			if (projections.length) {
+				agent = await BrowserUse.create({
+					model: `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
+					models: buildModelsCollection(deps.modelConfig),
+					browser: { kind: 'chrome', cdpUrl: deps.cdpUrl },
+					workspace: join(runDir, 'agent-workspace'),
+					instructions: deps.templates.systemInstructions,
+					tools: [markStepDone, getStepDetail],
+					sensitiveData,
+					...(hosts.length ? { allowedDomains: hosts } : {}),
+					telemetry: false,
+					redact: Object.values(sensitiveData).map((entry) => entry.value),
+					highlightActions: true,
+					operationTimeoutMs: 15_000,
+					cellTimeoutMs: 30_000,
+					modelTimeoutMs: 180_000,
+				})
+			}
+
+			let enterFreeRun = false
 			for (const entry of projections) {
 				if (controller.signal.aborted) break
 				currentGlobalIndex = entry.globalIndex
@@ -490,20 +771,59 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 					break
 				}
 				if (UNSUPPORTED_KINDS.has(entry.step.kind)) {
-					aborted.add(`step ${entry.globalIndex + 1} (${entry.step.kind}) is not automatable in this version`)
+					aborted.add(`step ${entry.globalIndex + 1} (${entry.step.kind}) cannot be automated by the AI takeover (upload/script steps need a dedicated channel)`)
 					break
 				}
+				if ((entry.step as { execution?: string }).execution === 'manual') {
+					// 人工步骤：不由 agent 代执行，暂停等用户在内嵌浏览器完成并确认。
+					if (!deps.waitForUserOperation) {
+						aborted.add(`step ${entry.globalIndex + 1} is a manual step but no user-operation channel is available`)
+						break
+					}
+					const manualStart = Date.now()
+					try {
+						await deps.waitForUserOperation({
+							stepId: entry.stepId,
+							prompt: entry.step.label ?? '请人工完成该步骤，然后继续。',
+							signal: controller.signal,
+						})
+					} catch (err) {
+						if (controller.signal.aborted) break
+						aborted.add(`step ${entry.globalIndex + 1} manual confirmation failed: ${(err as Error).message}`)
+						break
+					}
+					seq += 1
+					records.push({
+						seq,
+						stepIndex: entry.globalIndex,
+						ok: true,
+						note: 'manual step confirmed by the user',
+						manual: true,
+						durationMs: Date.now() - manualStart,
+					})
+					completed.push(entry.globalIndex)
+					deps.onStep({
+						seq,
+						stepIndex: entry.globalIndex,
+						stepId: entry.stepId,
+						note: '用户已确认人工步骤完成',
+						ok: true,
+						manual: true,
+					})
+					continue
+				}
 
+				const activeAgent = agent!
 				const baseValues = {
 					stepIndex: String(entry.globalIndex + 1),
 					stepProjection: entry.text,
 				}
 				const task = formatTemplate(deps.templates.stepTask, {
 					...baseValues,
-					failureContext: first ? failureContext : '',
-					previousOutcome: first
-						? 'The page is exactly where the replay stopped.'
-						: `Previous step result: ${previousNote || 'completed'}.`,
+					failureContext: agentStarted ? '' : failureContext,
+					previousOutcome: agentStarted
+						? `Previous step result: ${previousNote || 'completed'}.`
+						: 'The page is exactly where the replay stopped.',
 				})
 					.replace(/^\n+/, '')
 				const runOptions = {
@@ -514,10 +834,10 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 				}
 
 				const startedAt = Date.now()
-				const raw = first
-					? await agent.run(task, { ...runOptions, schema: resultSchema })
-					: await agent.followUp(task, { ...runOptions, schema: resultSchema })
-				first = false
+				const raw = agentStarted
+					? await activeAgent.followUp(task, { ...runOptions, schema: resultSchema })
+					: await activeAgent.run(task, { ...runOptions, schema: resultSchema })
+				agentStarted = true
 				const result = raw as unknown as StepRunResult
 
 				const succeeded = (res: StepRunResult): boolean =>
@@ -532,11 +852,18 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 						stepProjection: entry.text,
 						attemptError: truncateText(error ?? 'unknown failure', 400),
 					})
-					const retriedRaw = await agent.followUp(retry, { ...runOptions, schema: resultSchema })
+					const retriedRaw = await activeAgent.followUp(retry, { ...runOptions, schema: resultSchema })
 					const retried = retriedRaw as unknown as StepRunResult
 					ok = succeeded(retried)
 					note = retried.status === 'completed' ? (retried.output?.note ?? '') : note
 					error = ok ? undefined : describeRunFailure(retried)
+				}
+
+				// 每步成功后回传元素证据（主进程抓当前打开页面的摘要，无需模型配合）。
+				let evidencePages: TakeoverEvidencePage[] | undefined
+				if (ok) {
+					const evidence = await deps.captureEvidence?.().catch(() => null)
+					if (evidence?.pages.length) evidencePages = evidence.pages
 				}
 
 				seq += 1
@@ -550,6 +877,7 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 					agentSteps: result.steps,
 					usageTotalTokens: result.usage.totalTokens,
 					durationMs: Date.now() - startedAt,
+					...(evidencePages ? { evidencePages } : {}),
 				})
 				previousNote = ok ? note || 'completed' : `failed: ${error ?? ''}`
 
@@ -565,8 +893,87 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 						ok: false,
 						...(error ? { error } : {}),
 					})
-					// 单步两次尝试失败即中止：不硬闯后续步骤（现场已偏离录制预期）。
+					// 单步两败：不硬闯，降级 free-run（剩余步骤合并为 goal 任务自主完成）。
+					enterFreeRun = true
 					break
+				}
+			}
+
+			/* ---- free-run 降级：剩余步骤合并为 goal 任务，「完成即报」收账 ---- */
+			if (enterFreeRun && agent && !controller.signal.aborted) {
+				const freeEntries = projections.filter((candidate) => !completed.includes(candidate.globalIndex))
+				if (freeEntries.length) {
+					const stepList = freeEntries
+						.map((candidate) => `Step ${candidate.globalIndex + 1}: ${candidate.text}`)
+						.join('\n')
+					const task = formatTemplate(deps.templates.freeRunTask, {
+						previousOutcome: `Previous step result: failed: ${truncateText(previousNote, 400)}`,
+						stepList,
+					})
+						.replace(/^\n+/, '')
+					freeRunActive = true
+					freeRunOnMark = (globalIndex, evidence) => {
+						const entry = projections.find((candidate) => candidate.globalIndex === globalIndex)!
+						seq += 1
+						records.push({
+							seq,
+							stepIndex: globalIndex,
+							ok: true,
+							note: evidence || 'completed in free-run mode',
+							...(evidence ? { evidence } : {}),
+							freeRun: true,
+							durationMs: 0,
+						})
+						completed.push(globalIndex)
+						deps.onStep({
+							seq,
+							stepIndex: globalIndex,
+							stepId: entry.stepId,
+							note: evidence || 'completed in free-run mode',
+							ok: true,
+							freeRun: true,
+						})
+					}
+					const freeStart = Date.now()
+					let freeResult: StepRunResult | undefined
+					let freeError: string | undefined
+					try {
+						const raw = await agent.followUp(task, {
+							schema: resultSchema,
+							maxSteps: FREE_RUN_MAX_STEPS,
+							timeoutMs: FREE_RUN_TIMEOUT_MS,
+							signal: controller.signal,
+						})
+						freeResult = raw as unknown as StepRunResult
+					} catch (err) {
+						// 预算尽/agent 异常也算 free-run 的正常终点；已收账的完成不丢。
+						freeError = controller.signal.aborted
+							? 'free-run stopped (budget or user abort)'
+							: (err as Error).message
+					} finally {
+						freeRunActive = false
+						freeRunOnMark = null
+					}
+					// free-run 结束后对最终现场补一次证据快照（运行中不能并发评估页面）。
+					const evidencePages =
+						(await deps.captureEvidence?.().catch(() => null))?.pages ?? undefined
+					seq += 1
+					records.push({
+						seq,
+						stepIndex: -1,
+						ok: Boolean(freeResult?.status === 'completed') && !freeError,
+						note:
+							freeError ??
+							(freeResult?.status === 'completed'
+								? (freeResult.output?.note ?? 'free-run finished')
+								: describeRunFailure(freeResult ?? { status: 'error', steps: 0, usage: { totalTokens: 0 } })),
+						freeRun: true,
+						agentSteps: freeResult?.steps,
+						usageTotalTokens: freeResult?.usage?.totalTokens,
+						durationMs: Date.now() - freeStart,
+						...(evidencePages?.length ? { evidencePages } : {}),
+					})
+					previousNote = `free-run finished (${completed.length}/${projections.length} done)`
 				}
 			}
 
@@ -574,21 +981,44 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 				.map((p) => p.globalIndex)
 				.filter((index) => !completed.includes(index))
 			const allDone = completed.length === projections.length
+			const freeRunCompleted = records.filter((record) => record.freeRun && record.ok && record.stepIndex >= 0)
+				.length
+			const manualCompleted = records.filter((record) => record.manual).length
+			const skippedNote = routing.skipped.length
+				? ` ${routing.skipped.length} step(s) were skipped by gate conditions before takeover.`
+				: ''
 			if (allDone) {
-				summary = `AI completed all ${projections.length} remaining step(s).`
+				summary = `AI completed all ${projections.length} remaining step(s)${
+					freeRunCompleted ? ` (${freeRunCompleted} in free-run mode)` : ''
+				}${manualCompleted ? ` (${manualCompleted} confirmed manually by the user)` : ''}.${skippedNote}`
 			} else if (controller.signal.aborted) {
-				summary = `AI takeover stopped (${completed.length}/${projections.length} remaining steps completed).`
+				summary = `AI takeover stopped (${completed.length}/${projections.length} remaining steps completed${
+					freeRunCompleted ? `, ${freeRunCompleted} in free-run mode` : ''
+				}).${skippedNote}`
 			} else if (aborted.size) {
-				summary = `AI takeover stopped before finishing: ${[...aborted][0]}. Completed ${completed.length}/${projections.length}.`
+				summary = `AI takeover stopped before finishing: ${[...aborted][0]}. Completed ${completed.length}/${projections.length}${
+					freeRunCompleted ? ` (${freeRunCompleted} in free-run mode)` : ''
+				}.${skippedNote}`
 			} else {
-				summary = `AI takeover stopped after a step could not be completed. Completed ${completed.length}/${projections.length}; the rest needs manual attention.`
+				summary = `AI takeover stopped after a step could not be completed. Completed ${completed.length}/${projections.length}${
+					freeRunCompleted ? ` (${freeRunCompleted} in free-run mode)` : ''
+				}; the rest needs manual attention.${skippedNote}`
 			}
+			if (routing.gateNotes.length) summary += ` Routing: ${routing.gateNotes.join('; ')}.`
 
 			const artifact = {
 				startedAt: new Date().toISOString(),
 				flowId: flow.id,
 				fromStepIndex,
 				model: `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
+				routing: {
+					gates: routing.gateNotes,
+					skipped: routing.skipped.map((skip) => ({
+						stepId: skip.step.stepId,
+						stepIndex: skip.step.index,
+						reason: skip.reason,
+					})),
+				},
 				steps: records,
 				completed,
 				summary,
@@ -604,7 +1034,7 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 			})
 		} finally {
 			clearTimeout(deadline)
-			await agent.close().catch(() => undefined)
+			await agent?.close().catch(() => undefined)
 		}
 	})()
 

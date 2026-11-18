@@ -40,8 +40,11 @@ const api = {
 		reload: (tabId?: string) => ipcRenderer.invoke('recording:reload', tabId),
 		/** 获取内嵌浏览器当前 URL */
 		currentUrl: () => ipcRenderer.invoke('recording:currentUrl'),
-		saveVideo: (opts: { recordingId: string; taskCode: string; dataUrl: string }) =>
-			ipcRenderer.invoke('recording:saveVideo', opts),
+		/** 读取一段 rrweb 录制（manifest + 各标签页事件流），Record 标签页回放用 */
+		loadRrweb: (dir: string) => ipcRenderer.invoke('recording:loadRrweb', dir),
+		/** 只读 artifacts：返回录制 artifacts 根与 stepId → crop 截图 file:// URL（路径校验在主进程） */
+		artifactsPath: (opts: { taskCode: string; recordingId: string }) =>
+			ipcRenderer.invoke('recording:artifactsPath', opts),
 		persistMerged: (opts: { taskCode: string; flow: unknown; name: string }) =>
 			ipcRenderer.invoke('recording:persistMerged', opts),
 	},
@@ -90,6 +93,7 @@ const api = {
 				aiCompleted?: number
 				failedSteps?: Array<{ stepId: string; label?: string; error?: string }>
 				aiSteps?: string[]
+				artifactDir?: string
 			}
 		}) => ipcRenderer.invoke('pi:repairFlow', opts),
 	},
@@ -128,7 +132,6 @@ const api = {
 			'playback:aiDone',
 			'browser:urlChanged',
 			'browser:loading',
-			'recording:captureFrame',
 			'browser:tabOpened',
 			'ai:autoRefine',
 		]
