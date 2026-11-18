@@ -10,14 +10,14 @@
  * esbuild 直接打包本地 TS 源码；capture.js 作为 engine 下的静态资源随包分发。
  */
 import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { TaskStore, type RecordingMeta, type TaskProfilePatch } from './store.js'
 import { EngineBridge } from './engine-bridge.js'
-import { disposePiWorker, getPromptTemplates, getPiProxyOptions, getTakeoverModelConfig, piStatus, prewarmPi, runPiPrompt, isAutoRefineEnabled } from './pi-agent.js'
+import { disposePiWorker, getPromptTemplates, getPiProxyOptions, getTakeoverModelConfig, piStatus, prewarmPi, runPiPrompt } from './pi-agent.js'
 import { aiTakeoverInProgress, abortAiTakeover, startAiTakeover, type GateEvaluation, type TakeoverEvidence, type TakeoverEvidenceNode, type TakeoverEvidencePage } from './ai-takeover.js'
 import { perf, perfSinceAppStart } from './perf.js'
 import { elementKey, generateRefinedFlow, projectFlows, type ReanchorEntry } from './ai-refine.js'
@@ -653,72 +653,106 @@ async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Pr
 	return recording
 }
 
-/** REFINED-MMDD-HHmm 使用细化生成时刻的时间；重名追加 (2)/(3)。 */
-function refinedRecordingName(_sourceName: string, existingNames: Set<string>): string {
-	const now = new Date()
-	const mm = String(now.getMonth() + 1).padStart(2, '0')
-	const dd = String(now.getDate()).padStart(2, '0')
-	const hh = String(now.getHours()).padStart(2, '0')
-	const min = String(now.getMinutes()).padStart(2, '0')
-	const base = `REFINED-${mm}${dd}-${hh}${min}`
-	if (!existingNames.has(base)) return base
-	let suffix = 2
-	while (existingNames.has(`${base} (${suffix})`)) suffix++
-	return `${base} (${suffix})`
+/* ================================================================ */
+/* REFINED 单线演进：流程更新提案（proposal）与生效前历史快照         */
+/* ================================================================ */
+
+/** 提案文件（artifacts/<flowId>/proposal.json）的单槽数据形状。 */
+interface FlowProposal {
+	version: 1
+	createdAt: string
+	source: 'refine' | 'takeover-repair'
+	/** 完整且已通过 parseFlow 校验的 Flow。 */
+	flow: Flow
+	summary: string
+	risks: string[]
+	/** 生成提案时正式 Flow 的 version；Apply 时必须与当前 version 一致。 */
+	baseVersion: number
 }
 
-const autoRefineInFlight = new Set<string>()
+const PROPOSAL_SOURCES = ['refine', 'takeover-repair'] as const
 
-function emitAutoRefine(payload: Record<string, unknown>): void {
-	if (!mainWindow.isDestroyed()) mainWindow.webContents.send('ai:autoRefine', payload)
+function proposalPathOf(recording: RecordingMeta): string {
+	return join(recording.artifactsDir, 'proposal.json')
+}
+
+/** 原子写小 JSON（tmp + rename；临时文件与目标同目录保证 rename 原子性）。 */
+async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
+	await mkdir(dirname(file), { recursive: true })
+	const tmp = `${file}.tmp`
+	await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
+	await rename(tmp, file)
+}
+
+/** 读提案：文件不存在/损坏时返回 null（文件是唯一事实源，标记仅作提示）。 */
+async function readProposal(recording: RecordingMeta): Promise<FlowProposal | null> {
+	try {
+		const raw = JSON.parse(await readFile(proposalPathOf(recording), 'utf8')) as FlowProposal
+		if (
+			!raw ||
+			typeof raw !== 'object' ||
+			raw.version !== 1 ||
+			!raw.flow ||
+			typeof raw.flow !== 'object' ||
+			typeof raw.baseVersion !== 'number'
+		) {
+			return null
+		}
+		return raw
+	} catch {
+		return null
+	}
+}
+
+interface FlowHistoryEntry {
+	version: number
+	at: string
+	source: 'human' | 'refine-apply' | 'repair-apply'
+	summary: string
 }
 
 /**
- * 录制停止后的自动细化：走与手动细化相同的生成管线（投影 → Pi → 再水化 →
- * parseFlow 校验），成功后经 persistMergedFlow 另存为 REFINED 录制并广播
- * ai:autoRefine。原始录制始终保持原样；任何失败只以事件告知，不影响 Stop。
+ * 生效前历史快照：把即将被覆盖的完整旧版 Flow 存入
+ * artifacts/<flowId>/history/v<N>-<ts>.json，并维护 index.json 条目表。
+ * 只存不用（无查看 UI）；任何写失败只记日志，绝不阻塞流程生效主流程。
  */
-async function autoRefineRecording(taskCode: string, recording: RecordingMeta): Promise<void> {
-	if (autoRefineInFlight.has(recording.id)) return
-	autoRefineInFlight.add(recording.id)
+async function writeFlowHistorySnapshot(
+	recording: RecordingMeta,
+	flowBefore: Flow,
+	source: FlowHistoryEntry['source'],
+	summary: string,
+): Promise<void> {
 	try {
-		const status = await piStatus()
-		if (!status.available) {
-			emitAutoRefine({ state: 'skipped', taskCode, recordingId: recording.id, reason: status.error })
-			return
+		const dir = join(recording.artifactsDir, 'history')
+		const now = new Date()
+		const pad = (value: number) => String(value).padStart(2, '0')
+		const ts =
+			`${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+			`-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+		await writeJsonAtomic(join(dir, `v${flowBefore.version}-${ts}.json`), flowBefore)
+		const indexFile = join(dir, 'index.json')
+		let entries: FlowHistoryEntry[] = []
+		try {
+			const parsed = JSON.parse(await readFile(indexFile, 'utf8')) as { entries?: unknown }
+			if (Array.isArray(parsed?.entries)) {
+				entries = parsed.entries.filter(
+					(entry): entry is FlowHistoryEntry =>
+						!!entry &&
+						typeof entry === 'object' &&
+						typeof (entry as { version?: unknown }).version === 'number' &&
+						typeof (entry as { at?: unknown }).at === 'string',
+				)
+			}
+		} catch {
+			/* 首次写入或 index 损坏：从空表重建 */
 		}
-		const result = await generateRefinedFlow({
-			flowFiles: [recording.flowFile],
-			mode: 'auto',
-			templates: getPromptTemplates().generation,
-			runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
-		})
-		if (!result.ok) {
-			emitAutoRefine({ state: 'failed', taskCode, recordingId: recording.id, error: result.error })
-			return
-		}
-		await taskStore.list()
-		const names = new Set((taskStore.get(taskCode)?.recordings ?? []).map((item) => item.name))
-		const name = refinedRecordingName(recording.name, names)
-		const refined = await persistMergedFlow(taskCode, result.flow, name)
-		emitAutoRefine({
-			state: 'done',
-			taskCode,
-			sourceRecordingId: recording.id,
-			refinedRecordingId: refined.id,
-			name,
-		})
+		entries.push({ version: flowBefore.version, at: now.toISOString(), source, summary })
+		await writeJsonAtomic(indexFile, { version: 1, entries })
 	} catch (error) {
-		emitAutoRefine({
-			state: 'failed',
-			taskCode,
-			recordingId: recording.id,
-			error: error instanceof Error ? error.message : String(error),
-		})
-	} finally {
-		autoRefineInFlight.delete(recording.id)
+		console.warn(`[flowlink] 历史快照写入失败（忽略，不阻塞流程生效）: ${(error as Error).message}`)
 	}
 }
+
 
 /** 所有 Stop/Test reset 共用同一份收尾，避免并发删除、重复保存或旧会话复活。 */
 async function stopRecordingSession(options: { discard?: boolean } = {}): Promise<RecordingStopResult> {
@@ -797,11 +831,8 @@ async function stopRecordingSession(options: { discard?: boolean } = {}): Promis
 				stepScreenshots,
 			}
 			await taskStore.addRecording(recTaskCode, recording)
-			// 元数据已持久化后火后即忘地触发自动细化；不阻塞 Stop 响应，
-			// 失败只通过 ai:autoRefine 事件告知，细化产物（isMerged）本身不再二次细化。
-			if (!recording.isMerged && isAutoRefineEnabled()) {
-				void autoRefineRecording(recTaskCode, recording)
-			}
+			// REFINED 只来自用户在 AI 面板主动 Refine（第三轮决策：停止录屏
+			// 不再自动生成细化孪生；autoRefine 设置与 ai:autoRefine 事件已移除）。
 			// 先持久化元数据再发送完成事件，确保 UI 收到通知后能立即重新加载。
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('recording:done', { recording })
@@ -2196,6 +2227,8 @@ function registerIpc(): void {
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
 			const flow = await loadFlow(recording.flowFile)
+			// 人工编辑生效前先存旧版历史快照（只存不用；写失败不阻塞保存）。
+			await writeFlowHistorySnapshot(recording, flow, 'human', 'Manual edit (Process/Instruction)')
 			const updated = parseFlow({
 				...flow,
 				version: flow.version + 1,
@@ -2203,6 +2236,133 @@ function registerIpc(): void {
 			}, recording.flowFile)
 			await saveFlow(updated, recording.flowFile, { backup: true })
 			return updated
+		},
+	)
+
+	/* ---------- REFINED 单线演进：提案落盘 / 读取 / 应用 / 丢弃 ---------- */
+	ipcMain.handle(
+		'flow:saveProposal',
+		async (
+			_event,
+			opts: {
+				taskCode: string
+				recordingId: string
+				source: (typeof PROPOSAL_SOURCES)[number]
+				flow: unknown
+				summary?: string
+				risks?: string[]
+			},
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				typeof opts.source !== 'string' ||
+				!PROPOSAL_SOURCES.includes(opts.source as (typeof PROPOSAL_SOURCES)[number]) ||
+				!opts.flow ||
+				typeof opts.flow !== 'object'
+			) {
+				throw new Error('提案保存请求无效')
+			}
+			await taskStore.list()
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			// 分流守卫：提案只面向 REFINED（isMerged）记录；原始 Record 必须走另存新纪录路径。
+			if (!recording.isMerged) throw new Error('原始录制不适用提案（请走另存新纪录路径）')
+			const current = await loadFlow(recording.flowFile)
+			// 与 saveFlow 同一约束：先完整校验再落盘；单槽设计，新提案覆盖旧提案。
+			const flow = parseFlow(opts.flow, proposalPathOf(recording))
+			const createdAt = new Date().toISOString()
+			const proposal: FlowProposal = {
+				version: 1,
+				createdAt,
+				source: opts.source,
+				flow,
+				summary: typeof opts.summary === 'string' ? opts.summary : '',
+				risks: Array.isArray(opts.risks)
+					? opts.risks.filter((risk): risk is string => typeof risk === 'string')
+					: [],
+				baseVersion: current.version,
+			}
+			await writeJsonAtomic(proposalPathOf(recording), proposal)
+			await taskStore.patchRecording(opts.taskCode, opts.recordingId, {
+				pendingProposal: { at: createdAt, source: opts.source },
+			})
+			if (!mainWindow.isDestroyed()) {
+				mainWindow.webContents.send('ai:proposal', {
+					taskCode: opts.taskCode,
+					recordingId: opts.recordingId,
+					at: createdAt,
+					source: opts.source,
+				})
+			}
+			return { createdAt, source: opts.source, baseVersion: current.version }
+		},
+	)
+
+	ipcMain.handle(
+		'flow:loadProposal',
+		async (_event, opts: { taskCode: string; recordingId: string }) => {
+			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
+				throw new Error('提案读取请求无效')
+			}
+			await taskStore.list()
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			return readProposal(recording)
+		},
+	)
+
+	ipcMain.handle(
+		'flow:applyProposal',
+		async (_event, opts: { taskCode: string; recordingId: string }) => {
+			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
+				throw new Error('提案应用请求无效')
+			}
+			await taskStore.list()
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const proposal = await readProposal(recording)
+			if (!proposal) throw new Error('当前没有待决定的流程更新提案')
+			const current = await loadFlow(recording.flowFile)
+			if (proposal.baseVersion !== current.version) {
+				throw new Error(
+					`提案基于 v${proposal.baseVersion} 生成，当前流程已是 v${current.version}（提案生成后有新的修改生效）。请先 Discard 该提案，再重新生成。`,
+				)
+			}
+			// 生效前先存旧版历史快照（source 按提案来源映射；写失败不阻塞）。
+			await writeFlowHistorySnapshot(
+				recording,
+				current,
+				proposal.source === 'takeover-repair' ? 'repair-apply' : 'refine-apply',
+				proposal.summary || `Apply ${proposal.source} proposal`,
+			)
+			const updated = parseFlow({ ...proposal.flow, version: current.version + 1 }, recording.flowFile)
+			await saveFlow(updated, recording.flowFile, { backup: true })
+			// 提案文件与标记同生同灭；清理失败只记日志（残留提案会因 baseVersion
+			// 落后被 Apply 拒绝并提示重新生成，用户可 Discard 兜底）。
+			try {
+				await rm(proposalPathOf(recording), { force: true })
+				await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingProposal: undefined })
+			} catch (error) {
+				console.warn(`[flowlink] 提案清理失败（忽略）: ${(error as Error).message}`)
+			}
+			return updated
+		},
+	)
+
+	ipcMain.handle(
+		'flow:discardProposal',
+		async (_event, opts: { taskCode: string; recordingId: string }) => {
+			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
+				throw new Error('提案丢弃请求无效')
+			}
+			await taskStore.list()
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			await rm(proposalPathOf(recording), { force: true })
+			await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingProposal: undefined })
+			return true
 		},
 	)
 }

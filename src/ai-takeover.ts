@@ -2,8 +2,8 @@
  * AI 接管续跑（browser-use）：Test 回放失败后由用户触发，主进程用
  * @browser_use/pi agent 附着内嵌浏览器（CDP），按剩余步骤逐个执行。
  *
- * 边界（docs/plan-test-failure-ai-takeover-browser-use.md + 强化计划
- * docs/plan-ai-takeover-hardening.md）：
+ * 边界（docs/archive/plan-test-failure-ai-takeover-browser-use.md + 强化计划
+ * docs/archive/plan-ai-takeover-hardening.md）：
  * - 只产生运行时执行轨迹与 artifact，绝不写回源 Flow（observed 不可变）。
  * - secret 变量只经 sensitiveData 通道（SDK 脱敏），不进任务文本/日志/artifact；
  *   剩余步骤引用了缺失值的 secret 变量时，接管开始前直接报错。

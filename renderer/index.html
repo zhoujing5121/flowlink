@@ -767,14 +767,6 @@
             >
               AI Continue · fix failed step, then resume
             </button>
-            <button
-              type="button"
-              id="aiTakeoverAll"
-              class="ai-continue-test"
-              hidden
-            >
-              AI: run all remaining steps
-            </button>
             <div class="quick-action-group" data-quick-block="group" hidden>
               <div class="assistant-group-options">
                 <button type="button" id="assistantGroupRecord">
@@ -1106,6 +1098,73 @@
                       +
                     </button>
                     <button data-canvas-fit>Fit to canvas</button>
+                  </div>
+                  <!-- REFINED 单线演进：未决定提案的并排对比视图（接管整个画布） -->
+                  <div class="process-proposal" hidden>
+                    <div class="process-proposal-banner">
+                      <div class="proposal-banner-main">
+                        <span class="proposal-banner-title">
+                          有来自 AI 的流程更新待决定
+                        </span>
+                        <span class="proposal-banner-meta"></span>
+                      </div>
+                      <div class="proposal-banner-actions">
+                        <button
+                          type="button"
+                          class="btn"
+                          data-proposal-action="apply"
+                        >
+                          Apply
+                        </button>
+                        <button
+                          type="button"
+                          class="btn secondary"
+                          data-proposal-action="discard"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                    <div class="process-proposal-panes">
+                      <section
+                        class="proposal-pane"
+                        data-proposal-pane="current"
+                      >
+                        <header class="proposal-pane-title">
+                          <span>当前流程</span>
+                          <span class="proposal-pane-version"></span>
+                        </header>
+                        <div class="proposal-pane-scroll">
+                          <div
+                            class="process-canvas-world proposal-world"
+                          ></div>
+                        </div>
+                      </section>
+                      <section
+                        class="proposal-pane"
+                        data-proposal-pane="proposed"
+                      >
+                        <header class="proposal-pane-title">
+                          <span>提案流程</span>
+                          <span class="proposal-pane-version"></span>
+                        </header>
+                        <div class="proposal-pane-scroll">
+                          <div
+                            class="process-canvas-world proposal-world"
+                          ></div>
+                        </div>
+                      </section>
+                    </div>
+                    <footer class="process-proposal-notes">
+                      <p class="proposal-summary" hidden></p>
+                      <p class="proposal-risks" hidden></p>
+                      <p class="proposal-stale" role="alert" hidden></p>
+                      <div class="proposal-legend">
+                        <span class="proposal-legend-item added">新增</span>
+                        <span class="proposal-legend-item removed">删除</span>
+                        <span class="proposal-legend-item changed">修改</span>
+                      </div>
+                    </footer>
                   </div>
                 </div>
                 <div class="instruction-view" data-result-tab="Instruction" hidden>
@@ -1773,22 +1832,6 @@
         <div class="step-detail-fields" data-group-details hidden></div>
         <p class="instruction-step-error" role="alert" hidden></p>
       </div>
-    </template>
-    <template id="instructionPolishTemplate">
-      <dialog class="reference-dialog instruction-polish-dialog">
-        <h2>AI 润色步骤描述</h2>
-        <p class="instruction-polish-note">
-          Pi 只改写每一步的业务语言描述（label），不改动步骤结构、元素证据与变量。确认后写回当前录制并自动备份。
-        </p>
-        <ul class="instruction-polish-diff"></ul>
-        <p class="process-step-error" role="alert" hidden></p>
-        <div class="reference-dialog-actions">
-          <button type="button" class="btn" data-polish-apply>应用修改</button>
-          <button type="button" class="btn secondary" data-polish-cancel>
-            取消
-          </button>
-        </div>
-      </dialog>
     </template>
     <template id="referenceRowTemplate">
       <tr>

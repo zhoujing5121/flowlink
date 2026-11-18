@@ -1328,6 +1328,29 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
 
 function fillProcessPanel(panel, item) {
   const canvas = panel.querySelector(".process-canvas");
+  // 提案对比模式：存在未决定提案时接管整个 Process 画布（普通画布世界、
+  // 缩放控件、组编辑动作全部让位；bindProcessMap 据 dataset 跳过平移缩放）。
+  const proposalHost = canvas.querySelector(".process-proposal");
+  const proposal = item?.pendingProposal?.flow ? item.pendingProposal : null;
+  if (proposalHost) proposalHost.hidden = !proposal;
+  canvas.dataset.proposalActive = proposal ? "1" : "";
+  if (proposal) {
+    canvas.querySelector(".process-canvas-world").hidden = true;
+    canvas.querySelector(".canvas-view-controls").hidden = true;
+    // 对比视图自带状态提示：当前 Flow 加载中 / 加载失败（error）时在横幅下方显示。
+    const loadingStatus = canvas.querySelector(".process-status:not(.error)");
+    loadingStatus.hidden = !(item?.processFlowLoading && !item.processFlow);
+    if (!loadingStatus.hidden) loadingStatus.textContent = "正在加载当前流程用于对比…";
+    const errorStatus = canvas.querySelector(".process-status.error");
+    errorStatus.hidden = !(item?.processFlowError && !item.processFlow);
+    if (!errorStatus.hidden) errorStatus.textContent = item.processFlowError;
+    canvas.querySelectorAll(".process-source-legend").forEach((node) => node.remove());
+    canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
+    fillProposalCompareView(canvas, item, proposal);
+    return;
+  }
+  canvas.querySelector(".process-canvas-world").hidden = false;
+  canvas.querySelector(".canvas-view-controls").hidden = false;
   canvas.querySelector(".process-status:not(.error)").hidden =
     !item?.processFlowLoading;
   const error = canvas.querySelector(".process-status.error");
@@ -2100,6 +2123,13 @@ function fillInstructionPanel(panel, item) {
   item.instructionExpanded ??= [];
   item.instructionStepOpen ??= [];
   const editable = instructionEditable(item);
+  // 未决定提案与编辑互斥提示：编辑基于当前版本直接生效；提案基于生成时的
+  // 版本对比，编辑生效（version 前进）后 Apply 会被禁用并要求重新生成。
+  if (item.pendingProposal?.flow) {
+    status.textContent =
+      "存在未决定的 AI 流程更新提案：此处的编辑基于当前版本直接生效；请先在 Process 标签页 Apply 或 Discard（编辑生效后 Apply 会被禁用，需重新生成提案）。";
+    status.hidden = false;
+  }
   container.replaceChildren(
     ...groups.map((group) => {
       const expanded = item.instructionExpanded.includes(group.id);
@@ -2268,7 +2298,7 @@ function candidateValueText(candidate) {
   return String(value);
 }
 
-/** 技术抽屉：按 kind 输出结构化字段（字段矩阵见 docs/plan-instruction-revamp.md §3.2）。 */
+/** 技术抽屉：按 kind 输出结构化字段（字段矩阵见 docs/archive/plan-instruction-revamp.md §3.2）。 */
 function renderInstructionDrawer(fieldsEl, item, entry, flat) {
   const step = entry.step;
   fieldsEl.dataset.built = "true";
@@ -3014,142 +3044,6 @@ async function deleteInstructionStep(item, flatIndex) {
   }
 }
 
-/** AI 润色：pi:generateFlow 限定「只写 label」；diff 预览确认后写回当前录制。 */
-async function beginInstructionPolish(item) {
-  if (!item?.processFlow?.steps || !item.recordingId) return;
-  const bridge = window.flowlink?.pi;
-  if (!bridge?.generateFlow) {
-    showFlowlinkNotice("Pi 生成通道不可用。", "warn");
-    return;
-  }
-  let status;
-  try {
-    status = await bridge.status();
-  } catch {
-    status = { available: false, error: "Pi 状态检查失败" };
-  }
-  if (!status.available) {
-    showFlowlinkNotice(
-      "Pi 不可用：" + (status.error || "请检查模型配置"),
-      "warn",
-    );
-    return;
-  }
-  try {
-    const result = await bridge.generateFlow({
-      taskCode: currentFlow?.code || activeFlowKey,
-      recordingIds: [item.recordingId],
-      instruction:
-        "For each step, write a short plain-language business label in the source labels' language. Do not change step structure, ids, elements, variables, groups, or any other field — only add/rewrite the `label` field of each step.",
-    });
-    const proposed = new Map();
-    const walk = (steps, prefix) => {
-      for (const step of steps || []) {
-        const flatId = prefix ? prefix + "/" + step.id : step.id;
-        if (step.kind === "group") walk(step.steps, flatId);
-        else if (typeof step.label === "string" && step.label.trim())
-          proposed.set(flatId, step.label.trim());
-      }
-    };
-    walk(result.flow?.steps || [], "");
-    const groups = ensureProcessGroups(item);
-    const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
-    const diffs = [];
-    for (const entry of flat.entries) {
-      const next = proposed.get(entry.flattenedStepId);
-      if (next === undefined) continue;
-      const old = entry.step.label?.trim() || "";
-      if (next === old) continue;
-      diffs.push({
-        flatId: entry.flattenedStepId,
-        next,
-        old: old || processStepLabel(entry.step, entry.index, groups),
-      });
-    }
-    if (!diffs.length) {
-      showFlowlinkNotice("Pi 未提出任何描述修改。");
-      return;
-    }
-    await confirmInstructionPolish(item, diffs);
-  } catch (error) {
-    showFlowlinkNotice(
-      "AI 润色失败：" + (error instanceof Error ? error.message : String(error)),
-      "warn",
-    );
-  }
-}
-
-function confirmInstructionPolish(item, diffs) {
-  return new Promise((resolve) => {
-    const dialog = rowTemplate("instructionPolishTemplate").cloneNode(true);
-    const list = dialog.querySelector(".instruction-polish-diff");
-    list.replaceChildren(
-      ...diffs.map((diff) => {
-        const li = document.createElement("li");
-        const old = document.createElement("span");
-        old.className = "polish-diff-old";
-        old.textContent = diff.old;
-        const arrow = document.createElement("span");
-        arrow.className = "polish-diff-arrow";
-        arrow.textContent = " → ";
-        const next = document.createElement("span");
-        next.className = "polish-diff-new";
-        next.textContent = diff.next;
-        li.append(old, arrow, next);
-        return li;
-      }),
-    );
-    const error = dialog.querySelector(".process-step-error");
-    const close = () => {
-      dialog.close();
-      dialog.remove();
-      resolve();
-    };
-    dialog.oncancel = (event) => {
-      event.preventDefault();
-      close();
-    };
-    dialog.querySelector("[data-polish-cancel]").onclick = close;
-    dialog.querySelector("[data-polish-apply]").onclick = () => {
-      void (async () => {
-        try {
-          // 先冲掉未保存的防抖编辑（flush 会替换 steps 引用），再按 id 写回 label。
-          await flushInstructionEdits(item);
-          const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
-          const byId = new Map(
-            flat.entries.map((entry) => [entry.flattenedStepId, entry.step]),
-          );
-          let applied = false;
-          for (const diff of diffs) {
-            const step = byId.get(diff.flatId);
-            if (step) {
-              step.label = diff.next;
-              applied = true;
-            }
-          }
-          if (!applied) {
-            error.hidden = false;
-            error.textContent = "Pi 结果与当前步骤无法对齐，未做修改。";
-            return;
-          }
-          await persistProcessFlow(item);
-          close();
-          renderSummaryWorkspace();
-        } catch (applyError) {
-          error.hidden = false;
-          error.textContent =
-            "写入失败：" +
-            (applyError instanceof Error
-              ? applyError.message
-              : String(applyError));
-        }
-      })();
-    };
-    document.body.appendChild(dialog);
-    dialog.showModal();
-  });
-}
-
 function fillReferencePanel(panel, item) {
   const section = panel.querySelector('[data-result-tab="Reference"]');
   const files = ensureReferenceFiles(item);
@@ -3462,9 +3356,49 @@ async function mountRrwebPlayer(root, rrwebDir) {
     .sort((a, b) => a.offset - b.offset);
 
   // 缩放：按第一个标签页的录制视口比例适配舞台宽度。
+  // 量测必须等 iframe 真实渲染：rrweb 的 iframe 文档是异步创建的，构造完成
+  // 瞬间 rect 常为 0×0（真机实测 t=0 为 0×0、约 1.2s 后才正常），按 0 量测
+  // 会把舞台高度算错、内容出不了可视区（回放黑屏）。rAF/timeout 双驱动轮询
+  // 上限 3s，期间显示加载态；超时用兜底尺寸继续，不阻塞回放。
+  const measureNotice = rrwebPlayerNotice("正在准备回放画面…");
+  stage.appendChild(measureNotice);
+  const referenceRect = () => {
+    try {
+      return reference.replayer.iframe?.getBoundingClientRect() || null;
+    } catch {
+      return null;
+    }
+  };
+  let docWidth = 0;
+  let docHeight = 0;
+  await new Promise((resolve) => {
+    const deadline = performance.now() + 3000;
+    const poll = () => {
+      if (mountId !== rrwebPlayerMountId) return resolve();
+      const rect = referenceRect();
+      if (rect && rect.width > 0 && rect.height > 0) {
+        docWidth = rect.width;
+        docHeight = rect.height;
+        return resolve();
+      }
+      if (performance.now() >= deadline) return resolve();
+      // rAF 优先（可见时最平滑），120ms timeout 兜底（窗口隐藏时 rAF 停发）。
+      let settled = false;
+      const tick = () => {
+        if (settled) return;
+        settled = true;
+        poll();
+      };
+      requestAnimationFrame(tick);
+      setTimeout(tick, 120);
+    };
+    poll();
+  });
+  measureNotice.remove();
+  if (mountId !== rrwebPlayerMountId) return;
   try {
-    const docWidth = reference.replayer.iframe.getBoundingClientRect().width || 1280;
-    const docHeight = reference.replayer.iframe.getBoundingClientRect().height || 720;
+    docWidth = docWidth || 1280;
+    docHeight = docHeight || 720;
     const stageWidth = Math.max(240, stage.clientWidth || 800);
     const scale = Math.min(2, stageWidth / docWidth);
     for (const entry of session.players.values()) {
@@ -4720,6 +4654,19 @@ function renderSummaryWorkspace() {
         renderSummaryWorkspace();
     });
   }
+  // 提案检测：Process 标签页打开时按需查一次未决定提案（文件是事实源）。
+  // pendingProposalLoaded 由 ai:proposal 事件与生成方置脏。
+  if (
+    active === "Process" &&
+    item?.recordingId &&
+    !item.pendingProposalLoaded &&
+    !item.pendingProposalLoading
+  ) {
+    void hydrateProcessProposal(item).then(() => {
+      if (currentAssistantItem() === item && item.resultTab === "Process")
+        renderSummaryWorkspace();
+    });
+  }
   bindReferenceFiles();
   bindMetricPreferences();
   bindScreenshotZoom();
@@ -4989,9 +4936,7 @@ const REFINE_PRESETS = [
   "Add stability waits around page transitions",
   "Add assertions for key outcomes",
   "Move repeated text inputs into Reference variables",
-  "Optimize step descriptions (labels only)",
 ];
-const POLISH_LABEL_PRESET = "Optimize step descriptions (labels only)";
 
 function submitRefineOptions() {
   const state = recordingSession();
@@ -5000,35 +4945,11 @@ function submitRefineOptions() {
       document.querySelector(`input[data-refine-preset="${index}"]`)?.checked,
   );
   const freeText = $("refineFreeText")?.value.trim() || "";
-  // 「仅优化步骤描述」单独勾选且无自由文本：直达 Instruction 润色管线
-  // （label-only 生成 + diff 确认写回当前录制）；与其它预设或自由文本
-  // 组合时并入 instruction，走全量 refine（生成提示词本就要求业务语言 label）。
-  if (presets.length === 1 && presets[0] === POLISH_LABEL_PRESET && !freeText) {
-    state.aiMode = undefined;
-    renderAIPanel();
-    void submitInstructionPolishPreset();
-    return;
-  }
   const instruction =
     [...presets, freeText].filter(Boolean).join(" ") ||
     "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
   state.aiMode = undefined;
   invokeAIMerge("input", instruction, { forceMaterial: true });
-}
-
-/** AI 面板润色预设入口（原 Instruction 头部按钮已移除）：对当前聚焦的
- * 录制跑 label-only 润色，必要时先补载它保存的 Flow。 */
-async function submitInstructionPolishPreset() {
-  const item = currentAssistantItem();
-  if (item && !item.processFlowLoaded) await hydrateProcessFlow(item);
-  if (!item?.processFlow?.steps || !item.recordingId) {
-    showFlowlinkNotice(
-      "润色步骤描述需要当前打开一个已保存的录制（先在列表中选中它）。",
-      "warn",
-    );
-    return;
-  }
-  await beginInstructionPolish(item);
 }
 
 /* ---------------- @ 提及与附件（录制 id 进 UI 状态，Flow 载荷只在主进程组装） ---------------- */
@@ -5281,6 +5202,21 @@ function renderAIPanel() {
     } else if (roundNote) {
       roundNote.remove();
     }
+    // 未决定提案提示（Test 侧）：本次测试基于当前版本；测试后的自动修复
+    // 会覆盖旧提案（单槽设计）。处理入口在 Process 标签页。
+    let proposalNote = roundHeading.querySelector(".test-proposal-note");
+    if (recording?.pendingProposal?.flow) {
+      if (!proposalNote) {
+        proposalNote = document.createElement("span");
+        proposalNote.className = "test-round-note test-proposal-note";
+        roundHeading.appendChild(proposalNote);
+      }
+      proposalNote.textContent = "· 有待决定提案";
+      proposalNote.title =
+        "存在未决定的 AI 流程更新提案：本次测试与后续自动修复基于当前版本，修复将覆盖旧提案；请在 Process 标签页 Apply 或 Discard。";
+    } else if (proposalNote) {
+      proposalNote.remove();
+    }
     const list = stepsHost.querySelector(".assistant-test-steps");
     stepsHost.querySelector("[data-test-empty]").hidden = !!testSteps.length;
     // 进度列表分组化：组标题行（编号+名称+组级状态）+ 组内步骤行；
@@ -5314,12 +5250,11 @@ function renderAIPanel() {
       }),
     );
     // 失败后的 AI 接管入口：有失败步骤、无运行中的回放/接管时显示。
-    // 主入口 = 单步 AI 接管（runAiAssistedTest：AI 只执行失败的那一步，
-    // 成功后从下一步恢复程序回放，最多 6 次单步介入，两败回退全量）；
-    // 次入口 = 旧全量接管（aiContinueFlowlinkTest：剩余步骤全部交给 agent）。
+    // 唯一入口 = 单步 AI 接管（runAiAssistedTest：AI 只执行失败的那一步，
+    // 成功后从下一步恢复程序回放，最多 6 次单步介入，同一单步两败即停；
+    // 第三轮决策：「接管全部剩余」入口已删除，remaining 仅存底层能力）。
     const aiContinue = quickHost.querySelector("#aiContinueTest");
-    const aiTakeoverAll = quickHost.querySelector("#aiTakeoverAll");
-    if (aiContinue || aiTakeoverAll) {
+    if (aiContinue) {
       const hasFail = results.some((result) => result?.status === "fail");
       const canContinue = !!(
         recording?.recordingId &&
@@ -5328,30 +5263,17 @@ function renderAIPanel() {
         !recording.assistedLoopActive &&
         !state.playbackInFlight
       );
-      if (aiContinue) {
-        aiContinue.hidden = !canContinue;
-        aiContinue.onclick = canContinue
-          ? () => {
-              if (typeof window.runAiAssistedTest === "function") {
-                void window.runAiAssistedTest(recording);
-              }
+      aiContinue.hidden = !canContinue;
+      aiContinue.onclick = canContinue
+        ? () => {
+            if (typeof window.runAiAssistedTest === "function") {
+              void window.runAiAssistedTest(recording);
             }
-          : null;
-      }
-      if (aiTakeoverAll) {
-        aiTakeoverAll.hidden = !canContinue;
-        aiTakeoverAll.onclick = canContinue
-          ? () => {
-              if (typeof window.aiContinueFlowlinkTest === "function") {
-                void window.aiContinueFlowlinkTest(recording);
-              }
-            }
-          : null;
-      }
+          }
+        : null;
     }
   } else {
     quickHost.querySelector("#aiContinueTest").hidden = true;
-    quickHost.querySelector("#aiTakeoverAll").hidden = true;
   }
   if (selectedGroup && !testTab)
     stepsHost.querySelector(".assistant-group-name").textContent =
@@ -5598,6 +5520,37 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   // 投影、提示词组装、$ref 再水化与 schema 校验都在主进程完成；渲染层只传
   // 录制 id 和纯文本对话，聊天与 Flow 载荷互不沾染。
   const result = await bridge.generateFlow({ taskCode, recordingIds, instruction: request, conversation });
+  // 分流（第三轮「REFINED 单线演进」）：唯一来源是已有 REFINED 记录时，
+  // AI 的修改落盘为该记录的流程更新提案（覆盖旧提案），Process 标签页
+  // 并排对比后 Apply / Discard；多来源合并或原始 Record → 生成新 REFINED 条目。
+  if (sources.length === 1 && sources[0].summary && sources[0].recordingId) {
+    const target = sources[0];
+    const saved = await window.flowlink.flow.saveProposal({
+      taskCode,
+      recordingId: target.recordingId,
+      source: "refine",
+      flow: result.flow,
+      summary: result.summary || "",
+      risks: Array.isArray(result.risks) ? result.risks : [],
+    });
+    const proposalState = recordingSession();
+    target.pendingProposalLoaded = false;
+    proposalState.focused = target.id;
+    proposalState.aiSourceIds = [target.id];
+    proposalState.view = "analysis";
+    proposalState.stage = "done";
+    proposalState.aiOpen = true;
+    renderRecordingWorkspace();
+    renderAIPanel();
+    appendAIMessage(
+      target,
+      "assistant",
+      `已生成流程更新提案（基于 v${saved.baseVersion}），请在 Process 标签页查看前后对比并决定 Apply / Discard。` +
+        `\n\n理由：\n${(Array.isArray(result.rationale) ? result.rationale : []).join("\n- ") || "见生成的步骤。"}` +
+        `\n\n风险 / 需验证：\n${(Array.isArray(result.risks) ? result.risks : []).join("\n- ") || "Apply 前建议先跑一次 Test。"}`,
+    );
+    return target;
+  }
   const flow = result.flow;
   const recording = await window.flowlink.recording.persistMerged({ taskCode, flow, name: result.title || flow.title });
   const refined = {
@@ -6127,6 +6080,373 @@ async function hydrateProcessFlow(item) {
       syncProcessFlowPresentation(item);
       rebuildItemTestFlow(item);
   }
+
+/* ============================================================
+ * REFINED 单线演进：流程更新提案（proposal）对比视图
+ *
+ * AI 针对已有 REFINED 记录的修改（面板 Refine / 接管后自动 repair）
+ * 落盘为 artifacts/<flowId>/proposal.json（主进程 flow:saveProposal）。
+ * Process 标签页检测到提案后进入并排对比视图：左右两张流程图复用
+ * FlowGraph.buildGraph/layoutGraph 与组卡渲染，差异高亮（新增绿 /
+ * 删除红 / 修改黄），Apply（主进程校验 baseVersion → 历史快照 →
+ * version+1 覆盖）或 Discard。文件是唯一事实源；重启后仍显示。
+ * ============================================================ */
+
+/** Process 标签页提案检测：一次性加载未决定提案（文件是事实源）。
+ * 读失败按无提案处理并标记已加载，避免每次渲染死循环重试；
+ * ai:proposal 事件与生成方会重置 pendingProposalLoaded 触发重查。 */
+async function hydrateProcessProposal(item) {
+  if (!item?.recordingId || !item.flowFile) return false;
+  if (!window.flowlink?.flow?.loadProposal) return false;
+  const taskCode = currentFlow?.code || activeFlowKey;
+  item.pendingProposalLoading = true;
+  try {
+    const proposal = await window.flowlink.flow.loadProposal({
+      taskCode,
+      recordingId: item.recordingId,
+    });
+    item.pendingProposal = proposal && proposal.flow ? proposal : null;
+    return true;
+  } catch (error) {
+    console.error("[process] 流程更新提案读取失败：", error);
+    item.pendingProposal = null;
+    return true;
+  } finally {
+    item.pendingProposalLoaded = true;
+    item.pendingProposalLoading = false;
+  }
+}
+
+/** 提案差异比较字段：label/expect/settle/isOptional/timeout/execution 与
+ * 各类值字段（value/key/url/assertion/…）。刻意不含 target 候选证据——
+ * 再水化/重锚定会微调候选顺序，属于生成管线噪声，不视为业务修改。 */
+const PROPOSAL_DIFF_FIELDS = [
+  "kind", "label", "execution", "isOptional", "timeout", "settle", "expect",
+  "value", "key", "url", "assertion", "trueGroupId", "falseGroupId",
+  "into", "prop", "attr", "ms", "condition", "files", "action", "promptText",
+  "code", "index", "button", "clickCount", "modifiers", "position", "clear",
+  "to", "delta",
+];
+
+function proposalStepSignature(step) {
+  const picked = {};
+  for (const field of PROPOSAL_DIFF_FIELDS) {
+    if (step && field in step) picked[field] = step[field];
+  }
+  return JSON.stringify(picked);
+}
+
+/** 提案差异：以扁平 stepId + 顶层组 id 对齐。返回
+ * {added, removed, changed, groupAdded, groupRemoved, groupChanged}（均为 Set）。 */
+function computeProposalDiff(currentFlow, proposalFlow) {
+  const currentFlat = FlowGraph.flattenFlowSteps(currentFlow?.steps || []);
+  const proposalFlat = FlowGraph.flattenFlowSteps(proposalFlow?.steps || []);
+  const stepsById = (flat) =>
+    new Map(flat.entries.map((entry) => [entry.flattenedStepId, entry.step]));
+  const currentSteps = stepsById(currentFlat);
+  const proposalSteps = stepsById(proposalFlat);
+  const added = new Set();
+  const removed = new Set();
+  const changed = new Set();
+  for (const [id, step] of proposalSteps) {
+    const before = currentSteps.get(id);
+    if (!before) added.add(id);
+    else if (proposalStepSignature(step) !== proposalStepSignature(before))
+      changed.add(id);
+  }
+  for (const id of currentSteps.keys()) if (!proposalSteps.has(id)) removed.add(id);
+  const groupsOf = (flow) =>
+    new Map(
+      (flow?.steps || [])
+        .filter((step) => step.kind === "group")
+        .map((group) => [group.id, group]),
+    );
+  const currentGroups = groupsOf(currentFlow);
+  const proposalGroups = groupsOf(proposalFlow);
+  const groupAdded = new Set();
+  const groupRemoved = new Set();
+  const groupChanged = new Set();
+  for (const [id, group] of proposalGroups) {
+    const before = currentGroups.get(id);
+    if (!before) {
+      groupAdded.add(id);
+      continue;
+    }
+    if ((group.label || "") !== (before.label || "")) groupChanged.add(id);
+  }
+  for (const id of currentGroups.keys())
+    if (!proposalGroups.has(id)) groupRemoved.add(id);
+  // 组内任一步骤差异（或组被增删）→ 该组卡描黄（同 id 内容有变化）。
+  const markGroupChangedByStep = (flat, idSet) => {
+    for (const entry of flat.entries) {
+      const gid = entry.groupId;
+      if (!gid || groupAdded.has(gid) || groupRemoved.has(gid) || groupChanged.has(gid))
+        continue;
+      if (idSet.has(entry.flattenedStepId)) groupChanged.add(gid);
+    }
+  };
+  markGroupChangedByStep(currentFlat, new Set([...removed, ...changed]));
+  markGroupChangedByStep(proposalFlat, new Set([...added, ...changed]));
+  return { added, removed, changed, groupAdded, groupRemoved, groupChanged };
+}
+
+function proposalSourceText(source) {
+  return source === "takeover-repair" ? "AI 接管后自动修复" : "AI 面板 Refine";
+}
+
+/** 对比视图的对比图渲染：复用 Process 画布的组卡/哨节点/判断节点/边管线，
+ * 各自独立 layout（无回放态叠加、无编辑动作、无选中态）。 */
+function renderProposalGraphWorld(world, item, flow, diff, side) {
+  const viewByGroupId = new Map(
+    ensureProcessGroups({ processFlow: flow, url: item.url }).map((group) => [
+      group.id,
+      group,
+    ]),
+  );
+  const graph = FlowGraph.buildGraph(flow);
+  const elements = new Map();
+  const children = [];
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "process-graph-edges");
+  children.push(svg);
+  if (!window.__flowlinkDagre) {
+    const notice = document.createElement("div");
+    notice.className = "proposal-pane-empty";
+    notice.textContent =
+      "Process 流程图布局引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
+    children.push(notice);
+  }
+  for (const node of graph.nodes) {
+    if (node.type === "start" || node.type === "end") {
+      const sentinel = document.createElement("div");
+      sentinel.className = "process-sentinel" + (node.type === "end" ? " end" : "");
+      sentinel.textContent = node.label;
+      children.push(sentinel);
+      elements.set(node.id, sentinel);
+      continue;
+    }
+    if (node.type === "decision") {
+      const decision = document.createElement("div");
+      decision.className = "process-decision";
+      decision.title = node.label;
+      const text = document.createElement("span");
+      text.textContent = node.label;
+      decision.appendChild(text);
+      const stepId = graph.entries[node.firstIndex]?.flattenedStepId;
+      if (stepId && diff.changed.has(stepId)) decision.classList.add("diff-changed");
+      children.push(decision);
+      elements.set(node.id, decision);
+      continue;
+    }
+    const view = graphNodeView(node, graph.entries, viewByGroupId);
+    if (!view) continue;
+    const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
+    const groupDiff =
+      side === "proposed"
+        ? diff.groupAdded.has(node.id)
+          ? "diff-added"
+          : diff.groupChanged.has(node.id)
+            ? "diff-changed"
+            : ""
+        : diff.groupRemoved.has(node.id)
+          ? "diff-removed"
+          : diff.groupChanged.has(node.id)
+            ? "diff-changed"
+            : "";
+    if (groupDiff) section.classList.add(groupDiff);
+    const icon = section.querySelector(".canvas-group-icon");
+    icon.src = groupFaviconUrl(view.url);
+    icon.onerror = () => {
+      icon.src = genericGroupIcon;
+      icon.onerror = null;
+    };
+    section.querySelector(".canvas-group-heading").textContent =
+      view.number + " · " + view.name;
+    const branchEntries = view.branchEntries || [];
+    const branchBadge = section.querySelector(".canvas-group-branch");
+    branchBadge.hidden = branchEntries.length === 0;
+    if (branchEntries.length) {
+      section.classList.add("branch-target");
+      branchBadge.textContent =
+        "分支 · " +
+        branchEntries
+          .map(
+            (entry) =>
+              `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+          )
+          .join("；");
+    }
+    section.querySelector(".canvas-group-nodes").replaceChildren(
+      ...(view.steps.length
+        ? view.steps
+            .slice(0, Math.max(0, node.lastIndex - node.firstIndex))
+            .map((text, index) => {
+              const row = canvasStepNode(view, text, index, true);
+              const stepId = view.flowSteps?.[index]?.flattenedStepId;
+              const stepDiff =
+                side === "proposed"
+                  ? diff.added.has(stepId)
+                    ? "diff-added"
+                    : diff.changed.has(stepId)
+                      ? "diff-changed"
+                      : ""
+                  : diff.removed.has(stepId)
+                    ? "diff-removed"
+                    : diff.changed.has(stepId)
+                      ? "diff-changed"
+                      : "";
+              if (stepDiff) row.classList.add(stepDiff);
+              return row;
+            })
+        : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
+    );
+    children.push(section);
+    elements.set(node.id, section);
+  }
+  world.replaceChildren(...children);
+  if (graph.nodes.length && window.__flowlinkDagre) {
+    const laid = FlowGraph.layoutGraph(graph, (node) => {
+      const el = elements.get(node.id);
+      return el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined;
+    });
+    if (laid) {
+      for (const node of graph.nodes) {
+        const el = elements.get(node.id);
+        if (!el || node.left === undefined) continue;
+        el.style.left = node.left + "px";
+        el.style.top = node.top + "px";
+      }
+      world.style.width = Math.max(1, graph.worldWidth) + "px";
+      world.style.height = Math.max(1, graph.worldHeight) + "px";
+      drawProcessGraphEdges(svg, world, graph, {
+        resultByStepId: new Map(),
+        hasResults: false,
+        runFinished: false,
+      });
+    } else {
+      world.style.width = "";
+      world.style.height = "";
+    }
+  } else {
+    world.style.width = "";
+    world.style.height = "";
+  }
+}
+
+/** 对比视图主体：横幅（来源/时间/基线版本）+ Apply/Discard + 并排双图 +
+ * summary/risks + 版本不一致警示。当前 Flow 未加载时只渲染横幅并等待
+ * hydrateProcessFlow 完成后的下一次重渲染。 */
+function fillProposalCompareView(canvas, item, proposal) {
+  const host = canvas.querySelector(".process-proposal");
+  const created = proposal.createdAt ? new Date(proposal.createdAt) : null;
+  host.querySelector(".proposal-banner-meta").textContent =
+    `${proposalSourceText(proposal.source)} · ${created ? created.toLocaleString() : ""} · 基于版本 v${proposal.baseVersion}`;
+  const summaryEl = host.querySelector(".proposal-summary");
+  summaryEl.hidden = !proposal.summary;
+  summaryEl.textContent = proposal.summary ? `摘要：${proposal.summary}` : "";
+  const risksEl = host.querySelector(".proposal-risks");
+  const risks = Array.isArray(proposal.risks) ? proposal.risks.filter(Boolean) : [];
+  risksEl.hidden = !risks.length;
+  risksEl.textContent = risks.length ? `风险 / 需验证：${risks.join("；")}` : "";
+  const current = item.processFlow;
+  const stale = !!current && current.version !== proposal.baseVersion;
+  const staleEl = host.querySelector(".proposal-stale");
+  staleEl.hidden = !stale;
+  if (stale) {
+    staleEl.textContent = `提案基于 v${proposal.baseVersion} 生成，当前流程已是 v${current.version}（提案生成后有新的修改生效）。Apply 已禁用：请先 Discard，再重新生成提案。`;
+  }
+  const busy = item.proposalApplying === true;
+  const applyBtn = host.querySelector('[data-proposal-action="apply"]');
+  const discardBtn = host.querySelector('[data-proposal-action="discard"]');
+  applyBtn.disabled = stale || !current || busy;
+  applyBtn.title = stale
+    ? "提案基线与当前版本不一致，请重新生成"
+    : current
+      ? ""
+      : "正在加载当前流程…";
+  discardBtn.disabled = busy;
+  applyBtn.onclick = () => void applyPendingProposal(item);
+  discardBtn.onclick = () => void discardPendingProposal(item);
+  host.querySelector(
+    '[data-proposal-pane="current"] .proposal-pane-version',
+  ).textContent = current ? `v${current.version}` : "";
+  host.querySelector(
+    '[data-proposal-pane="proposed"] .proposal-pane-version',
+  ).textContent = `v${proposal.baseVersion} → v${(current?.version ?? proposal.baseVersion) + 1}`;
+  const currentWorld = host.querySelector(
+    '[data-proposal-pane="current"] .proposal-world',
+  );
+  const proposedWorld = host.querySelector(
+    '[data-proposal-pane="proposed"] .proposal-world',
+  );
+  if (!current) {
+    // 当前 Flow 尚未加载：留空，hydrateProcessFlow 完成后的重渲染会补上。
+    currentWorld.replaceChildren();
+    proposedWorld.replaceChildren();
+    return;
+  }
+  const diff = computeProposalDiff(current, proposal.flow);
+  renderProposalGraphWorld(currentWorld, item, current, diff, "current");
+  renderProposalGraphWorld(proposedWorld, item, proposal.flow, diff, "proposed");
+}
+
+/** Apply：主进程校验 baseVersion → 存历史快照 → version+1 覆盖正式 Flow →
+ * 清提案与标记。成功后重载 processFlow（Test/Process/Instruction 随之刷新）。 */
+async function applyPendingProposal(item) {
+  if (!item?.recordingId || item.proposalApplying) return;
+  const taskCode = currentFlow?.code || activeFlowKey;
+  item.proposalApplying = true;
+  renderSummaryWorkspace();
+  try {
+    const flow = await window.flowlink.flow.applyProposal({
+      taskCode,
+      recordingId: item.recordingId,
+    });
+    item.pendingProposal = null;
+    item.pendingProposalLoaded = true;
+    item.lastTakeover = null;
+    item.selectedGroup = null;
+    item.processFlow = null;
+    item.processFlowLoaded = false;
+    item.processFlowError = "";
+    await hydrateProcessFlow(item);
+    rebuildItemTestFlow(item);
+    showFlowlinkNotice(`提案已应用，流程更新为 v${flow?.version ?? ""}`);
+  } catch (error) {
+    showFlowlinkNotice(
+      `提案应用失败：${error instanceof Error ? error.message : String(error)}`,
+      "warn",
+    );
+  } finally {
+    item.proposalApplying = false;
+    renderSummaryWorkspace();
+  }
+}
+
+/** Discard：删提案文件与标记，流程保持当前版本，回到普通 Process 视图。 */
+async function discardPendingProposal(item) {
+  if (!item?.recordingId || item.proposalApplying) return;
+  const taskCode = currentFlow?.code || activeFlowKey;
+  item.proposalApplying = true;
+  renderSummaryWorkspace();
+  try {
+    await window.flowlink.flow.discardProposal({
+      taskCode,
+      recordingId: item.recordingId,
+    });
+    item.pendingProposal = null;
+    item.pendingProposalLoaded = true;
+    showFlowlinkNotice("提案已丢弃，流程保持当前版本");
+  } catch (error) {
+    showFlowlinkNotice(
+      `提案丢弃失败：${error instanceof Error ? error.message : String(error)}`,
+      "warn",
+    );
+  } finally {
+    item.proposalApplying = false;
+    renderSummaryWorkspace();
+  }
+}
 const genericGroupIcon =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%2214%22 height=%2214%22 rx=%222%22 fill=%22none%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3Cpath d=%22M4 8h8M8 4v8%22 stroke=%22%23838B92%22 stroke-width=%221.5%22/%3E%3C/svg%3E";
 function groupFaviconUrl(url) {
@@ -6250,7 +6570,7 @@ async function rebuildItemTestFlow(item) {
     } catch {}
   }
   // 不再从界面草稿伪重建测试流：该路径把「目标」降级为单一 text 候选，
-  // 破坏录制证据链（docs/plan-instruction-revamp.md §2）。演示/草稿条目
+  // 破坏录制证据链（docs/archive/plan-instruction-revamp.md §2）。演示/草稿条目
   // 的 Test 列表退回本地文本行展示。
   item.testFlowSteps = [];
   item.testResults = [];
@@ -7197,6 +7517,9 @@ function bindProcessMap() {
     item = currentAssistantItem();
   if (!canvas || canvas.hidden || !item) return;
   const world = canvas.querySelector(".process-canvas-world");
+  // 提案对比视图接管画布时，停用普通画布的平移/缩放/选中/右键菜单：
+  // 对比双图在各自的滚动容器内原生滚动，Apply/Discard 走自己的按钮。
+  const proposalActive = () => canvas.dataset.proposalActive === "1";
   const placeGroupActions = () => {
     const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
         (element) => element.dataset.canvasGroup === item.selectedGroup,
@@ -7257,6 +7580,7 @@ function bindProcessMap() {
   processCanvasObserver.observe(canvas);
   processCanvasObserver.observe(world);
   canvas.onclick = (e) => {
+    if (proposalActive()) return;
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
     const select =
       e.target.closest("[data-group-select]") ||
@@ -7347,6 +7671,7 @@ function bindProcessMap() {
     if (e.target.closest("[data-canvas-fit]")) fit();
   };
   canvas.onwheel = (e) => {
+    if (proposalActive()) return; // 对比视图：滚轮交给滚动容器原生滚动
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     scale(
@@ -7356,6 +7681,7 @@ function bindProcessMap() {
     );
   };
   canvas.onpointerdown = (e) => {
+    if (proposalActive()) return;
     if (
       e.button !== 0 ||
       e.target.closest(
@@ -7428,6 +7754,7 @@ function bindProcessMap() {
     stepMenu.hidden = false;
   };
   canvas.oncontextmenu = (e) => {
+    if (proposalActive()) return;
     const step = e.target.closest(".canvas-step");
     if (step) {
       showStepMenu(e, step.dataset.canvasStepIndex);

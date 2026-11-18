@@ -41,6 +41,13 @@ export interface RecordingMeta {
 	lastRun?: RecordingLastRun
 	/** 是否由 AI-assistant 合并生成 */
 	isMerged?: boolean
+	/**
+	 * 未决定的流程更新提案标记（第三轮「单线演进提案制」）：
+	 * AI 针对该 REFINED 记录生成的修改落在 artifacts/<flowId>/proposal.json，
+	 * 用户在 Process 标签页 Apply/Discard 前，此标记与提案文件同生同灭。
+	 * 文件是唯一事实源；标记仅供列表/检测快速判断。
+	 */
+	pendingProposal?: { at: string; source: string }
 }
 
 export interface Task {

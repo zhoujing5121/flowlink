@@ -71,6 +71,16 @@ const POST_STEP_SETTLE_KINDS = new Set<string>([
 const POST_STEP_SETTLE_OPTIONS = { domQuietMs: 350, maxMs: 2500 }
 const POST_STEP_SETTLE_DISABLED = process.env.FLOWLINK_DISABLE_POST_STEP_SETTLE === '1'
 
+/* ---- condition 有界重试求值（2026-11 第三轮真机反馈 Bug 3）----
+ * 网关 condition 在导航刚完成、SPA 判定元素尚未渲染时做一次性判定，会把
+ * 「已登录」误判为 false 而走进登录组（证据 flow_mwlnr4uc_eswbeq/
+ * run_mwlnyrt5_7kkdn3）。默认窗口内每 CONDITION_RETRY_INTERVAL_MS 重评一次，
+ * 任一次 matches 即采用；窗口耗尽仍 false 才确定 false。窗口可被 step.timeout
+ * 覆盖（调用处钳制 [1000, 30000]）。仅 condition 走此路径——assert/expect
+ * 已有自己的轮询等待语义。 */
+const CONDITION_RETRY_WINDOW_MS = 4_000
+const CONDITION_RETRY_INTERVAL_MS = 300
+
 export interface RunOutcome {
 	/** 提供给 UI/调用方的精简结果，以及完整持久化报告和写回所需输入。 */
 	result: RunResult
@@ -885,15 +895,63 @@ export async function runFlowInBrowserContext(
 					stepLogPush(`dialog ${rendered.action} ✓ ${handled.info}`)
 				} else if (rendered.kind === 'condition') {
 					phase = 'expect'
-					const outcome = await evaluateAssertion(
-						verifyDeps,
-						rendered.assertion,
-						rendered.target,
+					// 有界重试求值（Bug 3）：默认 4s 窗口内每 300ms 重评，任一次
+					// matches 即跳出；窗口耗尽仍 false 才确定 false 分支。窗口可由
+					// step.timeout 覆盖（钳制 [1000, 30000]）。窗口内求值抛出的非断言
+					// 错误（导航销毁执行上下文等）视作「尚未就绪」继续重试，窗口耗尽
+					// 仍无一次有效求值才原样抛出，保留原有失败语义。
+					const windowMs = Math.max(
+						1_000,
+						Math.min(rendered.timeout ?? CONDITION_RETRY_WINDOW_MS, 30_000),
 					)
+					const deadline = Date.now() + windowMs
+					let outcome: { matches: boolean; note: string } | undefined
+					let lastError: unknown
+					try {
+						outcome = await evaluateAssertion(
+							verifyDeps,
+							rendered.assertion,
+							rendered.target,
+						)
+					} catch (err) {
+						lastError = err
+					}
+					let retry = 0
+					while (!outcome?.matches && Date.now() < deadline) {
+						await sleep(CONDITION_RETRY_INTERVAL_MS)
+						retry++
+						try {
+							const result = await evaluateAssertion(
+								verifyDeps,
+								rendered.assertion,
+								rendered.target,
+							)
+							lastError = undefined
+							if (result.matches) {
+								outcome = result
+								break
+							}
+							outcome = result
+							stepLogPush(`condition retry ${retry}: not yet`)
+						} catch (err) {
+							lastError = err
+							stepLogPush(
+								`condition retry ${retry}: ${String((err as Error)?.message ?? err)}`,
+							)
+						}
+					}
+					if (!outcome) throw lastError
 					const targetGroupId = outcome.matches
 						? rendered.trueGroupId
 						: rendered.falseGroupId
-					stepLogPush(`condition ${outcome.matches ? 'true' : 'false'}: ${outcome.note}`)
+					stepLogPush(
+						`condition ${outcome.matches ? 'true' : 'false'}: ${outcome.note}` +
+							(retry > 0
+								? outcome.matches
+									? `（第 ${retry} 次重评命中，${windowMs}ms 窗口内）`
+									: `（${retry} 次重评未命中，${windowMs}ms 窗口耗尽）`
+								: ''),
+					)
 					branchCursor =
 						targetGroupId === undefined
 							? flat.length
@@ -937,7 +995,8 @@ export async function runFlowInBrowserContext(
 				} else if (rendered.kind === 'assert') {
 					phase = 'expect'
 					stepLogPush(`assert ${rendered.assertion.kind}`)
-					// 等待上限可由步骤 timeout 覆盖（钳制到 [1s, 30s]）；condition 仍走瞬时判定
+					// 等待上限可由步骤 timeout 覆盖（钳制到 [1s, 30s]）；condition
+					// 不走这里——它有自己的有界重评窗口（见上方 condition 分支）。
 					const waitMs = Math.max(1000, Math.min(rendered.timeout ?? EXPECT_WAIT_MS, 30_000))
 					const note = await runAssertion(verifyDeps, rendered.assertion, rendered.target, waitMs)
 					expectNote = `assert ${note}`

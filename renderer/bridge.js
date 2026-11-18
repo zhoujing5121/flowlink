@@ -1294,10 +1294,10 @@
 
 	/** AI 辅助测试（默认入口）编排：程序回放 → 某步失败 → AI 单步接管该步 →
 	 * 成功后从下一步恢复程序回放（resume，浏览器现场保留）→ 再失败再单步，循环。
-	 * 界限：单轮 Test 最多 6 次单步介入；同一单步两败 → 回退一次全量接管
-	 * （remaining 模式，内部自带 free-run 降级）。中间段的 playback:done 不写
-	 * 失败 lastRun（主进程按 resume 段抑制），lastRun 与自动 repair 在循环
-	 * 全部结束后统一落一次。 */
+	 * 界限：单轮 Test 最多 6 次单步介入；同一单步两败即停（第三轮决策：不再
+	 * 回退全量接管——「接管全部剩余」入口已删除，remaining 仅存底层能力）。
+	 * 中间段的 playback:done 不写失败 lastRun（主进程按 resume 段抑制），
+	 * lastRun 与自动 repair 在循环全部结束后统一落一次。 */
 	window.runAiAssistedTest = async function (item) {
 		if (!item?.recordingId || item.testRunning) return
 		const state = recordingSession()
@@ -1328,7 +1328,6 @@
 			state.playbackInFlight = false
 			activePlaybackScope = null
 		}
-		let fallbackUsed = false
 		let aiAssistedAny = false
 		try {
 			const flow = await F.flow.load(item.flowFile)
@@ -1426,18 +1425,20 @@
 				attemptsByStep.set(failIndex, attempts)
 				const failureSummary = item.testResults[failIndex]?.error?.message || ''
 				if (attempts >= 2) {
-					// 同一单步两败：回退一次全量接管（remaining 模式，内部自带 free-run 降级）。
-					// 其 aiDone 即循环终点（处理器做终态清理并可自动触发 repair）。
-					fallbackUsed = true
+					// 同一单步两败即停（第三轮决策：删除「两败回退全量接管」升级）。
+					// 报告该步与原因后结束循环；收尾仍走 finalize + 一次性自动 repair
+					// （AI 若曾成功介入过其它步骤，修复提案/新记录链路照常触发）。
 					if (typeof appendAIMessage === 'function') {
+						const stepText = item.testFlowSteps?.[failIndex]?.label || `第 ${failIndex + 1} 步`
 						appendAIMessage(
 							item,
 							'assistant',
-							`第 ${failIndex + 1} 步两次 AI 单步接管未成功，回退为 AI 接管全部剩余步骤…`,
+							`「${stepText}」两次 AI 单步接管均未成功（${
+								failureSummary || '原因未知'
+							}），辅助执行停止。可人工处理该步骤，或在 Process 面板核对后手动再次运行 Test。`,
 						)
 					}
 					renderSummaryWorkspace()
-					await takeoverPhase(failIndex, 'remaining', failureSummary)
 					break
 				}
 				if (interventions >= MAX_SINGLE_INTERVENTIONS) {
@@ -1445,7 +1446,7 @@
 						appendAIMessage(
 							item,
 							'assistant',
-							`本轮 AI 单步介入已达上限（${MAX_SINGLE_INTERVENTIONS} 次），辅助执行停止；剩余失败步骤可用「AI: run all remaining」全量接管或人工处理。`,
+							`本轮 AI 单步介入已达上限（${MAX_SINGLE_INTERVENTIONS} 次），辅助执行停止；剩余失败步骤请人工处理或稍后重试。`,
 						)
 					}
 					break
@@ -1461,16 +1462,15 @@
 				renderSummaryWorkspace()
 				const aiDone = await takeoverPhase(failIndex, 'single', failureSummary)
 				if (assistedLoop.stopRequested) break
-				if (!aiDone?.ok) continue // 单步失败（内部已含两次尝试）：回到同一步，两败即回退全量
+				if (!aiDone?.ok) continue // 单步失败（内部已含两次尝试）：回到同一步，两败即停
 				aiAssistedAny = true
 				result = await runPhase(failIndex + 1)
 			}
 			finalize(null)
 			renderSummaryWorkspace()
-			// 一次性触发自动 repair：全量回退时 aiDone 处理器已触发（fallbackUsed）；
-			// 其余结局（最终段成功/介入上限）在此统一触发一次。
+			// 一次性触发自动 repair（AI 曾成功介入过至少一步时）：
+			// 目标为 REFINED 记录 → 落盘流程更新提案；原始 Record → REPAIRED 新记录。
 			if (
-				!fallbackUsed &&
 				aiAssistedAny &&
 				item.lastTakeover?.aiCompleted > 0 &&
 				!item.repairInFlight &&
@@ -1489,7 +1489,9 @@
 		}
 	}
 
-	/** AI 接管后的自动流程修复：带失败信息与 AI 执行证据重跑细化管线，另存为全新录制（原始流程不动）。 */
+	/** AI 接管后的自动流程修复：带失败信息与 AI 执行证据重跑细化管线。
+	 * REFINED 记录 → 流程更新提案（Process 对比后 Apply/Discard）；
+	 * 原始 Record → REPAIRED- 另存为全新录制（原始流程不动）。 */
 	window.aiRepairFlowAfterTakeover = async function (item) {
 		if (!item?.recordingId || !item.lastTakeover?.aiCompleted) return
 		if (item.testRunning || recordingSession().playbackInFlight) return
@@ -1532,6 +1534,35 @@
 						: {}),
 				},
 			})
+			// 分流（第三轮「REFINED 单线演进」）：
+			// - 目标为已有 REFINED 记录（item.summary ⇔ 元数据 isMerged）：
+			//   不再另存新记录，落盘为流程更新提案（覆盖旧提案），
+			//   Process 标签页并排对比后 Apply / Discard。
+			// - 目标为原始 Record：维持现状，REPAIRED- 另存为全新录制。
+			if (item.summary) {
+				const saved = await F.flow.saveProposal({
+					taskCode: code,
+					recordingId: item.recordingId,
+					source: 'takeover-repair',
+					flow: repair.flow,
+					summary: repair.summary || '',
+					risks: Array.isArray(repair.risks) ? repair.risks : [],
+				})
+				item.lastTakeover = null
+				// Process 标签页重新检测提案（ai:proposal 事件也会置脏；双保险）。
+				item.pendingProposalLoaded = false
+				if (typeof appendAIMessage === 'function') {
+					appendAIMessage(
+						item,
+						'assistant',
+						`已生成流程更新提案（基于 v${saved.baseVersion}），请在 Process 标签页查看前后对比并决定 Apply / Discard。` +
+							(repair.summary ? `\n${repair.summary}` : '') +
+							(repair.risks?.length ? `\nRisks: ${repair.risks.join('；')}` : ''),
+					)
+				}
+				renderSummaryWorkspace()
+				return
+			}
 			// 不覆盖当前录制：修复后的完整 Flow（主进程已 parseFlow 校验）另存为
 			// 全新录制（persistMerged → saveFlow 落盘前再次完整校验），原始流程与
 			// 本次测试结果保持原样。
@@ -1554,7 +1585,7 @@
 				name,
 			})
 			item.lastTakeover = null
-			// 与 ai:autoRefine 同款刷新：按 recordingId 保留现有条目（测试结果与聊天
+			// 强制刷新录制列表：按 recordingId 保留现有条目（测试结果与聊天
 			// 都在原对象上），新条目追加进列表。
 			state.detailsLoaded = false
 			await window.loadTaskDetails(code, { force: true })
@@ -1768,38 +1799,20 @@
 		console.log('[bridge] 录制完成事件：', recording)
 	})
 
-	/** 自动细化（录制停止后主进程火后即忘生成 REFINED 孪生录制） */
-	F.on('ai:autoRefine', (event) => {
+	/** REFINED 单线演进：提案落盘通知（主进程 flow:saveProposal 成功后广播）。
+	 * Process 标签页据此重新检测提案并显示「有来自 AI 的更新待决定」。 */
+	F.on('ai:proposal', (event) => {
 		if (!event || typeof event !== 'object') return
-		// Pi 未配置属于正常情况：静默跳过，不打扰用户。
-		if (event.state === 'skipped') return
 		const taskCode = event.taskCode || activeFlowKey
-		if (event.state === 'failed') {
-			if (typeof window.showFlowlinkNotice === 'function') {
-				window.showFlowlinkNotice(`Auto-refine failed: ${event.error || 'unknown error'}`, 'warn')
-			}
-			return
+		const state = recordingSession(taskCode)
+		const item = state.items.find((entry) => entry.recordingId === event.recordingId)
+		if (item) item.pendingProposalLoaded = false
+		if (typeof window.showFlowlinkNotice === 'function') {
+			window.showFlowlinkNotice('已生成流程更新提案，请在 Process 标签页查看前后对比')
 		}
-		if (event.state !== 'done') return
-		void (async () => {
-			try {
-				// 强制重载该任务的录制列表：已存在的条目按 recordingId 保留，新条目追加。
-				const state = recordingSession(taskCode)
-				state.detailsLoaded = false
-				await window.loadTaskDetails(taskCode, { force: true })
-				if (currentFlow && currentFlow.code === taskCode) {
-					currentFlow.recordingCount = Math.max(
-						currentFlow.recordingCount || 0,
-						state.items.filter((entry) => entry.recordingId).length,
-					)
-				}
-			} catch (err) {
-				console.error('[bridge] 自动细化后刷新录制列表失败：', err)
-			}
-			if (typeof window.showFlowlinkNotice === 'function') {
-				window.showFlowlinkNotice(`${event.name || 'A refined material'} created from the recording`)
-			}
-		})()
+		if (activeFlowKey === taskCode && typeof renderSummaryWorkspace === 'function') {
+			renderSummaryWorkspace()
+		}
 	})
 
 	/** 录制错误 */
@@ -2026,7 +2039,7 @@
 			resolve(event)
 		}
 		// single = assisted 循环的中间态：不清运行标记（循环还要继续）；
-		// remaining（含循环内回退全量）与非循环路径 = 终态：完整清理。
+		// remaining（无 UI 调用方，底层能力保留）与非循环路径 = 终态：完整清理。
 		if (!inLoop || !isSingle) {
 			state.playbackInFlight = false
 			activePlaybackScope = null
