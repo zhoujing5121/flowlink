@@ -324,8 +324,17 @@ function normalizeHttpUrl(value: string): string {
  * 每次打开（录制 / Test / 前缀回放 / 手动重启）都视为全新浏览器会话：关闭多余
  * 标签页并无条件重新加载起始 URL——同地址的旧页面是上一轮运行的脏状态（SPA
  * 状态已推进、DOM 已变化），不能作为起点。preservePage 的分组重录路径不经过
- * 本函数（前缀回放抵达的状态必须保留）。 */
-async function resetBrowserTabs(initialUrl: string): Promise<void> {
+ * 本函数（前缀回放抵达的状态必须保留）。
+ *
+ * opts.navigate=false：不触发 loadURL——首个可执行步骤是 navigate 的流程把
+ * 唯一导航交给执行器首步 goto，根除「Electron loadURL 与 CDP goto 双导航
+ * 在途竞争 → 间歇 net::ERR_ABORTED」的竞态。其余调用保持默认导航，但改为
+ * 有界等待加载完成（awaitLoadMs，默认 10s；超时不失败，执行器 startUrl
+ * goto 自带 2 次重试兜底），不再 fire-and-forget 地与执行器竞争。 */
+async function resetBrowserTabs(
+	initialUrl: string,
+	opts?: { navigate?: boolean; awaitLoadMs?: number },
+): Promise<void> {
 	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
 	// 新标签页集合，或意外修改刚重建的浏览器状态。
 	// 销毁旧页面前先等待正在进行的会话收尾，避免迟到的异步回调附着到
@@ -359,10 +368,16 @@ async function resetBrowserTabs(initialUrl: string): Promise<void> {
 	syncBrowserVisibility()
 
 	const startUrl = initialUrl || 'https://bosch.com.cn'
-	// 导航后台进行，不再二次等待整页加载：recorder 的 waitForLoadState('load')
-	// 是唯一加载闸门，回放路径的执行器 goto 同理；Stop 仍经 webContents.stop()
-	// 与 withAbort 立即中止。
-	void browserView.webContents.loadURL(startUrl).catch(() => {})
+	if (opts?.navigate === false) {
+		// 唯一导航由执行器首步 goto 完成（首步 navigate 的流程）；页面保持
+		// 现状（about:blank 或上一会话地址），视图反正对用户隐藏。
+		return
+	}
+	// 导航并等待完成（有界）：loadURL 的 promise 在 did-finish-load 时 resolve；
+	// 失败吞掉（网络抖动等），超时不视为错误——后续 startUrl goto 有重试兜底。
+	const load = browserView.webContents.loadURL(startUrl).catch(() => undefined)
+	const budgetMs = Math.max(0, opts?.awaitLoadMs ?? 10_000)
+	await Promise.race([load, new Promise((resolve) => setTimeout(resolve, budgetMs))])
 }
 
 /** Electron 回放专用开页工厂：禁止走 Playwright Target.createTarget。 */
@@ -1714,7 +1729,10 @@ function registerIpc(): void {
 			)
 			// 前缀回放需要从 Flow 的起始 URL 重建环境；之后保持页面不刷新，
 			// 录制才能直接接续回放抵达的状态。
-			await resetBrowserTabs(flow.meta.env.startUrl)
+			// 首步是 navigate 时传 navigate:false，由执行器首步 goto 做唯一导航
+			// （消除 loadURL 与 goto 的双导航竞态，见 resetBrowserTabs 注释）。
+			const firstStepIsNavigate = flattened[0]?.step.kind === 'navigate'
+			await resetBrowserTabs(flow.meta.env.startUrl, firstStepIsNavigate ? { navigate: false } : {})
 			const seedPages = await attachPlaybackPages()
 			const tabIds = [...browserViews.keys()]
 			const registrations = new Set<Promise<void>>()
@@ -1766,7 +1784,18 @@ function registerIpc(): void {
 	)
 
 	/* ---------- 回放 ---------- */
-	ipcMain.handle('playback:run', async (_e, opts: { taskCode: string; recordingId: string; variables?: Record<string, string> }) => {
+	ipcMain.handle(
+		'playback:run',
+		async (
+			_e,
+			opts: {
+				taskCode: string
+				recordingId: string
+				variables?: Record<string, string>
+				/** AI 单步接管成功后的续跑起点（扁平下标）：>0 时保留浏览器现场、不重置标签页。 */
+				resumeFromStepIndex?: number
+			},
+		) => {
 		if (playPromise) throw new Error('已有回放正在进行')
 		if (!engine) throw new Error('引擎未就绪（CDP 连接失败）')
 		if (
@@ -1780,16 +1809,39 @@ function registerIpc(): void {
 		) {
 			throw new Error('回放变量无效')
 		}
+		if (
+			opts.resumeFromStepIndex !== undefined &&
+			(!Number.isInteger(opts.resumeFromStepIndex) || opts.resumeFromStepIndex < 0)
+		) {
+			throw new Error('resumeFromStepIndex 无效（需为非负整数）')
+		}
 
 		const task = taskStore.get(opts.taskCode)
 		const recording = task?.recordings.find((r) => r.id === opts.recordingId)
 		if (!recording) throw new Error('找不到该录制')
 
 		const flow: Flow = await loadFlow(recording.flowFile)
+		const flattenedSteps = flattenSteps(flow.steps)
+		// 续跑下标钳制到扁平长度（超界 = 全部 bypassed，执行器自然空转收尾）。
+		const startCursor =
+			opts.resumeFromStepIndex === undefined
+				? 0
+				: Math.min(opts.resumeFromStepIndex, flattenedSteps.length)
 
-		// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态
-		// （全新浏览器语义，见 resetBrowserTabs）。
-		await resetBrowserTabs(flow.meta.env.startUrl)
+		if (startCursor > 0) {
+			// AI 单步接管后的续跑：不 resetBrowserTabs——浏览器里的页面/标签页/登录
+			// 状态就是 AI 执行完那一步后的现场，重置会毁掉它。执行器从 startCursor
+			// 起步，之前步骤报 bypassed skip。
+			console.log(`[playback:${flow.id}] resume from flat step ${startCursor + 1} (after AI single-step takeover)`)
+		} else {
+			// 每次完整测试均从录制声明的起始 URL 重新建页，而不是沿用用户当前浏览状态
+			// （全新浏览器语义，见 resetBrowserTabs）。
+			// 首个可执行步骤是 navigate 时传 navigate:false：执行器会跳过 startUrl
+			// 导航、由首步 goto 做唯一导航——不再与本函数的 loadURL 双导航在途竞争
+			// （间歇 net::ERR_ABORTED 的根因）。
+			const firstStepIsNavigate = flattenedSteps[0]?.step.kind === 'navigate'
+			await resetBrowserTabs(flow.meta.env.startUrl, firstStepIsNavigate ? { navigate: false } : {})
+		}
 		const seedPages = await attachPlaybackPages()
 		// Test 运行由用户主动触发，浏览器 surface 必然位于 Test 布局。resetBrowserTabs
 		// 会隐藏视图，而渲染端的 bounds 上报有几何去重、回放期间布局不变时不会重报；
@@ -1810,6 +1862,7 @@ function registerIpc(): void {
 			highlightSteps: true,
 			stopOnFailure: true,
 			variables: opts.variables,
+			...(startCursor > 0 ? { startCursor } : {}),
 			abortSignal: playAbortController.signal,
 			waitForUserOperation: ({ stepId, prompt, signal }) =>
 				hostWaitForUserOperation({ stepId, prompt, signal }),
@@ -1829,15 +1882,20 @@ function registerIpc(): void {
 			if (!mainWindow.isDestroyed())
 				mainWindow.webContents.send('playback:done', result)
 
-			/* 更新 lastRun */
-			await taskStore.patchRecording(opts.taskCode, opts.recordingId, {
-				lastRun: {
-					ok: result.ok,
-					at: new Date().toISOString(),
-					pass: result.metrics.passCount,
-					fail: result.metrics.failCount,
-				},
-			})
+			/* 更新 lastRun。
+			 * assisted 循环（渲染端 runAiAssistedTest）中的 resume 失败是中间态：
+			 * 不写 lastRun（失败态已由循环的初始 run 记录），避免中间失败覆盖；
+			 * resume 成功即循环终态，写最终结果。非 resume 运行照写。 */
+			if (startCursor === 0 || result.ok) {
+				await taskStore.patchRecording(opts.taskCode, opts.recordingId, {
+					lastRun: {
+						ok: result.ok,
+						at: new Date().toISOString(),
+						pass: result.metrics.passCount,
+						fail: result.metrics.failCount,
+					},
+				})
+			}
 
 			return result
 		} catch (err) {
@@ -1882,6 +1940,8 @@ function registerIpc(): void {
 				taskCode: string
 				recordingId: string
 				fromStepIndex: number
+				/** remaining=接管剩余全部（缺省）；single=AI 单步接管（只执行失败的那一步）。 */
+				mode?: 'remaining' | 'single'
 				variables?: Record<string, string>
 				failureSummary?: string
 			},
@@ -1894,6 +1954,9 @@ function registerIpc(): void {
 				opts.fromStepIndex < 0
 			) {
 				throw new Error('AI takeover request is invalid')
+			}
+			if (opts.mode !== undefined && opts.mode !== 'remaining' && opts.mode !== 'single') {
+				throw new Error('AI takeover mode is invalid')
 			}
 			if (
 				opts.variables !== undefined &&
@@ -1916,9 +1979,11 @@ function registerIpc(): void {
 			if (!recording) throw new Error(`Recording not found: ${opts.recordingId}`)
 			const flow = await loadFlow(recording.flowFile)
 			// fire-and-forget：进度经 playback:aiStep / playback:aiDone 事件推送。
+			const takeoverMode = opts.mode === 'single' ? 'single' as const : 'remaining' as const
 			void startAiTakeover({
 				flow,
 				fromStepIndex: opts.fromStepIndex,
+				mode: takeoverMode,
 				variables: opts.variables ?? {},
 				failureSummary:
 					typeof opts.failureSummary === 'string'
@@ -1950,18 +2015,22 @@ function registerIpc(): void {
 								taskCode: opts.taskCode,
 								recordingId: opts.recordingId,
 							})
-						void taskStore
-							.patchRecording(opts.taskCode, opts.recordingId, {
-								lastRun: {
-									ok: result.ok,
-									at: new Date().toISOString(),
-									aiAssisted: true,
-									summary: result.summary,
-								},
-							})
-							.catch((error) => {
-								console.error(`[ai-takeover] lastRun 更新失败: ${(error as Error).message}`)
-							})
+						// lastRun 只由全量接管（remaining）收尾写入：single 是 assisted
+						// 循环的中间态，最终态由循环结束时的成功 resume 或回退全量接管落。
+						if (takeoverMode === 'remaining') {
+							void taskStore
+								.patchRecording(opts.taskCode, opts.recordingId, {
+									lastRun: {
+										ok: result.ok,
+										at: new Date().toISOString(),
+										aiAssisted: true,
+										summary: result.summary,
+									},
+								})
+								.catch((error) => {
+									console.error(`[ai-takeover] lastRun 更新失败: ${(error as Error).message}`)
+								})
+						}
 					},
 				},
 			}).catch((error) => {
@@ -1973,6 +2042,7 @@ function registerIpc(): void {
 						remaining: [],
 						summary: `AI takeover failed to start: ${message}`,
 						artifactDir: '',
+						mode: takeoverMode,
 						taskCode: opts.taskCode,
 						recordingId: opts.recordingId,
 					})
@@ -2019,11 +2089,18 @@ function registerIpc(): void {
 			}
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			const crops: Array<{ stepId: string; url: string }> = []
+			// crop 可能带 sidecar（screencast 采集的整帧 + 裁剪矩形）：rect/frame
+			// 一并返回，渲染端 CSS 裁剪显示；无 sidecar 的（旧数据/回退路径真裁剪）无 rect。
+			const crops: Array<{
+				stepId: string
+				url: string
+				rect?: { x: number; y: number; width: number; height: number }
+				frame?: { width: number; height: number }
+			}> = []
 			try {
 				const flow = await loadFlow(recording.flowFile)
 				const root = resolve(recording.artifactsDir)
-				const collect = (steps: unknown[]) => {
+				const collect = async (steps: unknown[]) => {
 					for (const raw of steps || []) {
 						const step = raw as {
 							id?: unknown
@@ -2031,7 +2108,7 @@ function registerIpc(): void {
 							target?: { crop?: { ref?: unknown } }
 						}
 						if (Array.isArray(step.steps)) {
-							collect(step.steps)
+							await collect(step.steps)
 							continue
 						}
 						const ref = step.target?.crop?.ref
@@ -2039,13 +2116,43 @@ function registerIpc(): void {
 						const abs = resolve(root, ref)
 						const rel = relative(root, abs)
 						if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
-						crops.push({
+						const crop: (typeof crops)[number] = {
 							stepId: step.id,
 							url: `file:///${abs.split(sep).map(encodeURIComponent).join('/')}`,
-						})
+						}
+						try {
+							const sidecar = JSON.parse(await readFile(`${abs}.json`, 'utf8')) as {
+								version?: number
+								x?: unknown
+								y?: unknown
+								width?: unknown
+								height?: unknown
+								frameWidth?: unknown
+								frameHeight?: unknown
+							}
+							if (
+								sidecar.version === 1 &&
+								[sidecar.x, sidecar.y, sidecar.width, sidecar.height, sidecar.frameWidth, sidecar.frameHeight]
+									.every((n) => typeof n === 'number' && n >= 0)
+							) {
+								crop.rect = {
+									x: sidecar.x as number,
+									y: sidecar.y as number,
+									width: sidecar.width as number,
+									height: sidecar.height as number,
+								}
+								crop.frame = {
+									width: sidecar.frameWidth as number,
+									height: sidecar.frameHeight as number,
+								}
+							}
+						} catch {
+							/* 无 sidecar（旧数据/回退路径）：按整图显示 */
+						}
+						crops.push(crop)
 					}
 				}
-				collect(flow.steps as unknown[])
+				await collect(flow.steps as unknown[])
 			} catch (error) {
 				console.error(`[artifacts] 读取 crop 失败: ${(error as Error).message}`)
 			}

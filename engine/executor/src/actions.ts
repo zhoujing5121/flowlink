@@ -134,8 +134,17 @@ export async function runAction(deps: ActionDeps, step: ActionStep): Promise<Act
 			// 后续的 networkidle 等待仅尽力执行，避免长轮询站点导致导航失败。
 			const target = step.url
 			deps.log(`navigate → ${target}`)
-			// 直接抛给 classify：net::ERR_* / 超时会被归成 NAVIGATION_FAILED
-			await deps.page.goto(target, { timeout, waitUntil: 'load' })
+			// 慢站点/在途导航被取消（net::ERR_ABORTED）：重试 1 次，
+			// 对齐 run.ts startUrl 打开的 2 次尝试语义（第 2 次尝试更接近真相）。
+			try {
+				await deps.page.goto(target, { timeout, waitUntil: 'load' })
+			} catch (err) {
+				deps.log(
+					`navigate 失败（第 1 次），1s 后重试：${((err as Error).message ?? '').split('\n')[0]}`,
+				)
+				await new Promise((resolveSleep) => setTimeout(resolveSleep, 1000))
+				await deps.page.goto(target, { timeout, waitUntil: 'load' })
+			}
 			await bestEffortNetworkIdle(deps.page, timeout)
 			return { note: `url=${deps.page.url()}` }
 		}

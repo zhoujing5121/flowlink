@@ -54,6 +54,23 @@ import type {
 	StepResult,
 } from './types.js'
 
+/* ---- 动作成功后的默认轻量沉降（2026-11 第二轮真机反馈） ----
+ * 快速 SPA 页面上固定 stepDelayMs（350ms）常不够，下一步元素查找失败；
+ * 动作类步骤成功后在 expect 校验前等 DOM 静默（不等 networkIdle，避免
+ * 大页面网络长尾）。与步前显式 settle（BaseStepSchema.settle）互不影响。
+ * FLOWLINK_DISABLE_POST_STEP_SETTLE=1 可整体关闭（诊断/调参开关）。 */
+const POST_STEP_SETTLE_KINDS = new Set<string>([
+	'click',
+	'input',
+	'select',
+	'key',
+	'hover',
+	'drag',
+	'upload',
+])
+const POST_STEP_SETTLE_OPTIONS = { domQuietMs: 350, maxMs: 2500 }
+const POST_STEP_SETTLE_DISABLED = process.env.FLOWLINK_DISABLE_POST_STEP_SETTLE === '1'
+
 export interface RunOutcome {
 	/** 提供给 UI/调用方的精简结果，以及完整持久化报告和写回所需输入。 */
 	result: RunResult
@@ -233,6 +250,13 @@ export interface FlowContextRunInput {
 	closeContext?: boolean
 	/** 跳过「第一步非 navigate 时 goto startUrl」（页面已由产品导航到位） */
 	skipNavigate?: boolean
+	/**
+	 * AI 单步接管后的续跑起点（扁平下标）：之前的步骤逐个报 skip
+	 * （note: bypassed (resumed after AI step)），不执行、不计 pass/fail、
+	 * 不评估其中的 condition（线性直进，run log 注明该近似）。
+	 * 大于 0 时不做 startUrl 导航（保留接管后的浏览器现场）。
+	 */
+	startCursor?: number
 	flow: Flow
 	opts: PlayOptions
 	artifacts: ArtifactWriter
@@ -528,11 +552,26 @@ export async function runFlowInBrowserContext(
 		}
 		const groupVisitCounts = new Map<string, number>()
 
+		// AI 单步接管后的续跑：钳制到 [0, flat.length]；>0 时本 run 从该下标起步。
+		const rawStartCursor = input.startCursor ?? 0
+		const startCursor =
+			Number.isInteger(rawStartCursor) && rawStartCursor > 0
+				? Math.min(rawStartCursor, flat.length)
+				: 0
+		if (startCursor > 0) {
+			pushLog(
+				`resume：从第 ${startCursor + 1} 步续跑（AI 单步接管后）；` +
+					`前 ${startCursor} 步报 bypassed skip，不执行，其中 condition 不评估（线性直进近似）`,
+			)
+		}
+
 		// 仅当首个可执行步骤不是 navigate 时才导航到 startUrl，避免覆盖显式导航目标。
-		// flow 第一步不是 navigate 时，先按 env.startUrl 打开页面（同样吃 baseUrl 重定基）
+		// flow 第一步不是 navigate 时，先按 env.startUrl 打开页面（同样吃 baseUrl 重定基）。
+		// 续跑（startCursor>0）不做 startUrl 导航：保留 AI 接管后的浏览器现场。
 		const startPage = pages.pageAt(0)
 		if (
 			!input.skipNavigate &&
+			startCursor === 0 &&
 			(flat.length === 0 || flat[0]?.step.kind !== 'navigate')
 		) {
 			const startUrl = rebaseUrl(env.startUrl, opts.baseUrl)
@@ -583,6 +622,27 @@ export async function runFlowInBrowserContext(
 		// 本身不单独作为步骤写入报告。
 		for (let flatCursor = 0; flatCursor < flat.length; flatCursor++) {
 			const item = flat[flatCursor]!
+			// 续跑被跳过段（AI 单步接管之前的步骤）：逐个报 skip（bypassed），
+			// 不执行、不计 pass/fail、不评估 condition、不计组访问——它们在
+			// 本轮 assisted 测试的前一段已经真实执行过，结果由渲染端按原槽位保留。
+			if (flatCursor < startCursor) {
+				const bypassedResult: StepResult = {
+					stepId: item.stepId,
+					kind: item.step.kind,
+					status: 'skip',
+					ms: 0,
+				}
+				steps.push(bypassedResult)
+				details.push({
+					stepId: item.stepId,
+					kind: item.step.kind,
+					status: 'skip',
+					ms: 0,
+					log: ['bypassed (resumed after AI step)'],
+				})
+				opts.onStep?.(bypassedResult)
+				continue
+			}
 			const groupVisitCount =
 				item.groupId && groupStartIndices.get(item.groupId) === flatCursor
 					? (groupVisitCounts.get(item.groupId) ?? 0) + 1
@@ -954,6 +1014,21 @@ export async function runFlowInBrowserContext(
 							stepLogPush,
 						)
 					}
+
+					// ---- 动作成功后的默认轻量沉降（expect 校验前）----
+					// 待处理原生对话框会阻塞页面 JS（waitForSettle 的 evaluate 会挂），
+					// 此时跳过；navigate/wait/assert/condition 不适用（见常量定义处注释）。
+					if (
+						!POST_STEP_SETTLE_DISABLED &&
+						POST_STEP_SETTLE_KINDS.has(rendered.kind) &&
+						dialogManager.pendingCount === 0
+					) {
+						const settleStart = Date.now()
+						await waitForSettle(page, POST_STEP_SETTLE_OPTIONS, (msg) =>
+							stepLogPush(`post-settle: ${msg}`),
+						)
+						stepLogPush(`post-settle: ${Date.now() - settleStart}ms`)
+					}
 				}
 
 				// ---- expect 校验（所有 step 类型通用）----
@@ -1109,6 +1184,8 @@ export type PlayOnPageOptions = Omit<
 	pages?: Page[]
 	/** 默认 true：页面已由产品导航到 startUrl */
 	skipNavigate?: boolean
+	/** AI 单步接管后的续跑起点（扁平下标）：之前的步骤报 bypassed skip，不执行。 */
+	startCursor?: number
 }
 
 /**
@@ -1134,6 +1211,7 @@ export async function executeRunOnPage(
 		existingPage: seedPages,
 		closeContext: false,
 		skipNavigate: opts.skipNavigate ?? true,
+		startCursor: opts.startCursor,
 		flow,
 		opts: { ...opts, headless: true },
 		artifacts,

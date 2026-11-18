@@ -128,14 +128,9 @@
 						const value = step.url || step.text || step.value || ''
 						return value ? `${kind} · ${String(value).replace(/^(?:https?:\/\/)/, '')}` : kind
 					})
-					const stepCount = item.steps.length
-					item.media.screenshots = item.media.screenshots.slice(0, stepCount)
-					while (item.media.screenshots.length < stepCount) {
-						item.media.screenshots.push({
-							image: '',
-							name: `Step-${String(item.media.screenshots.length + 1).padStart(2, '0')}.png`,
-						})
-					}
+					// 整页步骤截图已移除（录制闪烁优化）：只保留真实存在的截图，
+					// 不再补空占位到步数；Record 页空截图墙直接隐藏。
+					item.media.screenshots = item.media.screenshots.slice(0, item.steps.length)
 					item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
 				} catch (err) {
 					console.error(`[bridge] 录制详情加载失败 (${item.recordingId}):`, err)
@@ -629,12 +624,8 @@
 					image: `file:///${String(filePath).replace(/\\/g, '/')}`,
 					name: `Step-${String(index + 1).padStart(2, '0')}.png`,
 				}))
-			while (recordedScreenshots.length < flowSteps.length) {
-				recordedScreenshots.push({
-					image: '',
-					name: `Step-${String(recordedScreenshots.length + 1).padStart(2, '0')}.png`,
-				})
-			}
+			// 整页步骤截图已随录制闪烁优化移除（rrweb 回放为主展示）：
+			// 不再用空占位补齐到步数，无截图时 Record 页直接隐藏截图墙。
 			item.media = {
 				// 旧录制（webm 落盘）经 videoFile 回放；新录制走 rrwebDir 的 DOM 事件回放。
 				videoURL: result.recording.videoFile
@@ -1191,6 +1182,12 @@
 		const item = findTestItem()
 		return item && item.id === activePlaybackScope.itemId ? item : null
 	}
+	/**
+	 * assisted 循环（AI 单步接管编排，runAiAssistedTest）状态：循环运行期间非空。
+	 * playback:done / aiDone / error 处理器据此区分「循环中的中间段」与「终点」：
+	 * 中间段不清运行标记、不写终态、不触发 AI 诊断/修复，收尾由循环统一做。
+	 */
+	let assistedLoop = null
 	const clearStaleRunFlag = () => {
 		// 迟到事件落到别的会话时，把发起录制的运行标记就地清掉，
 		// 避免重新打开原 taskflow 时录制项永远显示"运行中"。
@@ -1241,11 +1238,16 @@
 
 	window.stopFlowlinkTest = async function (item) {
 		if (!item?.testRunning) return
+		// assisted 循环中：置停止信号并中止当前段/接管；收尾由循环统一处理
+		// （中途清标记会让循环的后续段失去互斥保护）。
+		const inAssistedLoop = !!(assistedLoop && assistedLoop.item === item)
+		if (inAssistedLoop) assistedLoop.stopRequested = true
 		try {
 			await F.playback.stop()
 		} catch (err) {
 			console.error('[bridge] 停止测试失败：', err)
 		}
+		if (inAssistedLoop) return
 		item.testRunning = false
 		recordingSession().playbackInFlight = false
 		const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
@@ -1253,7 +1255,8 @@
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	}
 
-	/** AI 接管续跑：Test 失败后从第一个失败步骤起，把剩余步骤交给 browser-use agent。 */
+	/** AI 全量接管（次要入口）：Test 失败后从第一个失败步骤起，把剩余步骤全部交给
+	 * browser-use agent。默认入口是 runAiAssistedTest（单步接管 + 程序恢复循环）。 */
 	window.aiContinueFlowlinkTest = async function (item) {
 		if (!item?.recordingId || item.testRunning) return
 		const state = recordingSession()
@@ -1272,6 +1275,7 @@
 				taskCode: code,
 				recordingId: item.recordingId,
 				fromStepIndex,
+				mode: 'remaining',
 				variables,
 				...(failureSummary ? { failureSummary } : {}),
 			})
@@ -1285,6 +1289,203 @@
 			} else {
 				console.error('[bridge] AI 接管启动失败：', message)
 			}
+		}
+	}
+
+	/** AI 辅助测试（默认入口）编排：程序回放 → 某步失败 → AI 单步接管该步 →
+	 * 成功后从下一步恢复程序回放（resume，浏览器现场保留）→ 再失败再单步，循环。
+	 * 界限：单轮 Test 最多 6 次单步介入；同一单步两败 → 回退一次全量接管
+	 * （remaining 模式，内部自带 free-run 降级）。中间段的 playback:done 不写
+	 * 失败 lastRun（主进程按 resume 段抑制），lastRun 与自动 repair 在循环
+	 * 全部结束后统一落一次。 */
+	window.runAiAssistedTest = async function (item) {
+		if (!item?.recordingId || item.testRunning) return
+		const state = recordingSession()
+		if (state.playbackInFlight || assistedLoop || item.repairInFlight) return
+		if (!state.items.includes(item)) {
+			console.warn('[bridge] 忽略跨 taskflow 的 AI 辅助测试启动请求')
+			return
+		}
+		const code = currentFlow?.code || activeFlowKey
+		assistedLoop = { item, recordingId: item.recordingId, stopRequested: false, aiDoneResolve: null }
+		item.assistedLoopActive = true
+		state.playbackInFlight = true
+		/** 终态收尾：running 残留步按语义归位（用户停止/异常 → fail；否则回
+		 *  pending，未执行步骤保持 Pending），清运行标记与归属域。 */
+		const finalize = (errorMessage) => {
+			const interrupted = !!(assistedLoop && assistedLoop.stopRequested) || !!errorMessage
+			const results = item.testResults || []
+			for (let index = 0; index < results.length; index++) {
+				if (results[index]?.status === 'running') {
+					results[index] = interrupted
+						? { status: 'fail', error: { message: errorMessage || 'Stopped by user' } }
+						: { status: 'pending' }
+				}
+			}
+			assistedLoop = null
+			item.assistedLoopActive = false
+			item.testRunning = false
+			state.playbackInFlight = false
+			activePlaybackScope = null
+		}
+		let fallbackUsed = false
+		let aiAssistedAny = false
+		try {
+			const flow = await F.flow.load(item.flowFile)
+			const flat = FlowGraph.flattenFlowSteps(flow?.steps || [])
+			item.testFlowSteps = flat.steps
+			item.testFlowIndexById = flat.indexById
+			item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
+			item.testRunning = true
+			item.resultTab = 'Test'
+			activePlaybackScope = { code: activeFlowKey, itemId: item.id }
+			if (item.testFlowSteps.length) item.testResults[0] = { status: 'running' }
+			renderSummaryWorkspace()
+			const variables = await window.referenceVariablesForReplay(item)
+			const MAX_SINGLE_INTERVENTIONS = 6
+
+			/** 从一段运行结果里找第一个 fail 步骤的扁平下标（-1 = 无失败）。 */
+			const firstFailIndex = (result) => {
+				for (const step of result?.steps || []) {
+					if (step.status !== 'fail') continue
+					const mapped = item.testFlowIndexById?.get(step.stepId)
+					if (mapped !== undefined) return mapped
+					const fallback = (item.testFlowSteps || []).findIndex(
+						(s) => (s.flattenedStepId || s.id) === step.stepId,
+					)
+					if (fallback >= 0) return fallback
+				}
+				return -1
+			}
+			/** 一段运行的结果并入 testResults：pass/fail 始终写；skip 只写 pending/
+			 *  running 槽——bypassed 前段在早前段已真实执行过，原结果（含 AI 徽标）
+			 *  保留（Pending/Skipped 规约：Skipped 仅=分支未走/可选未生效）。 */
+			const mergeRunResult = (result) => {
+				const stepById = new Map()
+				for (const step of result?.steps || []) {
+					if (typeof step.stepId === 'string' && !stepById.has(step.stepId)) stepById.set(step.stepId, step)
+				}
+				const results = item.testResults || []
+				const flowSteps = item.testFlowSteps || []
+				for (let index = 0; index < flowSteps.length; index++) {
+					const final = stepById.get(flowSteps[index].flattenedStepId || flowSteps[index].id)
+					if (!final) continue
+					if (final.status === 'fail') {
+						results[index] = { status: 'fail', error: final.error }
+					} else if (final.status === 'pass') {
+						if (!results[index]?.ai) results[index] = { status: 'pass' }
+					} else if (
+						final.status === 'skip' &&
+						(!results[index] || results[index].status === 'pending' || results[index].status === 'running')
+					) {
+						results[index] = { status: 'skip' }
+					}
+				}
+			}
+			/** 等待下一次 playback:aiDone（事件处理器 resolve；见 aiDone 处理器）。 */
+			const waitAiDone = () =>
+				new Promise((resolve) => {
+					assistedLoop.aiDoneResolve = resolve
+				})
+			const runPhase = async (resumeFrom) => {
+				const runOpts = { taskCode: code, recordingId: item.recordingId, variables }
+				if (resumeFrom > 0) runOpts.resumeFromStepIndex = resumeFrom
+				const result = await F.playback.run(runOpts)
+				mergeRunResult(result)
+				renderSummaryWorkspace()
+				return result
+			}
+			const takeoverPhase = async (fromStepIndex, mode, failureSummary) => {
+				const done = waitAiDone()
+				await F.playback.aiContinue({
+					taskCode: code,
+					recordingId: item.recordingId,
+					fromStepIndex,
+					mode,
+					variables,
+					...(failureSummary ? { failureSummary } : {}),
+				})
+				return await done
+			}
+
+			let interventions = 0
+			const attemptsByStep = new Map()
+			let result = await runPhase(0)
+			while (true) {
+				if (assistedLoop.stopRequested) break
+				const failIndex = firstFailIndex(result)
+				if (failIndex < 0) {
+					// 本段全部通过；若段本身异常失败（如 startUrl 打开失败，无具体
+					// 步骤槽位），提示后结束——没有可接管的失败步骤。
+					if (result && result.ok === false && result.error && typeof appendAIMessage === 'function') {
+						appendAIMessage(item, 'assistant', `本段运行异常结束：${result.error}`)
+					}
+					break
+				}
+				const attempts = (attemptsByStep.get(failIndex) || 0) + 1
+				attemptsByStep.set(failIndex, attempts)
+				const failureSummary = item.testResults[failIndex]?.error?.message || ''
+				if (attempts >= 2) {
+					// 同一单步两败：回退一次全量接管（remaining 模式，内部自带 free-run 降级）。
+					// 其 aiDone 即循环终点（处理器做终态清理并可自动触发 repair）。
+					fallbackUsed = true
+					if (typeof appendAIMessage === 'function') {
+						appendAIMessage(
+							item,
+							'assistant',
+							`第 ${failIndex + 1} 步两次 AI 单步接管未成功，回退为 AI 接管全部剩余步骤…`,
+						)
+					}
+					renderSummaryWorkspace()
+					await takeoverPhase(failIndex, 'remaining', failureSummary)
+					break
+				}
+				if (interventions >= MAX_SINGLE_INTERVENTIONS) {
+					if (typeof appendAIMessage === 'function') {
+						appendAIMessage(
+							item,
+							'assistant',
+							`本轮 AI 单步介入已达上限（${MAX_SINGLE_INTERVENTIONS} 次），辅助执行停止；剩余失败步骤可用「AI: run all remaining」全量接管或人工处理。`,
+						)
+					}
+					break
+				}
+				interventions += 1
+				if (typeof appendAIMessage === 'function') {
+					appendAIMessage(
+						item,
+						'assistant',
+						`第 ${failIndex + 1} 步失败，AI 单步接管（第 ${interventions}/${MAX_SINGLE_INTERVENTIONS} 次介入）…`,
+					)
+				}
+				renderSummaryWorkspace()
+				const aiDone = await takeoverPhase(failIndex, 'single', failureSummary)
+				if (assistedLoop.stopRequested) break
+				if (!aiDone?.ok) continue // 单步失败（内部已含两次尝试）：回到同一步，两败即回退全量
+				aiAssistedAny = true
+				result = await runPhase(failIndex + 1)
+			}
+			finalize(null)
+			renderSummaryWorkspace()
+			// 一次性触发自动 repair：全量回退时 aiDone 处理器已触发（fallbackUsed）；
+			// 其余结局（最终段成功/介入上限）在此统一触发一次。
+			if (
+				!fallbackUsed &&
+				aiAssistedAny &&
+				item.lastTakeover?.aiCompleted > 0 &&
+				!item.repairInFlight &&
+				typeof window.aiRepairFlowAfterTakeover === 'function'
+			) {
+				void window.aiRepairFlowAfterTakeover(item)
+			}
+		} catch (err) {
+			const message = err?.message || String(err)
+			console.error('[bridge] AI 辅助测试失败：', message)
+			finalize(message)
+			if (typeof appendAIMessage === 'function') {
+				appendAIMessage(item, 'assistant', `AI-assisted test stopped: ${message}`)
+			}
+			renderSummaryWorkspace()
 		}
 	}
 
@@ -1639,21 +1840,36 @@
 			resultIndex = runningIndex >= 0 ? runningIndex : results.findIndex((result) => result.status === 'pending')
 		}
 		if (resultIndex < 0) return
-		results[resultIndex] =
-			r.status === 'pass'
-				? { status: 'pass' }
-				: r.status === 'fail'
-					? { status: 'fail', error: r.error }
-					: r.status === 'skip'
-						? { status: 'skip', error: r.error }
-						: { status: 'pending', error: r.error }
-		if (r.status === 'pass' || r.status === 'skip') {
-			const nextIndex = results.findIndex(
-				(result, index) => index > resultIndex && (!result || result.status === 'pending'),
-			)
-			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
+		const existing = results[resultIndex]
+		// 已定槽位（pass/fail/skip，含 AI 徽标）不被 skip/pass 事件覆盖：
+		// assisted 续跑的 bypassed 前段在早前段已真实执行过，skip 只应落
+		// pending/running 槽（Pending/Skipped 规约）；fail 始终写入（新信息）。
+		const settled =
+			existing && existing.status !== 'pending' && existing.status !== 'running'
+		if (r.status === 'fail' || !settled) {
+			results[resultIndex] =
+				r.status === 'pass'
+					? { status: 'pass' }
+					: r.status === 'fail'
+						? { status: 'fail', error: r.error }
+						: r.status === 'skip'
+							? { status: 'skip', error: r.error }
+							: { status: 'pending', error: r.error }
 		}
-		if (r.status === 'fail') item.testRunning = false
+		if (r.status === 'pass' || r.status === 'skip') {
+			// 找下一个待执行槽：把 running 也算「已占」并只把 pending 提为 running，
+			// 避免 assisted 续跑的 bypassed skip 突发流把后续槽级联标成 running。
+			const nextIndex = results.findIndex(
+				(result, index) =>
+					index > resultIndex &&
+					(!result || result.status === 'pending' || result.status === 'running'),
+			)
+			if (nextIndex >= 0 && (!results[nextIndex] || results[nextIndex].status === 'pending')) {
+				results[nextIndex] = { status: 'running' }
+			}
+		}
+		// assisted 循环中的失败是中间态（循环会决定单步接管/回退），不提前清运行标记。
+		if (r.status === 'fail' && !(assistedLoop && assistedLoop.item === item)) item.testRunning = false
 		// Test 面板刷新进度；停留在 Process 标签时刷新流程图的回放态叠加
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
 	})
@@ -1693,6 +1909,12 @@
 			clearStaleRunFlag()
 			return
 		}
+		// assisted 循环中的段结果是中间态：结果并入（mergeRunResult）与终态清理
+		// 都由循环统一做——这里不清运行标记、不发失败诊断，只刷新视图。
+		if (assistedLoop && assistedLoop.item === item) {
+			if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
+			return
+		}
 		recordingSession().playbackInFlight = false
 		activePlaybackScope = null
 		// 先清除运行标记，再以最终步骤数组覆盖流式暂存状态，避免终态遗漏或顺序偏差。
@@ -1730,12 +1952,27 @@
 			playbackScopedItem()
 		if (!item) return
 		const results = item.testResults || []
-		const slotOpen = (index) =>
+		// ok 事件允许覆盖 fail 槽位：AI 单步/全量接管重做的正是程序失败的步骤，
+		// 成功后要把 fail 翻转为 pass+ai（AI 徽标）；pass/skip 定局仍不覆盖
+		// （迟到/重复事件防护）。!ok 事件维持只写 pending/running 槽。
+		const slotOpen = (index, forOk) =>
 			Number.isInteger(index) &&
 			results[index] &&
 			(!results[index].status ||
 				results[index].status === 'pending' ||
-				results[index].status === 'running')
+				results[index].status === 'running' ||
+				(forOk && results[index].status === 'fail'))
+		/** 下一个待执行槽提为 running；running 视为已占，防突发 skip 流级联标记。 */
+		const advanceRunning = (fromIndex) => {
+			const nextIndex = results.findIndex(
+				(result, index) =>
+					index > fromIndex &&
+					(!result || result.status === 'pending' || result.status === 'running'),
+			)
+			if (nextIndex >= 0 && (!results[nextIndex] || results[nextIndex].status === 'pending')) {
+				results[nextIndex] = { status: 'running' }
+			}
+		}
 		// 事件按 stepId 对齐（展平收敛后 id→index 映射）；stepIndex 仅作旧事件回退。
 		let stepIndex = -1
 		if (typeof event.stepId === 'string' && item.testFlowIndexById) {
@@ -1743,34 +1980,25 @@
 			if (mapped !== undefined) stepIndex = mapped
 		}
 		if (stepIndex < 0 && Number.isInteger(event.stepIndex)) stepIndex = event.stepIndex
-		// 只写 pending/running 槽位，避免迟到/重复事件覆盖已定状态（pass/fail/skip）。
-		if (event.ok && event.skipped && slotOpen(stepIndex)) {
+		if (event.ok && event.skipped && slotOpen(stepIndex, true)) {
 			// 网关路由跳过（接管前本地求值定子序列）：语义对齐执行器的分支 skip。
 			results[stepIndex] = { status: 'skip' }
-			const nextIndex = results.findIndex(
-				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
-			)
-			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
-		} else if (event.ok && event.manual && slotOpen(stepIndex)) {
+			advanceRunning(stepIndex)
+		} else if (event.ok && event.manual && slotOpen(stepIndex, true)) {
 			// manual 步骤：用户在内嵌浏览器完成并确认（无 AI 徽标）。
 			results[stepIndex] = { status: 'pass', manual: true }
-			const nextIndex = results.findIndex(
-				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
-			)
-			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
-		} else if (event.ok && slotOpen(stepIndex)) {
+			advanceRunning(stepIndex)
+		} else if (event.ok && slotOpen(stepIndex, true)) {
 			results[stepIndex] = { status: 'pass', ai: true, ...(event.freeRun ? { freeRun: true } : {}) }
-			const nextIndex = results.findIndex(
-				(result, index) => index > stepIndex && (!result || result.status === 'pending'),
-			)
-			if (nextIndex >= 0) results[nextIndex] = { status: 'running' }
-		} else if (!event.ok && slotOpen(stepIndex)) {
+			advanceRunning(stepIndex)
+		} else if (!event.ok && slotOpen(stepIndex, false)) {
 			results[stepIndex] = {
 				status: 'fail',
 				ai: true,
 				error: { message: event.error || 'AI could not complete this step' },
 			}
-			item.testRunning = false
+			// assisted 循环中的单步失败是中间态（循环决定重试/回退），不提前清运行标记。
+			if (!(assistedLoop && assistedLoop.item === item)) item.testRunning = false
 		}
 		if (event.note && typeof appendAIMessage === 'function') {
 			appendAIMessage(item, 'assistant', `AI: ${event.note}`)
@@ -1789,35 +2017,55 @@
 			clearStaleRunFlag()
 			return
 		}
-		state.playbackInFlight = false
-		activePlaybackScope = null
-		item.testRunning = false
+		const isSingle = event.mode === 'single'
+		const inLoop = !!(assistedLoop && assistedLoop.item === item)
+		// assisted 循环的等待器优先 resolve（循环据此决定重试单步/回退全量/续跑）。
+		if (inLoop && assistedLoop.aiDoneResolve) {
+			const resolve = assistedLoop.aiDoneResolve
+			assistedLoop.aiDoneResolve = null
+			resolve(event)
+		}
+		// single = assisted 循环的中间态：不清运行标记（循环还要继续）；
+		// remaining（含循环内回退全量）与非循环路径 = 终态：完整清理。
+		if (!inLoop || !isSingle) {
+			state.playbackInFlight = false
+			activePlaybackScope = null
+			item.testRunning = false
+		}
 		const results = item.testResults || []
 		// 接管结束：running 的步骤不会再执行，重置回 pending（接管中断在该步）；
 		// 其余未执行步骤保持 Pending——Skipped 仅表示分支未走/isOptional 未生效。
 		for (let index = 0; index < results.length; index++) {
 			if (results[index]?.status === 'running') results[index] = { status: 'pending' }
 		}
-		// 记录接管结果：aiCompleted > 0 时自动后台触发流程优化（见下方）
+		// 记录接管结果：aiCompleted > 0 时自动后台触发流程优化（见下方）。
+		// single 模式在循环里逐次发生：槽位跨段保留，直接数 ai+pass 总数即为累计值。
 		item.lastTakeover = {
 			at: Date.now(),
 			ok: !!event.ok,
 			summary: String(event.summary || ''),
 			aiCompleted: results.filter((result) => result?.ai && result.status === 'pass')
 				.length,
-			// 接管 artifact 目录：修复链路据此读取 ai-takeover.json 的元素证据（重锚定）。
-			artifactDir: String(event.artifactDir || ''),
+			// 接管 artifact 目录：修复链路据此读取 ai-takeover.json 的元素证据（重锚定）；
+			// single 逐次覆盖为最新一次（保留历史目录缺省时的早前值）。
+			artifactDir: String(event.artifactDir || item.lastTakeover?.artifactDir || ''),
 		}
 		if (typeof appendAIMessage === 'function') {
 			appendAIMessage(
 				item,
 				'assistant',
-				`${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
+				isSingle
+					? `${event.ok ? 'AI 完成了该步骤，程序回放从下一步继续。' : 'AI 未能完成该步骤。'} ${event.summary || ''}`
+					: `${event.ok ? 'AI takeover completed all remaining steps.' : 'AI takeover stopped.'} ${event.summary || ''}`,
 			)
 		}
 		// 接管有 AI 执行证据时自动在后台优化流程并写回当前录制，无需用户触发；
-		// repairInFlight 防重复，函数内已有 testRunning/playbackInFlight 守卫。
-		if (item.lastTakeover.aiCompleted > 0 && !item.repairInFlight) {
+		// single 的中间态不触发（assisted 循环结束后统一触发一次）。
+		if (
+			(!inLoop || !isSingle) &&
+			item.lastTakeover.aiCompleted > 0 &&
+			!item.repairInFlight
+		) {
 			void window.aiRepairFlowAfterTakeover(item)
 		}
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
@@ -1828,17 +2076,18 @@
 		console.error('[bridge] 回放错误：', message)
 		$('playbackUserOperation')?.setAttribute('hidden', '')
 		const item = playbackScopedItem()
-		if (item?.testRunning) {
-			recordingSession().playbackInFlight = false
-			activePlaybackScope = null
-			item.testRunning = false
-			const index = item.testResults.findIndex((result) => result.status === 'running')
-			if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
-			// 异常终止后未执行到的步骤保持 Pending（不写任何值）；
-			// Skipped 仅来自引擎 skip 事件（分支未走/isOptional 未生效）。
-			if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
-			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
-		}
+		if (!item?.testRunning) return
+		// assisted 循环中：段执行的异常经 IPC 返回值带给循环，由循环统一收尾。
+		if (assistedLoop && assistedLoop.item === item) return
+		recordingSession().playbackInFlight = false
+		activePlaybackScope = null
+		item.testRunning = false
+		const index = item.testResults.findIndex((result) => result.status === 'running')
+		if (index >= 0) item.testResults[index] = { status: 'fail', error: { message } }
+		// 异常终止后未执行到的步骤保持 Pending（不写任何值）；
+		// Skipped 仅来自引擎 skip 事件（分支未走/isOptional 未生效）。
+		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
+		if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
 	})
 
 	/* ================================================================

@@ -40,6 +40,22 @@ w.__flowlinkRrwebBoot = function (tabId: string): boolean {
 		// 安全硬要求：password 输入值一律掩码，与产品 secret 策略一致。
 		maskInputOptions: { password: true },
 		recordCanvas: false,
+		// 快照瘦身（重企业页面导航期 full snapshot 的 CPU 尖峰是录制闪烁的
+		// 剩余嫌疑之一）：保守组合——只去掉回放时不可见的节点，DOM 结构
+		// 与可见内容完全不变（script 保留，避免影响选择器语义）。
+		slimDOMOptions: {
+			script: false,
+			comment: true,
+			headFavicon: true,
+			headWhitespace: true,
+			headMetaDescKeywords: true,
+			headMetaRobots: true,
+			headMetaHttpEquiv: true,
+			headMetaAuthorship: true,
+			headMetaVerification: true,
+			headMetaSocial: true,
+			headTitleMutations: true,
+		},
 	})
 	w.__flowlinkRrwebStop = function (): void {
 		delete w.__flowlinkRrwebStop

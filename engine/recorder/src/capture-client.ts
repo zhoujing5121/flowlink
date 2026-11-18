@@ -10,11 +10,11 @@
  * 本侧负责 frame/page 身份、基于 locator 的校验与快照。frame 操作尽力而为，
  * 失败时返回缺失结果而不终止录制，因为导航和弹窗生命周期会让 frame 短暂失效。
  */
-import { readFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 import type { Candidate } from '../../schema/src/index.js'
-import type { BrowserContext, ElementHandle, Frame, Locator, Page } from 'playwright-core'
+import type { BrowserContext, CDPSession, ElementHandle, Frame, Locator, Page } from 'playwright-core'
 
 import type { PageSignature, RawElementFacts, RawEvent } from './types.js'
 
@@ -441,7 +441,13 @@ export function normalizeEmitPayload(payload: unknown): RawEvent | undefined {
  *
  * **不要用 `locator.screenshot()`**：它会 scrollIntoView，导致录制时页面自己滚动 ——
  * 用户看到的就是"每输入一次页面闪一下"，而且滚动事件会被录制器当成用户操作录进 flow。
- * 这里用 `page.screenshot({ clip })`：不滚动、不改变焦点，clip 用文档坐标（视口 rect + 滚动偏移）。
+ *
+ * 主路径是 **CDP screencast 单帧采集**（DevTools 预览同机制，绕开
+ * `Page.captureScreenshot` 的 fromSurface GPU 表面读回，后者在 Windows 上
+ * 与录制闪烁强相关）：startScreencast → 首帧 → ack → stop，Node 侧把整帧
+ * PNG 落盘，裁剪区以帧内像素坐标写入同目录 sidecar json（`<crop>.png.json`），
+ * 证据查看器按 sidecar 裁剪显示——零新增依赖。screencast 失败/超时则回退
+ * `page.screenshot({ clip })`（旧路径，真裁剪、无 sidecar）。
  * 只支持主 frame（iframe 内的元素跳过 crop，回放不受影响）。
  */
 export async function screenshotRegion(
@@ -453,7 +459,122 @@ export async function screenshotRegion(
 ): Promise<boolean> {
 	if (frame !== page.mainFrame()) return false
 	if (rect.width < 1 || rect.height < 1) return false
+	if (recorderShotsDisabled()) return false
+	if (await captureScreencastFrame(page, rect, scroll, path)) return true
+	return captureClippedScreenshot(page, rect, scroll, path)
+}
+
+/** 诊断开关：为 1 时录制期完全不做元素截图（crop 缺省），用于真机 bisect 闪烁来源。 */
+export function recorderShotsDisabled(): boolean {
+	return process.env.FLOWLINK_DISABLE_RECORDER_SHOTS === '1'
+}
+
+/** sidecar json 形状：整帧 PNG 内的裁剪区（帧像素坐标），渲染端按此显示元素区域。 */
+export interface CropSidecar {
+	version: 1
+	x: number
+	y: number
+	width: number
+	height: number
+	frameWidth: number
+	frameHeight: number
+}
+
+/** CDP `Page.screencastFrame` 携带的 metadata（Chromium 仅部分字段必有）。 */
+interface ScreencastFrameMetadata {
+	deviceWidth?: number
+	deviceHeight?: number
+	offsetTop?: number
+	pageScaleFactor?: number
+	scrollOffsetX?: number
+	scrollOffsetY?: number
+}
+
+/** screencast 首帧等待上限：超时说明该环境不支持/帧不来了，走旧回退路径。 */
+const SCREENCAST_FIRST_FRAME_TIMEOUT_MS = 1500
+
+async function captureScreencastFrame(
+	page: Page,
+	rect: { x: number; y: number; width: number; height: number },
+	scroll: { x: number; y: number },
+	path: string,
+): Promise<boolean> {
+	let session: CDPSession | undefined
 	try {
+		session = await page.context().newCDPSession(page)
+		const firstFrame = await new Promise<{ data?: string; metadata?: ScreencastFrameMetadata } | undefined>(
+			(resolveFrame) => {
+				let settled = false
+				const finish = (value?: { data?: string; metadata?: ScreencastFrameMetadata }) => {
+					if (settled) return
+					settled = true
+					clearTimeout(timer)
+					session!.off('Page.screencastFrame', onFrame)
+					resolveFrame(value)
+				}
+				const timer = setTimeout(() => finish(undefined), SCREENCAST_FIRST_FRAME_TIMEOUT_MS)
+				const onFrame = (params: { data?: string; sessionId?: number; metadata?: ScreencastFrameMetadata }) => {
+					// 收到即回 ack 并停止，保持会话按动作短开短关。
+					if (params.sessionId !== undefined)
+						session!.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {})
+					finish(params)
+				}
+				session!.on('Page.screencastFrame', onFrame)
+				session!.send('Page.startScreencast', { format: 'png', maxWidth: 1920, maxHeight: 1080 }).catch(
+					() => finish(undefined),
+				)
+			},
+		)
+		await session.send('Page.stopScreencast').catch(() => {})
+		if (!firstFrame?.data) return false
+		const png = Buffer.from(firstFrame.data, 'base64')
+		if (png.length < 24) return false
+		// IHDR 恒为首个 chunk：宽高在固定偏移（大端）。
+		const frameWidth = png.readUInt32BE(16)
+		const frameHeight = png.readUInt32BE(20)
+		if (!frameWidth || !frameHeight) return false
+		// 视口 CSS 尺寸 → 帧像素比例；metadata 缺失时退回 Playwright 视口信息。
+		const viewport = page.viewportSize()
+		const cssWidth = firstFrame.metadata?.deviceWidth || viewport?.width || frameWidth
+		const scale = frameWidth / cssWidth
+		const clamp = (value: number, min: number, max: number) =>
+			Math.min(max, Math.max(min, value))
+		// 文档坐标（rect + 滚动偏移）→ 帧内像素坐标；超出视口的部分被夹取，
+		// 元素半数在折叠线以下时只显示可见部分（证据查看器展示用户当时所见）。
+		const x0 = clamp(Math.round((rect.x + scroll.x) * scale), 0, frameWidth)
+		const y0 = clamp(Math.round((rect.y + scroll.y) * scale), 0, frameHeight)
+		const x1 = clamp(Math.round((rect.x + scroll.x + rect.width) * scale), 0, frameWidth)
+		const y1 = clamp(Math.round((rect.y + scroll.y + rect.height) * scale), 0, frameHeight)
+		if (x1 - x0 < 1 || y1 - y0 < 1) return false
+		const sidecar: CropSidecar = {
+			version: 1,
+			x: x0,
+			y: y0,
+			width: x1 - x0,
+			height: y1 - y0,
+			frameWidth,
+			frameHeight,
+		}
+		await writeFile(path, png)
+		await writeFile(`${path}.json`, JSON.stringify(sidecar))
+		return true
+	} catch {
+		return false
+	} finally {
+		await session?.detach().catch(() => {})
+	}
+}
+
+/** 旧路径：`page.screenshot({ clip })` 真裁剪（文档坐标），screencast 不可用时兜底。 */
+async function captureClippedScreenshot(
+	page: Page,
+	rect: { x: number; y: number; width: number; height: number },
+	scroll: { x: number; y: number },
+	path: string,
+): Promise<boolean> {
+	try {
+		// screencast 主路径失败时不应残留旧 sidecar，否则渲染端会按错误的 rect 裁剪。
+		await rm(`${path}.json`, { force: true }).catch(() => {})
 		await page.screenshot({
 			path,
 			animations: 'disabled',

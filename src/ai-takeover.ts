@@ -11,6 +11,8 @@
  *   被跳过的组报 skip；condition 步骤不交给 agent「执行」。
  * - 步骤完成 = agent 调用 mark_step_done 工具 + typed 结果 done=true 双门槛；
  *   单步两败后降级 free-run（剩余步骤合并为 goal 任务，完成即报）。
+ * - mode='single'：AI 单步接管——只执行失败的那一步，成功后由渲染端发起
+ *   playback:run resumeFromStepIndex 恢复程序回放；两败不降级 free-run（交还编排层）。
  * - manual 步骤暂停等待用户确认（复用 playback:userOperation 通道）。
  * - 每步成功后由主进程回传元素证据（a11y/交互摘要），写入 ai-takeover.json。
  * - 护栏：总时长 15 min、每步 1 次重试、AbortController 随 playback:stop 触发。
@@ -89,7 +91,18 @@ export interface AiTakeoverDoneEvent {
 	remaining: number[]
 	summary: string
 	artifactDir: string
+	/** 本次接管模式：remaining=接管剩余全部；single=只执行失败的一步（执行器随后 resume）。 */
+	mode: TakeoverMode
 }
+
+/**
+ * 接管模式：
+ * - remaining：接管 fromStepIndex 起的全部剩余步骤（旧全量路径，单步两败可降级 free-run）。
+ * - single：只执行 fromStepIndex 这一步（AI 单步接管；成功后由渲染端发起
+ *   playback:run resumeFromStepIndex 恢复程序回放）。单步两败不触发 free-run
+ *   ——free-run 属于全量模式的降级，单步模式的失败交还编排层决策。
+ */
+export type TakeoverMode = 'remaining' | 'single'
 
 export interface StartAiTakeoverDeps {
 	cdpUrl: string
@@ -127,6 +140,8 @@ export interface StartAiTakeoverOptions {
 	flow: Flow
 	fromStepIndex: number
 	variables: Record<string, string>
+	/** 缺省 remaining（接管剩余全部）；single 见 TakeoverMode 注释。 */
+	mode?: TakeoverMode
 	failureSummary?: string
 	deps: StartAiTakeoverDeps
 }
@@ -561,6 +576,7 @@ export async function startAiTakeover(options: StartAiTakeoverOptions): Promise<
 
 async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 	const { flow, deps } = options
+	const mode: TakeoverMode = options.mode === 'single' ? 'single' : 'remaining'
 	const flattened = flattenSteps(flow.steps)
 	const fromStepIndex = Math.max(0, Math.min(options.fromStepIndex, flattened.length - 1))
 	if (!flattened.slice(fromStepIndex).length) throw new Error('No remaining steps to take over.')
@@ -579,7 +595,18 @@ async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 	activeAbort = controller
 
 	// ---- 分支感知路由：接管前先按执行器同款语义「跑一遍路由」定子序列 ----
-	const routing = await planRouting(flow, fromStepIndex, deps.evaluateGateCondition)
+	// single 模式不做路由：只把 fromStepIndex 这一步交给 agent，其余步骤的
+	// 恢复由渲染端用 playback:run resumeFromStepIndex（执行器 startCursor）完成。
+	const routing =
+		mode === 'single'
+			? {
+					selected: [flattened[fromStepIndex]!],
+					skipped: [] as Array<{ step: FlatStep; reason: string }>,
+					gateNotes: [
+						`single-step mode: only step ${fromStepIndex + 1} is handed to the agent; program replay resumes from step ${fromStepIndex + 2}`,
+					],
+				}
+			: await planRouting(flow, fromStepIndex, deps.evaluateGateCondition)
 
 	// secret 缺失前置检查：剩余（选定子序列）步骤真的引用了未提供值的 secret
 	// 变量时直接报错，避免跑到登录步才发现必然卡死。
@@ -894,7 +921,9 @@ async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 						...(error ? { error } : {}),
 					})
 					// 单步两败：不硬闯，降级 free-run（剩余步骤合并为 goal 任务自主完成）。
-					enterFreeRun = true
+					// free-run 只属全量模式；single 模式的失败交还编排层（渲染端决定
+					// 重试单步还是回退全量接管）。
+					enterFreeRun = mode === 'remaining'
 					break
 				}
 			}
@@ -987,7 +1016,15 @@ async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 			const skippedNote = routing.skipped.length
 				? ` ${routing.skipped.length} step(s) were skipped by gate conditions before takeover.`
 				: ''
-			if (allDone) {
+			if (mode === 'single') {
+				summary = allDone
+					? `Single-step AI takeover completed step ${fromStepIndex + 1}${manualCompleted ? ' (confirmed manually by the user)' : ''}. Program replay resumes from step ${fromStepIndex + 2}.`
+					: controller.signal.aborted
+						? `Single-step AI takeover stopped (${completed.length}/${projections.length} step completed).`
+						: aborted.size
+							? `Single-step AI takeover stopped before finishing: ${[...aborted][0]}.`
+							: `Single-step AI takeover could not complete step ${fromStepIndex + 1}; the orchestrator decides whether to retry or fall back to a full takeover.`
+			} else if (allDone) {
 				summary = `AI completed all ${projections.length} remaining step(s)${
 					freeRunCompleted ? ` (${freeRunCompleted} in free-run mode)` : ''
 				}${manualCompleted ? ` (${manualCompleted} confirmed manually by the user)` : ''}.${skippedNote}`
@@ -1010,6 +1047,7 @@ async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 				startedAt: new Date().toISOString(),
 				flowId: flow.id,
 				fromStepIndex,
+				mode,
 				model: `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
 				routing: {
 					gates: routing.gateNotes,
@@ -1031,6 +1069,7 @@ async function runTakeover(options: StartAiTakeoverOptions): Promise<void> {
 				remaining: remainingAfter,
 				summary,
 				artifactDir: runDir,
+				mode,
 			})
 		} finally {
 			clearTimeout(deadline)

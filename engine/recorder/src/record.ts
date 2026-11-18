@@ -47,6 +47,7 @@ import {
 	normalizeEmitPayload,
 	readFactsByUid,
 	readFactsFromHandle,
+	recorderShotsDisabled,
 	screenshotRegion,
 	snapshotPage,
 	validateCandidates,
@@ -153,13 +154,6 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 	const elementsDir = join(artifactsDir, 'record', 'elements')
 	/** 懒创建：录制失败或 0 步时不该留下空目录 */
 	let elementsDirReady = false
-	let screenshotsDirReady = false
-	const screenshotsDir = join(artifactsDir, 'record', 'screenshots')
-	const ensureScreenshotsDir = async (): Promise<void> => {
-		if (screenshotsDirReady) return
-		await mkdir(screenshotsDir, { recursive: true })
-		screenshotsDirReady = true
-	}
 	const ensureElementsDir = async (): Promise<void> => {
 		if (elementsDirReady) return
 		await mkdir(elementsDir, { recursive: true })
@@ -761,9 +755,10 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 			}
 
 			// 元素裁剪图（crop.ref 相对 artifacts/<flowId>/）
-			// 用非滚动截图（page.screenshot + clip）：不改变页面滚动/焦点，否则会录到"自己造成的滚动"
+			// 采集走 CDP screencast 单帧（见 capture-client.screenshotRegion）；
+			// FLOWLINK_DISABLE_RECORDER_SHOTS=1 时完全跳过（诊断开关，crop 缺省）。
 			let crop: ElementRef['crop']
-			if (locator) {
+			if (locator && !recorderShotsDisabled()) {
 				const ref = `record/elements/${elementKey}.png`
 				await ensureElementsDir()
 				const shot = await screenshotRegion(
@@ -890,13 +885,9 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		const buildStep = async (action: CoalescedAction): Promise<Step | undefined> => {
 			const stepIndex = steps.length
 			const id = `s${++stepSeq}`
-			try {
-				await ensureScreenshotsDir()
-				await pageOfAction(action).screenshot({
-					path: join(screenshotsDir, `step-${String(stepIndex + 1).padStart(4, '0')}.png`),
-					type: 'png',
-				})
-			} catch {}
+			// 整页步骤截图（step-NNNN.png）已移除：与 Playwright CDP 截图的 GPU 表面
+			// 读回一起被列为录制闪烁的主嫌疑，且 rrweb 回放已覆盖其用途。
+			// main.ts stopRecordingSession 的 stepScreenshots 目录读取保留（兼容旧数据）。
 			if (action.kind === 'navigate') {
 				// 机器跳转合成的 navigate 带 isOptional：回放时若浏览器已自行重定向则跳过
 				const isOptional = AUTO_NAVIGATION_TYPES.has(action.navigationType ?? '')

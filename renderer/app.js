@@ -2073,22 +2073,13 @@ function fillInstructionPanel(panel, item) {
   const container = view.querySelector(".grouped-steps");
   const status = view.querySelector(".instruction-status:not(.error)");
   const errorBox = view.querySelector(".instruction-status.error");
-  const polish = view.querySelector("#instructionAiPolish");
   status.hidden = true;
   errorBox.hidden = true;
   if (!item) {
     container.replaceChildren();
-    if (polish) polish.hidden = true;
     return;
   }
   ensureInstructionArtifacts(item);
-  if (polish) {
-    polish.hidden = !item.processFlow;
-    polish.disabled =
-      !item.recordingId ||
-      !window.flowlink?.pi?.generateFlow ||
-      !!item.processFlowLoading;
-  }
   if (!item.processFlow) {
     container.replaceChildren();
     if (item.processFlowError) {
@@ -2638,7 +2629,24 @@ function appendTargetViewer(fieldsEl, item, entry) {
     const crop = (item.instructionArtifacts?.crops || []).find(
       (candidate) => candidate.stepId === step.id,
     );
-    if (crop) {
+    if (crop?.rect && crop?.frame && crop.rect.width > 0 && crop.rect.height > 0) {
+      // screencast 采集的整帧 + sidecar 裁剪矩形：CSS 定位裁出元素区域显示
+      const scale = Math.min(320 / crop.rect.width, 240 / crop.rect.height, 3);
+      const frame = document.createElement("div");
+      frame.className = "target-crop-frame";
+      frame.style.width = `${Math.round(crop.rect.width * scale)}px`;
+      frame.style.height = `${Math.round(crop.rect.height * scale)}px`;
+      const img = document.createElement("img");
+      img.src = crop.url;
+      img.alt = "目标元素截图";
+      img.loading = "lazy";
+      img.style.width = `${Math.round(crop.frame.width * scale)}px`;
+      img.style.height = `${Math.round(crop.frame.height * scale)}px`;
+      img.style.left = `${-Math.round(crop.rect.x * scale)}px`;
+      img.style.top = `${-Math.round(crop.rect.y * scale)}px`;
+      frame.appendChild(img);
+      box.appendChild(frame);
+    } else if (crop) {
       const img = document.createElement("img");
       img.className = "target-crop";
       img.src = crop.url;
@@ -2943,25 +2951,54 @@ async function moveInstructionStep(item, flatIndex, delta) {
   }
 }
 
+/** 快操作：直接删除步骤（不加确认）。删空所在组时连同空组删除，并清理
+ * 指向该组的 condition true/false 引用（与 deleteProcessGroup 同款清理）；
+ * 唯一组的最后一步不允许删（契约要求 Flow 至少保留一个组），保存失败用
+ * 快照回滚并提示。 */
 async function deleteInstructionStep(item, flatIndex) {
+  // flush 成功会以服务端返回的 steps 替换引用，之后的查找都必须在 flush 之后做。
+  await flushInstructionEdits(item);
   const found = instructionStepEntry(item, flatIndex);
   if (!found) return;
   const { entry } = found;
-  const group = item.processFlow.steps.find(
+  const steps = item.processFlow.steps;
+  const group = steps.find(
     (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
   );
   if (!group) return;
-  if (
-    !(await confirmWorkspaceAction(
-      `删除步骤「${processStepLabel(entry.step, entry.index, ensureProcessGroups(item))}」？`,
-    ))
-  )
+  const groups = steps.filter((candidate) => candidate.kind === "group");
+  if (groups.length <= 1 && group.steps.length <= 1) {
+    showFlowlinkNotice("流程至少需要保留一个步骤，无法删除。", "warn");
     return;
-  await flushInstructionEdits(item); // 确认对话框期间可能已有防抖编辑，先落盘
-  const snapshot = structuredClone(item.processFlow.steps);
+  }
+  const groupView = ensureProcessGroups(item).find((g) => g.id === entry.groupId);
+  const numberLabel = groupView
+    ? groupView.number + "-" + String(entry.index - groupView.start + 1).padStart(3, "0")
+    : "步骤";
+  const snapshot = structuredClone(steps);
   group.steps.splice(group.steps.indexOf(entry.step), 1);
+  let removedGroup = false;
+  if (!group.steps.length) {
+    steps.splice(steps.indexOf(group), 1);
+    removedGroup = true;
+    for (const candidate of steps) {
+      if (candidate.kind !== "group") continue;
+      const last = candidate.steps.at(-1);
+      if (last?.kind !== "condition") continue;
+      if (last.trueGroupId === group.id) delete last.trueGroupId;
+      if (last.falseGroupId === group.id) delete last.falseGroupId;
+    }
+  }
+  item.instructionStepOpen = item.instructionStepOpen.filter(
+    (value) => value !== entry.flattenedStepId,
+  );
   try {
     await persistProcessFlow(item);
+    showFlowlinkNotice(
+      removedGroup
+        ? "已删除步骤 " + numberLabel + "，所在空组已一并删除。"
+        : "已删除步骤 " + numberLabel + "。",
+    );
     renderSummaryWorkspace();
   } catch (error) {
     item.processFlow = { ...item.processFlow, steps: snapshot };
@@ -2997,11 +3034,6 @@ async function beginInstructionPolish(item) {
       "warn",
     );
     return;
-  }
-  const button = document.getElementById("instructionAiPolish");
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Pi 正在润色…";
   }
   try {
     const result = await bridge.generateFlow({
@@ -3044,11 +3076,6 @@ async function beginInstructionPolish(item) {
       "AI 润色失败：" + (error instanceof Error ? error.message : String(error)),
       "warn",
     );
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = "AI 润色步骤描述";
-    }
   }
 }
 
@@ -3243,7 +3270,11 @@ function fillRecordPanel(panel, item) {
 }
 
 function renderRecordingScreenshots(section, screenshots) {
-  section.querySelector(".recording-screenshots").replaceChildren(
+  const wall = section.querySelector(".recording-screenshots");
+  // 新录制不再产出整页步骤截图（录制闪烁优化；rrweb 回放为主展示）：
+  // 空列表时隐藏截图墙区块，不留占位。
+  wall.hidden = !screenshots.length;
+  wall.replaceChildren(
     ...screenshots.map((file) => {
       const shot = rowTemplate("recordingScreenshotTemplate").cloneNode(true);
       shot.dataset.screenshotZoom = file.image;
@@ -4958,7 +4989,9 @@ const REFINE_PRESETS = [
   "Add stability waits around page transitions",
   "Add assertions for key outcomes",
   "Move repeated text inputs into Reference variables",
+  "Optimize step descriptions (labels only)",
 ];
+const POLISH_LABEL_PRESET = "Optimize step descriptions (labels only)";
 
 function submitRefineOptions() {
   const state = recordingSession();
@@ -4967,11 +5000,35 @@ function submitRefineOptions() {
       document.querySelector(`input[data-refine-preset="${index}"]`)?.checked,
   );
   const freeText = $("refineFreeText")?.value.trim() || "";
+  // 「仅优化步骤描述」单独勾选且无自由文本：直达 Instruction 润色管线
+  // （label-only 生成 + diff 确认写回当前录制）；与其它预设或自由文本
+  // 组合时并入 instruction，走全量 refine（生成提示词本就要求业务语言 label）。
+  if (presets.length === 1 && presets[0] === POLISH_LABEL_PRESET && !freeText) {
+    state.aiMode = undefined;
+    renderAIPanel();
+    void submitInstructionPolishPreset();
+    return;
+  }
   const instruction =
     [...presets, freeText].filter(Boolean).join(" ") ||
     "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
   state.aiMode = undefined;
   invokeAIMerge("input", instruction, { forceMaterial: true });
+}
+
+/** AI 面板润色预设入口（原 Instruction 头部按钮已移除）：对当前聚焦的
+ * 录制跑 label-only 润色，必要时先补载它保存的 Flow。 */
+async function submitInstructionPolishPreset() {
+  const item = currentAssistantItem();
+  if (item && !item.processFlowLoaded) await hydrateProcessFlow(item);
+  if (!item?.processFlow?.steps || !item.recordingId) {
+    showFlowlinkNotice(
+      "润色步骤描述需要当前打开一个已保存的录制（先在列表中选中它）。",
+      "warn",
+    );
+    return;
+  }
+  await beginInstructionPolish(item);
 }
 
 /* ---------------- @ 提及与附件（录制 id 进 UI 状态，Flow 载荷只在主进程组装） ---------------- */
@@ -5257,26 +5314,44 @@ function renderAIPanel() {
       }),
     );
     // 失败后的 AI 接管入口：有失败步骤、无运行中的回放/接管时显示。
+    // 主入口 = 单步 AI 接管（runAiAssistedTest：AI 只执行失败的那一步，
+    // 成功后从下一步恢复程序回放，最多 6 次单步介入，两败回退全量）；
+    // 次入口 = 旧全量接管（aiContinueFlowlinkTest：剩余步骤全部交给 agent）。
     const aiContinue = quickHost.querySelector("#aiContinueTest");
-    if (aiContinue) {
+    const aiTakeoverAll = quickHost.querySelector("#aiTakeoverAll");
+    if (aiContinue || aiTakeoverAll) {
       const hasFail = results.some((result) => result?.status === "fail");
       const canContinue = !!(
         recording?.recordingId &&
         hasFail &&
         !recording.testRunning &&
+        !recording.assistedLoopActive &&
         !state.playbackInFlight
       );
-      aiContinue.hidden = !canContinue;
-      aiContinue.onclick = canContinue
-        ? () => {
-            if (typeof window.aiContinueFlowlinkTest === "function") {
-              void window.aiContinueFlowlinkTest(recording);
+      if (aiContinue) {
+        aiContinue.hidden = !canContinue;
+        aiContinue.onclick = canContinue
+          ? () => {
+              if (typeof window.runAiAssistedTest === "function") {
+                void window.runAiAssistedTest(recording);
+              }
             }
-          }
-        : null;
+          : null;
+      }
+      if (aiTakeoverAll) {
+        aiTakeoverAll.hidden = !canContinue;
+        aiTakeoverAll.onclick = canContinue
+          ? () => {
+              if (typeof window.aiContinueFlowlinkTest === "function") {
+                void window.aiContinueFlowlinkTest(recording);
+              }
+            }
+          : null;
+      }
     }
   } else {
     quickHost.querySelector("#aiContinueTest").hidden = true;
+    quickHost.querySelector("#aiTakeoverAll").hidden = true;
   }
   if (selectedGroup && !testTab)
     stepsHost.querySelector(".assistant-group-name").textContent =
@@ -6231,10 +6306,6 @@ function bindStepEditor() {
       }
     }
   };
-  const view = panel.querySelector('[data-result-tab="Instruction"]');
-  const polish = view?.querySelector("#instructionAiPolish");
-  if (polish)
-    polish.onclick = () => void beginInstructionPolish(currentAssistantItem());
   if (!panel.dataset.instructionExpandBound) {
     panel.addEventListener("click", (e) => {
       const menuButton = e.target.closest(".instruction-step-menu");

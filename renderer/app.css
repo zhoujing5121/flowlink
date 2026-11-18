@@ -2940,6 +2940,11 @@ body {
   align-items: start;
 }
 
+/* display:grid 会压过 UA 的 [hidden]，空截图墙的显式隐藏必须自给 */
+.recording-screenshots[hidden] {
+  display: none;
+}
+
 .recording-screenshot-file {
   display: flex;
   flex-direction: column;
@@ -4631,24 +4636,6 @@ body {
   color: #b3261e;
 }
 
-.instruction-polish {
-  height: 40px;
-  padding: 0 16px;
-  border: 1px solid #00884a;
-  color: #00884a;
-  background: transparent;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.instruction-polish:disabled {
-  border-color: #a4aeb7;
-  color: #838b92;
-  cursor: default;
-}
-
 .instruction-group-title {
   display: flex;
   flex-direction: column;
@@ -4854,6 +4841,20 @@ body {
   border: 1px solid #c5cdd4;
   border-radius: 4px;
   background: #fff;
+}
+
+/* screencast 整帧 + sidecar rect 的 CSS 裁剪视图（与 .target-crop 同皮肤） */
+.target-crop-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #c5cdd4;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.target-crop-frame img {
+  position: absolute;
+  max-width: none;
 }
 
 .target-facts {
@@ -7504,6 +7505,19 @@ body .btn.secondary:disabled {
 
 .rrweb-tab-view[hidden] {
   display: none;
+}
+
+/* 防御：即使 rrweb 基础样式（.replayer-* 规则）缺失，回放 iframe 也锚定
+ * 在舞台左上角而不是被 mouse-tail canvas 挤出可视区（黑屏兜底，见
+ * dist/renderer-vendor.css）。与 rrweb 自带样式同时存在时视觉等价。 */
+.rrweb-tab-view .replayer-wrapper {
+  position: relative;
+}
+
+.rrweb-tab-view .replayer-wrapper > iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 .rrweb-player-bar {

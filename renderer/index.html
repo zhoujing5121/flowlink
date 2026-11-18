@@ -7,6 +7,8 @@
     <link rel="icon" href="assets/icon.svg" />
     <link rel="stylesheet" href="app.css" />
     <link rel="stylesheet" href="../dist/rrweb-replay.css" />
+    <!-- rrweb Replayer 样式随 vendor 构建产出（与 renderer-vendor.js 同源），须在 vendor.js 之前 -->
+    <link rel="stylesheet" href="../dist/renderer-vendor.css" />
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -763,7 +765,15 @@
               class="ai-continue-test"
               hidden
             >
-              Run remaining steps with AI
+              AI Continue · fix failed step, then resume
+            </button>
+            <button
+              type="button"
+              id="aiTakeoverAll"
+              class="ai-continue-test"
+              hidden
+            >
+              AI: run all remaining steps
             </button>
             <div class="quick-action-group" data-quick-block="group" hidden>
               <div class="assistant-group-options">
@@ -1102,14 +1112,6 @@
                   <div class="instruction-header">
                     <div class="instruction-status" role="status" hidden></div>
                     <div class="instruction-status error" role="alert" hidden></div>
-                    <button
-                      id="instructionAiPolish"
-                      class="instruction-polish"
-                      type="button"
-                      hidden
-                    >
-                      AI 润色步骤描述
-                    </button>
                   </div>
                   <div class="grouped-steps"></div>
                 </div>
