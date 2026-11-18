@@ -1,32 +1,29 @@
 schema: spec-driven
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+context: |
+  Windows-only Electron 桌面应用（win32 x64 打包），Electron/Playwright Core/Zod/Pi SDK 为 external 依赖
+  验证门槛：npm run build + npx tsc --noEmit；不主动运行测试套件
+  UI/录制/回放改动需真机验证通过才算完成；commit 由用户主导
+  遵守 AGENTS.md 的 invariants（observed 证据不可变、Zod 校验、preload 边界、敏感值不落日志）
+  规划工件用中文撰写，代码标识符与 requirement 标题保留英文
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 必须明确列出 out-of-scope
+    - 引用相关架构文档路径而非复制其内容
+  specs:
+    - 只描述行为契约，不写实现细节；实现细节放 design.md
+    - 仅描述已实现或将随本 change 实现的行为，不得包含 roadmap 提案中未实施的能力
+  tasks:
+    - 每个任务可独立验证；收尾任务必须是 build + tsc 验证
+    - 涉及 UI/录制/回放时包含一条真机验证任务
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - 遵守 AGENTS.md invariants 与实现模式
+      - 不主动 commit、不自动进入 archive
+  archive:
+    guidance:
+      - 确认所有任务已勾选且验证通过后再归档
+      - 归档后简述 delta 合入主 specs 的结果
