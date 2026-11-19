@@ -7793,6 +7793,32 @@ function showWorkspaceNotice(message) {
   });
 }
 
+// 危险操作确认（替代 window.confirm）：模板化 <dialog>，Esc/cancel 均视为拒绝。
+function showConfirmDialog(message, { confirmLabel = "OK" } = {}) {
+  return new Promise((resolve) => {
+    const dialog = rowTemplate("confirmDialogTemplate").cloneNode(true);
+    dialog.querySelector("[data-confirm-message]").textContent = message;
+    const confirm = dialog.querySelector("[data-confirm-ok]");
+    confirm.textContent = confirmLabel;
+    const finish = (value) => {
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    dialog.oncancel = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    confirm.onclick = () => finish(true);
+    dialog.querySelector("[data-confirm-cancel]").onclick = () =>
+      finish(false);
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    confirm.focus();
+  });
+}
+window.showConfirmDialog = showConfirmDialog;
+
 async function addProcessGroupAfter(item, groupId) {
   const groups = item.processFlow?.steps || [];
   const index = groups.findIndex((group) => group.kind === "group" && group.id === groupId);

@@ -39,8 +39,8 @@ export interface RecordingMeta {
 	frames?: string[]
 	stepScreenshots?: string[]
 	lastRun?: RecordingLastRun
-	/** 是否由 AI-assistant 合并生成 */
-	isMerged?: boolean
+	/** 是否由 AI 细化（REFINED）生成 */
+	isRefined?: boolean
 	/**
 	 * 未决议的 pending 更新标记（REFINED 单线演进）：
 	 * AI 针对该 REFINED 记录生成的修改落在 artifacts/<flowId>/pending.json，

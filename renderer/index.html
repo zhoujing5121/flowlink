@@ -1694,6 +1694,21 @@
         </div>
       </dialog>
     </template>
+    <template id="confirmDialogTemplate">
+      <dialog class="reference-dialog" aria-label="Confirm">
+        <p data-confirm-message></p>
+        <div class="reference-dialog-actions">
+          <button type="button" class="btn" data-confirm-ok></button>
+          <button
+            type="button"
+            class="btn secondary"
+            data-confirm-cancel
+          >
+            Cancel
+          </button>
+        </div>
+      </dialog>
+    </template>
     <template id="processStepEditorTemplate">
       <dialog class="reference-dialog process-step-dialog">
         <form class="reference-editor process-step-editor" novalidate>

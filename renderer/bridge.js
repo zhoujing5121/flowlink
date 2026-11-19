@@ -89,7 +89,7 @@
 				name: recording.name || recording.id,
 				analyzed: true,
 				recorded: true,
-				summary: !!recording.isMerged,
+				summary: !!recording.isRefined,
 				resultTab: 'Process',
 				url: '',
 				route: 'suppliers',
@@ -1534,7 +1534,7 @@
 				},
 			})
 			// 分流（REFINED 单线演进）：
-			// - 目标为已有 REFINED 记录（item.summary ⇔ 元数据 isMerged）：
+			// - 目标为已有 REFINED 记录（item.summary ⇔ 元数据 isRefined）：
 			//   不再另存新记录，也不产生 pending——直接 version+1 落盘，
 			//   历史快照兜底回滚（主进程 flow:directUpdate）。
 			// - 目标为原始 Record：维持现状，REPAIRED- 另存为全新录制。
@@ -1701,9 +1701,12 @@
 		}
 	}
 
-	/** Delete：确认后调 IPC 删除 */
+	/** Delete：应用内模态弹窗确认后调 IPC 删除 */
 	async function deleteFlow(code) {
-		if (!window.confirm(`确定删除 ${code}？此操作不可撤销。`)) return
+		const confirmed = await window.showConfirmDialog(`确定删除 ${code}？此操作不可撤销。`, {
+			confirmLabel: '删除',
+		})
+		if (!confirmed) return
 		try {
 			await F.tasks.remove(code)
 			const idx = flowData.findIndex((f) => f.code === code)
@@ -1713,7 +1716,7 @@
 			render()
 		} catch (err) {
 			console.error('[bridge] 删除失败：', err)
-			alert('删除失败：' + err.message)
+			window.showFlowlinkNotice('删除失败：' + err.message, 'warn')
 		}
 	}
 

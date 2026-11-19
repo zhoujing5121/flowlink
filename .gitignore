@@ -6,5 +6,6 @@ release/
 .DS_Store
 config/pi-auth.json
 config/models.json
+config/models-store.json
 .claude/
 /scratch-*/

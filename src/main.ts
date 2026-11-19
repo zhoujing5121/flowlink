@@ -630,7 +630,7 @@ interface RecordingStopResult {
 	error?: string
 }
 
-/** 把（已通过 schema 校验的）细化 Flow 保存为一条全新的 isMerged 录制；永不覆盖已有录制。 */
+/** 把（已通过 schema 校验的）细化 Flow 保存为一条全新的 isRefined 录制；永不覆盖已有录制。 */
 async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Promise<RecordingMeta> {
 	const recordingId = makeId('recording')
 	const artifactsDir = join(artifactsRoot, recordingId)
@@ -647,7 +647,7 @@ async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Pr
 		posterFile: '',
 		frames: [],
 		stepScreenshots: [],
-		isMerged: true,
+		isRefined: true,
 	}
 	await taskStore.addRecording(taskCode, recording)
 	return recording
@@ -2292,8 +2292,8 @@ function registerIpc(): void {
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			// 分流守卫：pending 只面向 REFINED（isMerged）记录；原始 Record 必须走另存新纪录路径。
-			if (!recording.isMerged) throw new Error('原始录制不适用待确认更新（请走另存新纪录路径）')
+			// 分流守卫：pending 只面向 REFINED（isRefined）记录；原始 Record 必须走另存新纪录路径。
+			if (!recording.isRefined) throw new Error('原始录制不适用待确认更新（请走另存新纪录路径）')
 			const current = await loadFlow(recording.flowFile)
 			// 与 saveFlow 同一约束：先完整校验再落盘；单槽设计，新 pending 覆盖旧 pending。
 			const flow = parseFlow(opts.flow, pendingPathOf(recording))
@@ -2408,7 +2408,7 @@ function registerIpc(): void {
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			if (!recording.isMerged) throw new Error('原始录制不适用直落盘（请走 REPAIRED- 另存路径）')
+			if (!recording.isRefined) throw new Error('原始录制不适用直落盘（请走 REPAIRED- 另存路径）')
 			// 先完整校验再生效；不做 baseVersion 校验（修复以最新现场为准，历史快照兜底回滚）。
 			const flow = parseFlow(opts.flow, recording.flowFile)
 			return persistFlowUpdate(
