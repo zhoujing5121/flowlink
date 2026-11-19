@@ -1328,27 +1328,6 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
 
 function fillProcessPanel(panel, item) {
   const canvas = panel.querySelector(".process-canvas");
-  // 提案对比模式：存在未决定提案时接管整个 Process 画布（普通画布世界、
-  // 缩放控件、组编辑动作全部让位；bindProcessMap 据 dataset 跳过平移缩放）。
-  const proposalHost = canvas.querySelector(".process-proposal");
-  const proposal = item?.pendingProposal?.flow ? item.pendingProposal : null;
-  if (proposalHost) proposalHost.hidden = !proposal;
-  canvas.dataset.proposalActive = proposal ? "1" : "";
-  if (proposal) {
-    canvas.querySelector(".process-canvas-world").hidden = true;
-    canvas.querySelector(".canvas-view-controls").hidden = true;
-    // 对比视图自带状态提示：当前 Flow 加载中 / 加载失败（error）时在横幅下方显示。
-    const loadingStatus = canvas.querySelector(".process-status:not(.error)");
-    loadingStatus.hidden = !(item?.processFlowLoading && !item.processFlow);
-    if (!loadingStatus.hidden) loadingStatus.textContent = "正在加载当前流程用于对比…";
-    const errorStatus = canvas.querySelector(".process-status.error");
-    errorStatus.hidden = !(item?.processFlowError && !item.processFlow);
-    if (!errorStatus.hidden) errorStatus.textContent = item.processFlowError;
-    canvas.querySelectorAll(".process-source-legend").forEach((node) => node.remove());
-    canvas.querySelectorAll("[data-group-actions]").forEach((node) => node.remove());
-    fillProposalCompareView(canvas, item, proposal);
-    return;
-  }
   canvas.querySelector(".process-canvas-world").hidden = false;
   canvas.querySelector(".canvas-view-controls").hidden = false;
   canvas.querySelector(".process-status:not(.error)").hidden =
@@ -2134,11 +2113,11 @@ function fillInstructionPanel(panel, item) {
   item.instructionExpanded ??= [];
   item.instructionStepOpen ??= [];
   const editable = instructionEditable(item);
-  // 未决定提案与编辑互斥提示：编辑基于当前版本直接生效；提案基于生成时的
-  // 版本对比，编辑生效（version 前进）后 Apply 会被禁用并要求重新生成。
-  if (item.pendingProposal?.flow) {
+  // 未决议 pending 与编辑互斥提示：编辑基于当前版本直接生效；pending 基于生成时
+  // 的版本对比，编辑生效（version 前进）后 Confirm 会被拒绝并要求重新生成。
+  if (item.pendingUpdate?.flow) {
     status.textContent =
-      "存在未决定的 AI 流程更新提案：此处的编辑基于当前版本直接生效；请先在 Process 标签页 Apply 或 Discard（编辑生效后 Apply 会被禁用，需重新生成提案）。";
+      "存在待确认的 AI 流程更新：此处的编辑基于当前版本直接生效；编辑生效后待确认版本将无法确认（需重新生成）。请先在 AI 面板 Confirm 或 Discard。";
     status.hidden = false;
   }
   container.replaceChildren(
@@ -4897,8 +4876,9 @@ function summarizeRecordings() {
   }
   // Refine 打开欢迎选项菜单（merge/generate/optimize）；选 optimize 才进入
   // 预设勾选+自由文本表单。进入分析页本身不再自动弹出任何欢迎选项。
+  // 勾选快照是 refine 表单路径的唯一来源（提交时显式使用，不做聊天粘性）。
   state.refineMenuOpen = true;
-  state.aiSourceIds = chosen.map((item) => item.id);
+  state.aiRefineSources = chosen;
   state.aiOpen = true;
   renderRecordingWorkspace();
   renderAIPanel();
@@ -5078,19 +5058,6 @@ function renderSummaryWorkspace() {
           item.resultTab === "Test" ||
           item.resultTab === "Instruction")
       )
-        renderSummaryWorkspace();
-    });
-  }
-  // 提案检测：Process 标签页打开时按需查一次未决定提案（文件是事实源）。
-  // pendingProposalLoaded 由 ai:proposal 事件与生成方置脏。
-  if (
-    active === "Process" &&
-    item?.recordingId &&
-    !item.pendingProposalLoaded &&
-    !item.pendingProposalLoading
-  ) {
-    void hydrateProcessProposal(item).then(() => {
-      if (currentAssistantItem() === item && item.resultTab === "Process")
         renderSummaryWorkspace();
     });
   }
@@ -5446,10 +5413,14 @@ function submitRefineOptions() {
     "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
   state.aiMode = undefined;
   state.aiRefineFormBuilt = false;
+  // 提交时的显式来源：打开菜单时的勾选快照（一次性使用后清空）。
+  const refineSources = state.aiRefineSources || [];
+  state.aiRefineSources = [];
   invokeAIMerge("input", instruction, {
     forceMaterial: true,
     refinePresets: presets,
     refineText: freeText,
+    refineSources,
   });
 }
 
@@ -5614,8 +5585,8 @@ function renderAIPanel() {
     item = currentAssistantContext(),
     testTab = recording?.resultTab === "Test",
     open = drawerView === "Design" && state.aiOpen;
-  // refine-options 是一次性模式：面板关闭或来源丢失时还原为普通面板。
-  if (state.aiMode === "refine-options" && (!open || !state.aiSourceIds?.length))
+  // refine-options 是一次性模式：面板关闭或 refine 来源快照丢失时还原为普通面板。
+  if (state.aiMode === "refine-options" && (!open || !state.aiRefineSources?.length))
     state.aiMode = undefined;
   const refineOptions = state.aiMode === "refine-options";
   if (!refineOptions && state.aiRefineFormBuilt) {
@@ -5642,6 +5613,19 @@ function renderAIPanel() {
   if (!open) return;
   prewarmPiOnce();
   ensureAssistantData(item);
+  // pending 恢复：AI 面板打开时按需查一次未决议 pending（文件是事实源，
+  // 不依赖 Process 标签页）；pendingLoaded 由 ai:pending 事件与生成方置脏。
+  if (
+    recording?.recordingId &&
+    recording.flowFile &&
+    !recording.pendingLoaded &&
+    !recording.pendingLoading
+  ) {
+    void hydratePendingUpdate(recording).then(() => {
+      if (currentAssistantItem() === recording && recordingSession().aiOpen)
+        renderAIPanel();
+    });
+  }
   bindAssistantResize();
   $("assistantFileName").textContent = "AI Assistant";
   $("assistantClose").onclick = () => {
@@ -5684,7 +5668,7 @@ function renderAIPanel() {
     selectedGroup && !testTab
   );
   if (refineOptions) {
-    const count = state.aiSourceIds?.length || 0;
+    const count = state.aiRefineSources?.length || 0;
     quickHost.querySelector(".assistant-refine-title").textContent =
       "Refine " +
       (count === 1 ? "1 selected material" : count + " selected materials");
@@ -5717,6 +5701,18 @@ function renderAIPanel() {
       renderRefineChips(quickHost, state);
     }
   }
+  // 未决议 pending 快捷块：Confirm / Discard（存在时显示，来源与版本进 tooltip）。
+  const pendingUpdate = recording?.pendingUpdate?.flow ? recording.pendingUpdate : null;
+  const pendingBlock = quickHost.querySelector('[data-quick-block="pending"]');
+  if (pendingBlock) {
+    pendingBlock.hidden = !pendingUpdate;
+    if (pendingUpdate) {
+      const created = pendingUpdate.createdAt
+        ? new Date(pendingUpdate.createdAt).toLocaleString()
+        : "";
+      pendingBlock.title = `${pendingSourceText(pendingUpdate.source)} · ${created} · 基于 v${pendingUpdate.baseVersion}，确认后成为 v${pendingUpdate.baseVersion + 1}`;
+    }
+  }
   if (testTab) {
     const testSteps = recording?.testFlowSteps?.length
       ? recording.testFlowSteps
@@ -5739,18 +5735,18 @@ function renderAIPanel() {
     } else if (roundNote) {
       roundNote.remove();
     }
-    // 未决定提案提示（Test 侧）：本次测试基于当前版本；测试后的自动修复
-    // 会覆盖旧提案（单槽设计）。处理入口在 Process 标签页。
+    // 未决议 pending 提示（Test 侧）：本次测试基于当前版本；测试后的自动修复
+    // 直接落盘（version+1）。决议入口在 AI 面板快捷区。
     let proposalNote = roundHeading.querySelector(".test-proposal-note");
-    if (recording?.pendingProposal?.flow) {
+    if (recording?.pendingUpdate?.flow) {
       if (!proposalNote) {
         proposalNote = document.createElement("span");
         proposalNote.className = "test-round-note test-proposal-note";
         roundHeading.appendChild(proposalNote);
       }
-      proposalNote.textContent = "· 有待决定提案";
+      proposalNote.textContent = "· 有待确认更新";
       proposalNote.title =
-        "存在未决定的 AI 流程更新提案：本次测试与后续自动修复基于当前版本，修复将覆盖旧提案；请在 Process 标签页 Apply 或 Discard。";
+        "存在待确认的 AI 流程更新：本次测试基于当前正式版本；请在 AI 面板 Confirm 或 Discard（若期间发生手工编辑，Confirm 会被拒绝并要求重新生成）。";
     } else if (proposalNote) {
       proposalNote.remove();
     }
@@ -5825,6 +5821,15 @@ function renderAIPanel() {
     (child) => !child.hidden,
   );
   quickHost.onclick = (e) => {
+    const pendingButton = e.target.closest("[data-pending-action]");
+    if (pendingButton) {
+      e.preventDefault();
+      if (!recording?.recordingId) return;
+      if (pendingButton.dataset.pendingAction === "confirm")
+        void confirmPendingUpdate(recording);
+      else void discardPendingUpdate(recording);
+      return;
+    }
     const failureButton = e.target.closest("[data-ai-failure]");
     if (failureButton) {
       e.preventDefault();
@@ -6031,8 +6036,19 @@ async function aiMaterialContext(items) {
   return result;
 }
 
-function aiRequestNeedsMaterial(text) {
-  return /generate\s+(?:a\s+)?(?:refined|improved|new)\s+(?:workflow|material|recording|flow)|create\s+(?:a\s+)?refined\s+(?:material|workflow|flow)|\b(?:apply|implement|fix|modify|update|refine)\b.{0,35}\b(?:step|material|workflow|flow|recording)\b|生成.{0,8}(?:优化|改进|新).{0,6}(?:材料|流程|录制)|生成优化后的材料|生成 refined material/i.test(text || "");
+/** advice 回复的意图标注解析：行级提取 `INTENT=refine|advice` 并从展示文本
+ * 剥离该行（模板要求正文后另起一行输出）。提取失败返回 intent:null，
+ * 调用方按 advice 呈现并追加兜底提示句。 */
+function parseAdviceIntent(rawText) {
+  const lines = String(rawText || "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = lines[i].trim().match(/^INTENT=(refine|advice)\s*$/i);
+    if (match) {
+      lines.splice(i, 1);
+      return { text: lines.join("\n").trim(), intent: match[1].toLowerCase() };
+    }
+  }
+  return { text: String(rawText || "").trim(), intent: null };
 }
 
 function appendAIMessage(item, role, text, extra = {}) {
@@ -6065,6 +6081,11 @@ function formatPiTemplate(template, values) {
   });
 }
 
+/** 兜底提示句：模型未输出可解析的 INTENT 标注时由渲染层固定追加，保证用户
+ * 永远有下一步可走（堵死“想生成却只得到建议”的循环）。 */
+const ADVICE_INTENT_FALLBACK_HINT =
+  "如需直接生成新版本，请明确说明或使用 Refine 表单。";
+
 async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext = {}) {
   const bridge = window.flowlink?.pi;
   if (!bridge?.prompt) throw new Error("FlowLink Pi SDK bridge is unavailable.");
@@ -6078,7 +6099,7 @@ async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext
     executionContext: Object.keys(extraContext).length ? `Execution context JSON:\n${JSON.stringify(extraContext).slice(0, 25000)}` : "",
   }).trim();
   const result = await bridge.prompt({ prompt, timeoutMs: 120000 });
-  return result.text;
+  return parseAdviceIntent(result.text);
 }
 
 async function generateRefinedMaterial(sourceItems, request, parentItem) {
@@ -6097,12 +6118,12 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   // 投影、提示词组装、$ref 再水化与 schema 校验都在主进程完成；渲染层只传
   // 录制 id 和纯文本对话，聊天与 Flow 载荷互不沾染。
   const result = await bridge.generateFlow({ taskCode, recordingIds, instruction: request, conversation });
-  // 分流（第三轮「REFINED 单线演进」）：唯一来源是已有 REFINED 记录时，
-  // AI 的修改落盘为该记录的流程更新提案（覆盖旧提案），Process 标签页
-  // 并排对比后 Apply / Discard；多来源合并或原始 Record → 生成新 REFINED 条目。
+  // 分流（REFINED 单线演进）：唯一来源是已有 REFINED 记录时，AI 的修改暂存为
+  // 该记录的 pending 更新（单槽覆盖），AI 面板 Confirm / Discard 决议；
+  // 多来源合并或原始 Record → 生成新 REFINED 条目。
   if (sources.length === 1 && sources[0].summary && sources[0].recordingId) {
     const target = sources[0];
-    const saved = await window.flowlink.flow.saveProposal({
+    const saved = await window.flowlink.flow.stagePending({
       taskCode,
       recordingId: target.recordingId,
       source: "refine",
@@ -6110,10 +6131,19 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
       summary: result.summary || "",
       risks: Array.isArray(result.risks) ? result.risks : [],
     });
+    // 变更清单：复用 diff 函数对比正式版本与待确认版本，中文文本随消息呈现。
+    let changeList = "";
+    if (target.flowFile) {
+      try {
+        const currentFlow = await window.flowlink.flow.load(target.flowFile);
+        changeList = describePendingChanges(currentFlow, result.flow);
+      } catch (error) {
+        console.warn("[refine] 待确认更新变更清单生成失败：", error);
+      }
+    }
     const proposalState = recordingSession();
-    target.pendingProposalLoaded = false;
+    target.pendingLoaded = false;
     proposalState.focused = target.id;
-    proposalState.aiSourceIds = [target.id];
     proposalState.view = "analysis";
     proposalState.stage = "done";
     proposalState.aiOpen = true;
@@ -6122,9 +6152,12 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
     appendAIMessage(
       target,
       "assistant",
-      `已生成流程更新提案（基于 v${saved.baseVersion}），请在 Process 标签页查看前后对比并决定 Apply / Discard。` +
+      `已生成待确认的新版本 v${saved.baseVersion + 1}，确认后生效` +
+        (saved.overwrote ? "（已覆盖上一版未确认修改）" : "") +
+        "。可在此面板 Confirm / Discard。" +
+        (changeList ? `\n\n本版变更：\n${changeList}` : "") +
         `\n\n理由：\n${(Array.isArray(result.rationale) ? result.rationale : []).join("\n- ") || "见生成的步骤。"}` +
-        `\n\n风险 / 需验证：\n${(Array.isArray(result.risks) ? result.risks : []).join("\n- ") || "Apply 前建议先跑一次 Test。"}`,
+        `\n\n风险 / 需验证：\n${(Array.isArray(result.risks) ? result.risks : []).join("\n- ") || "Confirm 前建议先跑一次 Test。"}`,
     );
     return target;
   }
@@ -6154,7 +6187,6 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   const state = recordingSession();
   state.items.push(refined);
   state.focused = refined.id;
-  state.aiSourceIds = [refined.id];
   state.view = "analysis";
   state.stage = "done";
   rebuildItemTestFlow(refined);
@@ -6198,18 +6230,22 @@ async function invokeAIMerge(option, prompt, extra = {}) {
   setAssistantDraft(item, "");
   renderAIPanel();
 
-  const selected = attachmentItems.length
-    ? attachmentItems
-    : state.aiSourceIds?.length
-      ? state.items.filter((entry) => state.aiSourceIds.includes(entry.id))
-      : state.items.filter((entry) => entry.checked && entry.analyzed);
-  const sources = selected.length ? selected : (recording?.analyzed ? [recording] : []);
-
-  if (extra.forceMaterial || aiRequestNeedsMaterial(userText)) {
+  // Refine 按钮/表单路径：必定生成，不经意图判定；来源 = 打开菜单时的勾选快照，
+  // 快照缺失时回退 @ 附件 > 当前打开。
+  if (extra.forceMaterial) {
+    const refineSources = extra.refineSources?.length
+      ? extra.refineSources
+      : attachmentItems.length
+        ? attachmentItems
+        : recording?.analyzed
+          ? [recording]
+          : item !== state.guideAssistant && item.analyzed
+            ? [item]
+            : [];
     try {
       item.chat.push({ role: "assistant", text: "Pi is preparing a separate refined material. The original recording will not be overwritten…" });
       renderAIPanel();
-      await generateRefinedMaterial(sources, userText, recording || item);
+      await generateRefinedMaterial(refineSources, userText, recording || item);
     } catch (error) {
       // 完整错误文本（含阶段+原因）随 errorDetail 透出，面板可折叠查看。
       const full = error instanceof Error ? error.message : String(error);
@@ -6223,14 +6259,69 @@ async function invokeAIMerge(option, prompt, extra = {}) {
     return;
   }
 
+  // 聊天路径：意图判定并入 advice 调用（本地不做关键字正则判定）。
+  // advice 上下文来源：@ 附件 > 当前打开的录制。
+  const chatSources = attachmentItems.length
+    ? attachmentItems
+    : recording?.analyzed
+      ? [recording]
+      : item !== state.guideAssistant && item.analyzed
+        ? [item]
+        : [];
+  const replaceLast = (text) => {
+    const last = item.chat[item.chat.length - 1];
+    if (last?.role === "assistant" && last.text.startsWith("Pi is reviewing")) last.text = text;
+    else item.chat.push({ role: "assistant", text });
+    renderAIPanel();
+  };
   try {
     item.chat.push({ role: "assistant", text: "Pi is reviewing the recording evidence…" });
     renderAIPanel();
-    const answer = await askPiForAdvice(item, sources, userText, state.aiTaskMode || (recording?.resultTab === "Test" ? "replay-failure" : "material-refinement"), state.aiFailureContext || {});
-    const last = item.chat[item.chat.length - 1];
-    if (last?.role === "assistant" && last.text.startsWith("Pi is reviewing")) last.text = answer;
-    else item.chat.push({ role: "assistant", text: answer });
-    renderAIPanel();
+    const { text: answer, intent } = await askPiForAdvice(
+      item,
+      chatSources,
+      userText,
+      state.aiTaskMode || (recording?.resultTab === "Test" ? "replay-failure" : "material-refinement"),
+      state.aiFailureContext || {},
+    );
+    if (intent === "refine") {
+      // 生成来源匹配：@ 引用 > 当前打开；两者皆无 → AI 列出候选录制名请用户 @ 回复。
+      const refineTargets = attachmentItems.length
+        ? attachmentItems
+        : recording?.analyzed && recording.recordingId
+          ? [recording]
+          : null;
+      if (!refineTargets) {
+        const saved = (state.items || []).filter((entry) => entry.recordingId);
+        replaceLast(
+          saved.length
+            ? `${answer}\n\n可以直接生成新版本。请 @ 引用要细化的录制后重发：\n${saved
+                .map((entry) => "- @" + entry.name)
+                .join("\n")}`
+            : "当前任务还没有已保存的可回放录制，暂无可细化的对象。请先完成录制并分析。",
+        );
+        return;
+      }
+      replaceLast(`${answer}\n\n正在按上述意见生成新版本…`);
+      try {
+        await generateRefinedMaterial(refineTargets, userText, recording || item);
+      } catch (error) {
+        const full = error instanceof Error ? error.message : String(error);
+        appendAIMessage(
+          item,
+          "assistant",
+          "Could not create refined material — 展开查看完整错误详情。",
+          { errorDetail: full },
+        );
+      }
+      return;
+    }
+    // advice（含解析失败回退）：解析失败时固定追加兜底提示句。
+    replaceLast(
+      intent === "advice"
+        ? answer
+        : `${answer}\n\n${ADVICE_INTENT_FALLBACK_HINT}`,
+    );
   } catch (error) {
     appendAIMessage(item, "assistant", `Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
   }
@@ -6256,7 +6347,6 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
     });
     return;
   }
-  state.aiSourceIds = sources.map((item) => item.id);
   state.aiTaskMode = mode || "material-refinement";
   state.aiFailureContext = failureContext || {};
   state.focused = sources[0].id;
@@ -6276,7 +6366,8 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
   item.chat.push({ role: "assistant", text: "Pi is analyzing the recording evidence…" });
   if (stillCurrent()) renderAIPanel();
   try {
-    const answer = await askPiForAdvice(item, sources, prompt, state.aiTaskMode, failureContext || {});
+    // 显式建议入口（预设/失败诊断）：剥离 INTENT 标注行后按建议呈现，不做 refine 分流。
+    const { text: answer } = await askPiForAdvice(item, sources, prompt, state.aiTaskMode, failureContext || {});
     const last = item.chat[item.chat.length - 1];
     if (last?.role === "assistant" && last.text.startsWith("Pi is analyzing")) last.text = answer;
     else item.chat.push({ role: "assistant", text: answer });
@@ -6692,38 +6783,37 @@ async function hydrateProcessFlow(item) {
   }
 
 /* ============================================================
- * REFINED 单线演进：流程更新提案（proposal）对比视图
+ * REFINED 单线演进：pending 暂存与 AI 面板 Confirm / Discard 决议
  *
- * AI 针对已有 REFINED 记录的修改（面板 Refine / 接管后自动 repair）
- * 落盘为 artifacts/<flowId>/proposal.json（主进程 flow:saveProposal）。
- * Process 标签页检测到提案后进入并排对比视图：左右两张流程图复用
- * FlowGraph.buildGraph/layoutGraph 与组卡渲染，差异高亮（新增绿 /
- * 删除红 / 修改黄），Apply（主进程校验 baseVersion → 历史快照 →
+ * AI 针对已有 REFINED 记录的修改（面板 Refine）暂存为
+ * artifacts/<flowId>/pending.json（主进程 flow:stagePending，单槽覆盖）。
+ * 生成消息附中文变更清单（复用 diff 函数计算）；AI 面板快捷条出现
+ * Confirm / Discard。Confirm（主进程校验 baseVersion → 历史快照 →
  * version+1 覆盖）或 Discard。文件是唯一事实源；重启后仍显示。
  * ============================================================ */
 
-/** Process 标签页提案检测：一次性加载未决定提案（文件是事实源）。
- * 读失败按无提案处理并标记已加载，避免每次渲染死循环重试；
- * ai:proposal 事件与生成方会重置 pendingProposalLoaded 触发重查。 */
-async function hydrateProcessProposal(item) {
+/** pending 检测：一次性加载未决议 pending（文件是事实源）。
+ * 读失败按无 pending 处理并标记已加载，避免每次渲染死循环重试；
+ * ai:pending 事件与生成方会重置 pendingLoaded 触发重查。 */
+async function hydratePendingUpdate(item) {
   if (!item?.recordingId || !item.flowFile) return false;
-  if (!window.flowlink?.flow?.loadProposal) return false;
+  if (!window.flowlink?.flow?.loadPending) return false;
   const taskCode = currentFlow?.code || activeFlowKey;
-  item.pendingProposalLoading = true;
+  item.pendingLoading = true;
   try {
-    const proposal = await window.flowlink.flow.loadProposal({
+    const pending = await window.flowlink.flow.loadPending({
       taskCode,
       recordingId: item.recordingId,
     });
-    item.pendingProposal = proposal && proposal.flow ? proposal : null;
+    item.pendingUpdate = pending && pending.flow ? pending : null;
     return true;
   } catch (error) {
-    console.error("[process] 流程更新提案读取失败：", error);
-    item.pendingProposal = null;
+    console.error("[ai] 待确认更新读取失败：", error);
+    item.pendingUpdate = null;
     return true;
   } finally {
-    item.pendingProposalLoaded = true;
-    item.pendingProposalLoading = false;
+    item.pendingLoaded = true;
+    item.pendingLoading = false;
   }
 }
 
@@ -6800,220 +6890,102 @@ function computeProposalDiff(currentFlow, proposalFlow) {
   return { added, removed, changed, groupAdded, groupRemoved, groupChanged };
 }
 
-function proposalSourceText(source) {
+function pendingSourceText(source) {
   return source === "takeover-repair" ? "AI 接管后自动修复" : "AI 面板 Refine";
 }
 
-/** 对比视图的对比图渲染：复用 Process 画布的组卡/哨节点/判断节点/边管线，
- * 各自独立 layout（无回放态叠加、无编辑动作、无选中态）。 */
-function renderProposalGraphWorld(world, item, flow, diff, side) {
-  const viewByGroupId = new Map(
-    ensureProcessGroups({ processFlow: flow, url: item.url }).map((group) => [
-      group.id,
-      group,
-    ]),
-  );
-  const graph = FlowGraph.buildGraph(flow);
-  const elements = new Map();
-  const children = [];
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "process-graph-edges");
-  children.push(svg);
-  if (!window.__flowlinkDagre) {
-    const notice = document.createElement("div");
-    notice.className = "proposal-pane-empty";
-    notice.textContent =
-      "Process 流程图布局引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
-    children.push(notice);
-  }
-  for (const node of graph.nodes) {
-    if (node.type === "start" || node.type === "end") {
-      const sentinel = document.createElement("div");
-      sentinel.className = "process-sentinel" + (node.type === "end" ? " end" : "");
-      sentinel.textContent = node.label;
-      children.push(sentinel);
-      elements.set(node.id, sentinel);
-      continue;
-    }
-    if (node.type === "decision") {
-      const decision = document.createElement("div");
-      decision.className = "process-decision";
-      decision.title = node.label;
-      const text = document.createElement("span");
-      text.textContent = node.label;
-      decision.appendChild(text);
-      const stepId = graph.entries[node.firstIndex]?.flattenedStepId;
-      if (stepId && diff.changed.has(stepId)) decision.classList.add("diff-changed");
-      children.push(decision);
-      elements.set(node.id, decision);
-      continue;
-    }
-    const view = graphNodeView(node, graph.entries, viewByGroupId);
-    if (!view) continue;
-    const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
-    const groupDiff =
-      side === "proposed"
-        ? diff.groupAdded.has(node.id)
-          ? "diff-added"
-          : diff.groupChanged.has(node.id)
-            ? "diff-changed"
-            : ""
-        : diff.groupRemoved.has(node.id)
-          ? "diff-removed"
-          : diff.groupChanged.has(node.id)
-            ? "diff-changed"
-            : "";
-    if (groupDiff) section.classList.add(groupDiff);
-    const icon = section.querySelector(".canvas-group-icon");
-    icon.src = groupFaviconUrl(view.url);
-    icon.onerror = () => {
-      icon.src = genericGroupIcon;
-      icon.onerror = null;
-    };
-    section.querySelector(".canvas-group-heading").textContent =
-      view.number + " · " + view.name;
-    const branchEntries = view.branchEntries || [];
-    const branchBadge = section.querySelector(".canvas-group-branch");
-    branchBadge.hidden = branchEntries.length === 0;
-    if (branchEntries.length) {
-      section.classList.add("branch-target");
-      branchBadge.textContent =
-        "分支 · " +
-        branchEntries
-          .map(
-            (entry) =>
-              `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
-          )
-          .join("；");
-    }
-    section.querySelector(".canvas-group-nodes").replaceChildren(
-      ...(view.steps.length
-        ? view.steps
-            .slice(0, Math.max(0, node.lastIndex - node.firstIndex))
-            .map((text, index) => {
-              const row = canvasStepNode(view, text, index, true);
-              const stepId = view.flowSteps?.[index]?.flattenedStepId;
-              const stepDiff =
-                side === "proposed"
-                  ? diff.added.has(stepId)
-                    ? "diff-added"
-                    : diff.changed.has(stepId)
-                      ? "diff-changed"
-                      : ""
-                  : diff.removed.has(stepId)
-                    ? "diff-removed"
-                    : diff.changed.has(stepId)
-                      ? "diff-changed"
-                      : "";
-              if (stepDiff) row.classList.add(stepDiff);
-              return row;
-            })
-        : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
+/** pending 变更清单文本：相对正式版本的分组增删改名、步骤增删改（带步骤名），
+ * 网关/分支变化（condition 步骤的增删改）单列。复用 computeProposalDiff 对齐。 */
+function describePendingChanges(currentFlow, pendingFlow) {
+  const diff = computeProposalDiff(currentFlow, pendingFlow);
+  const flatStepsOf = (flow) =>
+    new Map(
+      FlowGraph.flattenFlowSteps(flow?.steps || []).entries.map((entry) => [
+        entry.flattenedStepId,
+        entry.step,
+      ]),
     );
-    children.push(section);
-    elements.set(node.id, section);
+  const currentSteps = flatStepsOf(currentFlow);
+  const pendingSteps = flatStepsOf(pendingFlow);
+  const nameOf = (step, fallback) =>
+    String(step?.label || step?.kind || fallback || "").trim() || fallback || "";
+  const groupsOf = (flow) =>
+    new Map(
+      (flow?.steps || [])
+        .filter((step) => step.kind === "group")
+        .map((group) => [group.id, group]),
+    );
+  const currentGroups = groupsOf(currentFlow);
+  const pendingGroups = groupsOf(pendingFlow);
+
+  const lines = [];
+  if (diff.groupAdded.size)
+    lines.push(
+      "新增分组：" +
+        [...diff.groupAdded].map((id) => nameOf(pendingGroups.get(id), id)).join("、"),
+    );
+  if (diff.groupRemoved.size)
+    lines.push(
+      "删除分组：" +
+        [...diff.groupRemoved].map((id) => nameOf(currentGroups.get(id), id)).join("、"),
+    );
+  const renamed = [...diff.groupChanged]
+    .map((id) => {
+      const before = currentGroups.get(id);
+      const after = pendingGroups.get(id);
+      if (!before || !after || (before.label || "") === (after.label || "")) return null;
+      return `${nameOf(before, id)} → ${nameOf(after, id)}`;
+    })
+    .filter(Boolean);
+  if (renamed.length) lines.push("分组改名：" + renamed.join("、"));
+
+  const listNames = (ids, from) =>
+    [...ids]
+      .filter((id) => from.get(id)?.kind !== "condition")
+      .map((id) => nameOf(from.get(id), id))
+      .filter(Boolean)
+      .join("、");
+  if (diff.added.size) {
+    const text = listNames(diff.added, pendingSteps);
+    if (text) lines.push("新增步骤：" + text);
   }
-  world.replaceChildren(...children);
-  if (graph.nodes.length && window.__flowlinkDagre) {
-    const laid = FlowGraph.layoutGraph(graph, (node) => {
-      const el = elements.get(node.id);
-      return el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined;
-    });
-    if (laid) {
-      for (const node of graph.nodes) {
-        const el = elements.get(node.id);
-        if (!el || node.left === undefined) continue;
-        el.style.left = node.left + "px";
-        el.style.top = node.top + "px";
-      }
-      world.style.width = Math.max(1, graph.worldWidth) + "px";
-      world.style.height = Math.max(1, graph.worldHeight) + "px";
-      drawProcessGraphEdges(svg, world, graph, {
-        resultByStepId: new Map(),
-        hasResults: false,
-        runFinished: false,
-      });
-    } else {
-      world.style.width = "";
-      world.style.height = "";
-    }
-  } else {
-    world.style.width = "";
-    world.style.height = "";
+  if (diff.removed.size) {
+    const text = listNames(diff.removed, currentSteps);
+    if (text) lines.push("删除步骤：" + text);
   }
+  if (diff.changed.size) {
+    const text = listNames(diff.changed, pendingSteps);
+    if (text) lines.push("修改步骤：" + text);
+  }
+  const conditionChanges = [];
+  for (const id of diff.added)
+    if (pendingSteps.get(id)?.kind === "condition")
+      conditionChanges.push(`新增「${nameOf(pendingSteps.get(id), id)}」`);
+  for (const id of diff.removed)
+    if (currentSteps.get(id)?.kind === "condition")
+      conditionChanges.push(`移除「${nameOf(currentSteps.get(id), id)}」`);
+  for (const id of diff.changed)
+    if (pendingSteps.get(id)?.kind === "condition")
+      conditionChanges.push(`调整「${nameOf(pendingSteps.get(id), id)}」`);
+  if (conditionChanges.length)
+    lines.push("网关/分支变化：" + conditionChanges.join("；"));
+  return lines.join("\n");
 }
 
-/** 对比视图主体：横幅（来源/时间/基线版本）+ Apply/Discard + 并排双图 +
- * summary/risks + 版本不一致警示。当前 Flow 未加载时只渲染横幅并等待
- * hydrateProcessFlow 完成后的下一次重渲染。 */
-function fillProposalCompareView(canvas, item, proposal) {
-  const host = canvas.querySelector(".process-proposal");
-  const created = proposal.createdAt ? new Date(proposal.createdAt) : null;
-  host.querySelector(".proposal-banner-meta").textContent =
-    `${proposalSourceText(proposal.source)} · ${created ? created.toLocaleString() : ""} · 基于版本 v${proposal.baseVersion}`;
-  const summaryEl = host.querySelector(".proposal-summary");
-  summaryEl.hidden = !proposal.summary;
-  summaryEl.textContent = proposal.summary ? `摘要：${proposal.summary}` : "";
-  const risksEl = host.querySelector(".proposal-risks");
-  const risks = Array.isArray(proposal.risks) ? proposal.risks.filter(Boolean) : [];
-  risksEl.hidden = !risks.length;
-  risksEl.textContent = risks.length ? `风险 / 需验证：${risks.join("；")}` : "";
-  const current = item.processFlow;
-  const stale = !!current && current.version !== proposal.baseVersion;
-  const staleEl = host.querySelector(".proposal-stale");
-  staleEl.hidden = !stale;
-  if (stale) {
-    staleEl.textContent = `提案基于 v${proposal.baseVersion} 生成，当前流程已是 v${current.version}（提案生成后有新的修改生效）。Apply 已禁用：请先 Discard，再重新生成提案。`;
-  }
-  const busy = item.proposalApplying === true;
-  const applyBtn = host.querySelector('[data-proposal-action="apply"]');
-  const discardBtn = host.querySelector('[data-proposal-action="discard"]');
-  applyBtn.disabled = stale || !current || busy;
-  applyBtn.title = stale
-    ? "提案基线与当前版本不一致，请重新生成"
-    : current
-      ? ""
-      : "正在加载当前流程…";
-  discardBtn.disabled = busy;
-  applyBtn.onclick = () => void applyPendingProposal(item);
-  discardBtn.onclick = () => void discardPendingProposal(item);
-  host.querySelector(
-    '[data-proposal-pane="current"] .proposal-pane-version',
-  ).textContent = current ? `v${current.version}` : "";
-  host.querySelector(
-    '[data-proposal-pane="proposed"] .proposal-pane-version',
-  ).textContent = `v${proposal.baseVersion} → v${(current?.version ?? proposal.baseVersion) + 1}`;
-  const currentWorld = host.querySelector(
-    '[data-proposal-pane="current"] .proposal-world',
-  );
-  const proposedWorld = host.querySelector(
-    '[data-proposal-pane="proposed"] .proposal-world',
-  );
-  if (!current) {
-    // 当前 Flow 尚未加载：留空，hydrateProcessFlow 完成后的重渲染会补上。
-    currentWorld.replaceChildren();
-    proposedWorld.replaceChildren();
-    return;
-  }
-  const diff = computeProposalDiff(current, proposal.flow);
-  renderProposalGraphWorld(currentWorld, item, current, diff, "current");
-  renderProposalGraphWorld(proposedWorld, item, proposal.flow, diff, "proposed");
-}
-
-/** Apply：主进程校验 baseVersion → 存历史快照 → version+1 覆盖正式 Flow →
- * 清提案与标记。成功后重载 processFlow（Test/Process/Instruction 随之刷新）。 */
-async function applyPendingProposal(item) {
-  if (!item?.recordingId || item.proposalApplying) return;
+/** Confirm：主进程校验 baseVersion → 存历史快照 → version+1 覆盖正式 Flow →
+ * 清 pending 与标记。成功后重载 processFlow（Test/Process/Instruction 随之刷新）。 */
+async function confirmPendingUpdate(item) {
+  if (!item?.recordingId || item.pendingResolving) return;
   const taskCode = currentFlow?.code || activeFlowKey;
-  item.proposalApplying = true;
-  renderSummaryWorkspace();
+  item.pendingResolving = true;
+  renderAIPanel();
   try {
-    const flow = await window.flowlink.flow.applyProposal({
+    const flow = await window.flowlink.flow.confirmPending({
       taskCode,
       recordingId: item.recordingId,
     });
-    item.pendingProposal = null;
-    item.pendingProposalLoaded = true;
+    item.pendingUpdate = null;
+    item.pendingLoaded = true;
     item.lastTakeover = null;
     item.selectedGroup = null;
     item.processFlow = null;
@@ -7021,39 +6993,42 @@ async function applyPendingProposal(item) {
     item.processFlowError = "";
     await hydrateProcessFlow(item);
     rebuildItemTestFlow(item);
-    showFlowlinkNotice(`提案已应用，流程更新为 v${flow?.version ?? ""}`);
+    showFlowlinkNotice(`已确认，流程更新为 v${flow?.version ?? ""}`);
   } catch (error) {
-    showFlowlinkNotice(
-      `提案应用失败：${error instanceof Error ? error.message : String(error)}`,
-      "warn",
+    const message = error instanceof Error ? error.message : String(error);
+    showFlowlinkNotice(`确认失败：${message}`, "warn");
+    appendAIMessage(
+      item,
+      "assistant",
+      `待确认版本未能确认：${message}\n\n若因生成后有新的修改生效，请重新发起一次生成（新的待确认版本会基于最新流程）。`,
     );
   } finally {
-    item.proposalApplying = false;
+    item.pendingResolving = false;
     renderSummaryWorkspace();
   }
 }
 
-/** Discard：删提案文件与标记，流程保持当前版本，回到普通 Process 视图。 */
-async function discardPendingProposal(item) {
-  if (!item?.recordingId || item.proposalApplying) return;
+/** Discard：删 pending 文件与标记，流程保持当前版本。 */
+async function discardPendingUpdate(item) {
+  if (!item?.recordingId || item.pendingResolving) return;
   const taskCode = currentFlow?.code || activeFlowKey;
-  item.proposalApplying = true;
-  renderSummaryWorkspace();
+  item.pendingResolving = true;
+  renderAIPanel();
   try {
-    await window.flowlink.flow.discardProposal({
+    await window.flowlink.flow.discardPending({
       taskCode,
       recordingId: item.recordingId,
     });
-    item.pendingProposal = null;
-    item.pendingProposalLoaded = true;
-    showFlowlinkNotice("提案已丢弃，流程保持当前版本");
+    item.pendingUpdate = null;
+    item.pendingLoaded = true;
+    showFlowlinkNotice("已丢弃待确认更新，流程保持当前版本");
   } catch (error) {
     showFlowlinkNotice(
-      `提案丢弃失败：${error instanceof Error ? error.message : String(error)}`,
+      `丢弃失败：${error instanceof Error ? error.message : String(error)}`,
       "warn",
     );
   } finally {
-    item.proposalApplying = false;
+    item.pendingResolving = false;
     renderSummaryWorkspace();
   }
 }
@@ -8123,9 +8098,6 @@ function bindProcessMap() {
     item = currentAssistantItem();
   if (!canvas || canvas.hidden || !item) return;
   const world = canvas.querySelector(".process-canvas-world");
-  // 提案对比视图接管画布时，停用普通画布的平移/缩放/选中/右键菜单：
-  // 对比双图在各自的滚动容器内原生滚动，Apply/Discard 走自己的按钮。
-  const proposalActive = () => canvas.dataset.proposalActive === "1";
   const placeGroupActions = () => {
     const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
         (element) => element.dataset.canvasGroup === item.selectedGroup,
@@ -8186,7 +8158,6 @@ function bindProcessMap() {
   processCanvasObserver.observe(canvas);
   processCanvasObserver.observe(world);
   canvas.onclick = (e) => {
-    if (proposalActive()) return;
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
     if (!e.target.closest("#canvasGroupMenu")) hideGroupMenu();
     const select =
@@ -8278,7 +8249,6 @@ function bindProcessMap() {
     if (e.target.closest("[data-canvas-fit]")) fit();
   };
   canvas.onwheel = (e) => {
-    if (proposalActive()) return; // 对比视图：滚轮交给滚动容器原生滚动
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     scale(
@@ -8288,7 +8258,6 @@ function bindProcessMap() {
     );
   };
   canvas.onpointerdown = (e) => {
-    if (proposalActive()) return;
     if (
       e.button !== 0 ||
       e.target.closest(
@@ -8433,7 +8402,6 @@ function bindProcessMap() {
     placeMenu(groupMenu, e);
   };
   canvas.oncontextmenu = (e) => {
-    if (proposalActive()) return;
     const step = e.target.closest(".canvas-step");
     if (step) {
       showStepMenu(e, step.dataset.canvasStepIndex);

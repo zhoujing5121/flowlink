@@ -1489,7 +1489,7 @@
 	}
 
 	/** AI 接管后的自动流程修复：带失败信息与 AI 执行证据重跑细化管线。
-	 * REFINED 记录 → 流程更新提案（Process 对比后 Apply/Discard）；
+	 * REFINED 记录 → 直接 version+1 落盘（历史快照兜底，无 pending）；
 	 * 原始 Record → REPAIRED- 另存为全新录制（原始流程不动）。 */
 	window.aiRepairFlowAfterTakeover = async function (item) {
 		if (!item?.recordingId || !item.lastTakeover?.aiCompleted) return
@@ -1533,28 +1533,32 @@
 						: {}),
 				},
 			})
-			// 分流（第三轮「REFINED 单线演进」）：
+			// 分流（REFINED 单线演进）：
 			// - 目标为已有 REFINED 记录（item.summary ⇔ 元数据 isMerged）：
-			//   不再另存新记录，落盘为流程更新提案（覆盖旧提案），
-			//   Process 标签页并排对比后 Apply / Discard。
+			//   不再另存新记录，也不产生 pending——直接 version+1 落盘，
+			//   历史快照兜底回滚（主进程 flow:directUpdate）。
 			// - 目标为原始 Record：维持现状，REPAIRED- 另存为全新录制。
 			if (item.summary) {
-				const saved = await F.flow.saveProposal({
+				const updated = await F.flow.directUpdate({
 					taskCode: code,
 					recordingId: item.recordingId,
-					source: 'takeover-repair',
 					flow: repair.flow,
 					summary: repair.summary || '',
-					risks: Array.isArray(repair.risks) ? repair.risks : [],
 				})
 				item.lastTakeover = null
-				// Process 标签页重新检测提案（ai:proposal 事件也会置脏；双保险）。
-				item.pendingProposalLoaded = false
+				// 直落盘已生效：重载该录制的正式 Flow（Process/Test/Instruction 同步刷新）。
+				item.processFlow = null
+				item.processFlowLoaded = false
+				item.processFlowError = ''
+				if (typeof hydrateProcessFlow === 'function') {
+					await hydrateProcessFlow(item)
+					if (typeof rebuildItemTestFlow === 'function') rebuildItemTestFlow(item)
+				}
 				if (typeof appendAIMessage === 'function') {
 					appendAIMessage(
 						item,
 						'assistant',
-						`已生成流程更新提案（基于 v${saved.baseVersion}），请在 Process 标签页查看前后对比并决定 Apply / Discard。` +
+						`已直接更新至 v${updated?.version ?? ''}（历史快照已存）。` +
 							(repair.summary ? `\n${repair.summary}` : '') +
 							(repair.risks?.length ? `\nRisks: ${repair.risks.join('；')}` : ''),
 					)
@@ -1798,16 +1802,16 @@
 		console.log('[bridge] 录制完成事件：', recording)
 	})
 
-	/** REFINED 单线演进：提案落盘通知（主进程 flow:saveProposal 成功后广播）。
-	 * Process 标签页据此重新检测提案并显示「有来自 AI 的更新待决定」。 */
-	F.on('ai:proposal', (event) => {
+	/** REFINED 单线演进：pending 暂存通知（主进程 flow:stagePending 成功后广播）。
+	 * AI 面板据此重新检测 pending 并显示 Confirm / Discard 快捷块。 */
+	F.on('ai:pending', (event) => {
 		if (!event || typeof event !== 'object') return
 		const taskCode = event.taskCode || activeFlowKey
 		const state = recordingSession(taskCode)
 		const item = state.items.find((entry) => entry.recordingId === event.recordingId)
-		if (item) item.pendingProposalLoaded = false
+		if (item) item.pendingLoaded = false
 		if (typeof window.showFlowlinkNotice === 'function') {
-			window.showFlowlinkNotice('已生成流程更新提案，请在 Process 标签页查看前后对比')
+			window.showFlowlinkNotice('已生成待确认的流程更新，可在 AI 面板 Confirm / Discard')
 		}
 		if (activeFlowKey === taskCode && typeof renderSummaryWorkspace === 'function') {
 			renderSummaryWorkspace()

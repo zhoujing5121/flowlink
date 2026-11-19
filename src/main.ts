@@ -654,11 +654,11 @@ async function persistMergedFlow(taskCode: string, flow: Flow, name: string): Pr
 }
 
 /* ================================================================ */
-/* REFINED 单线演进：流程更新提案（proposal）与生效前历史快照         */
+/* REFINED 单线演进：pending 暂存（Confirm/Discard 决议）与生效前快照 */
 /* ================================================================ */
 
-/** 提案文件（artifacts/<flowId>/proposal.json）的单槽数据形状。 */
-interface FlowProposal {
+/** pending 文件（artifacts/<flowId>/pending.json）的单槽数据形状。 */
+interface FlowPending {
 	version: 1
 	createdAt: string
 	source: 'refine' | 'takeover-repair'
@@ -666,14 +666,14 @@ interface FlowProposal {
 	flow: Flow
 	summary: string
 	risks: string[]
-	/** 生成提案时正式 Flow 的 version；Apply 时必须与当前 version 一致。 */
+	/** 生成 pending 时正式 Flow 的 version；Confirm 时必须与当前 version 一致。 */
 	baseVersion: number
 }
 
-const PROPOSAL_SOURCES = ['refine', 'takeover-repair'] as const
+const PENDING_SOURCES = ['refine', 'takeover-repair'] as const
 
-function proposalPathOf(recording: RecordingMeta): string {
-	return join(recording.artifactsDir, 'proposal.json')
+function pendingPathOf(recording: RecordingMeta): string {
+	return join(recording.artifactsDir, 'pending.json')
 }
 
 /** 原子写小 JSON（tmp + rename；临时文件与目标同目录保证 rename 原子性）。 */
@@ -684,10 +684,10 @@ async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
 	await rename(tmp, file)
 }
 
-/** 读提案：文件不存在/损坏时返回 null（文件是唯一事实源，标记仅作提示）。 */
-async function readProposal(recording: RecordingMeta): Promise<FlowProposal | null> {
+/** 读 pending：文件不存在/损坏时返回 null（文件是唯一事实源，标记仅作提示）。 */
+async function readPending(recording: RecordingMeta): Promise<FlowPending | null> {
 	try {
-		const raw = JSON.parse(await readFile(proposalPathOf(recording), 'utf8')) as FlowProposal
+		const raw = JSON.parse(await readFile(pendingPathOf(recording), 'utf8')) as FlowPending
 		if (
 			!raw ||
 			typeof raw !== 'object' ||
@@ -753,6 +753,22 @@ async function writeFlowHistorySnapshot(
 	}
 }
 
+/**
+ * 流程生效内核（Confirm 决议与接管修复直落盘共用）：生效前历史快照 →
+ * version+1 + parseFlow 完整校验 → 覆盖正式 Flow（.bak 备份）。返回新版 Flow。
+ */
+async function persistFlowUpdate(
+	recording: RecordingMeta,
+	flow: Flow,
+	source: FlowHistoryEntry['source'],
+	summary: string,
+): Promise<Flow> {
+	const current = await loadFlow(recording.flowFile)
+	await writeFlowHistorySnapshot(recording, current, source, summary)
+	const updated = parseFlow({ ...flow, version: current.version + 1 }, recording.flowFile)
+	await saveFlow(updated, recording.flowFile, { backup: true })
+	return updated
+}
 
 /** 所有 Stop/Test reset 共用同一份收尾，避免并发删除、重复保存或旧会话复活。 */
 async function stopRecordingSession(options: { discard?: boolean } = {}): Promise<RecordingStopResult> {
@@ -2248,15 +2264,15 @@ function registerIpc(): void {
 		},
 	)
 
-	/* ---------- REFINED 单线演进：提案落盘 / 读取 / 应用 / 丢弃 ---------- */
+	/* ---------- REFINED 单线演进：pending 暂存 / 读取 / 确认 / 丢弃 ---------- */
 	ipcMain.handle(
-		'flow:saveProposal',
+		'flow:stagePending',
 		async (
 			_event,
 			opts: {
 				taskCode: string
 				recordingId: string
-				source: (typeof PROPOSAL_SOURCES)[number]
+				source: (typeof PENDING_SOURCES)[number]
 				flow: unknown
 				summary?: string
 				risks?: string[]
@@ -2267,22 +2283,23 @@ function registerIpc(): void {
 				typeof opts.taskCode !== 'string' ||
 				typeof opts.recordingId !== 'string' ||
 				typeof opts.source !== 'string' ||
-				!PROPOSAL_SOURCES.includes(opts.source as (typeof PROPOSAL_SOURCES)[number]) ||
+				!PENDING_SOURCES.includes(opts.source as (typeof PENDING_SOURCES)[number]) ||
 				!opts.flow ||
 				typeof opts.flow !== 'object'
 			) {
-				throw new Error('提案保存请求无效')
+				throw new Error('待确认更新保存请求无效')
 			}
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			// 分流守卫：提案只面向 REFINED（isMerged）记录；原始 Record 必须走另存新纪录路径。
-			if (!recording.isMerged) throw new Error('原始录制不适用提案（请走另存新纪录路径）')
+			// 分流守卫：pending 只面向 REFINED（isMerged）记录；原始 Record 必须走另存新纪录路径。
+			if (!recording.isMerged) throw new Error('原始录制不适用待确认更新（请走另存新纪录路径）')
 			const current = await loadFlow(recording.flowFile)
-			// 与 saveFlow 同一约束：先完整校验再落盘；单槽设计，新提案覆盖旧提案。
-			const flow = parseFlow(opts.flow, proposalPathOf(recording))
+			// 与 saveFlow 同一约束：先完整校验再落盘；单槽设计，新 pending 覆盖旧 pending。
+			const flow = parseFlow(opts.flow, pendingPathOf(recording))
+			const existedBefore = !!(await readPending(recording))
 			const createdAt = new Date().toISOString()
-			const proposal: FlowProposal = {
+			const pending: FlowPending = {
 				version: 1,
 				createdAt,
 				source: opts.source,
@@ -2293,85 +2310,115 @@ function registerIpc(): void {
 					: [],
 				baseVersion: current.version,
 			}
-			await writeJsonAtomic(proposalPathOf(recording), proposal)
+			await writeJsonAtomic(pendingPathOf(recording), pending)
 			await taskStore.patchRecording(opts.taskCode, opts.recordingId, {
-				pendingProposal: { at: createdAt, source: opts.source },
+				pendingUpdate: { at: createdAt, source: opts.source },
 			})
 			if (!mainWindow.isDestroyed()) {
-				mainWindow.webContents.send('ai:proposal', {
+				mainWindow.webContents.send('ai:pending', {
 					taskCode: opts.taskCode,
 					recordingId: opts.recordingId,
 					at: createdAt,
 					source: opts.source,
 				})
 			}
-			return { createdAt, source: opts.source, baseVersion: current.version }
+			return { createdAt, source: opts.source, baseVersion: current.version, overwrote: existedBefore }
 		},
 	)
 
 	ipcMain.handle(
-		'flow:loadProposal',
+		'flow:loadPending',
 		async (_event, opts: { taskCode: string; recordingId: string }) => {
 			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
-				throw new Error('提案读取请求无效')
+				throw new Error('待确认更新读取请求无效')
 			}
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			return readProposal(recording)
+			return readPending(recording)
 		},
 	)
 
 	ipcMain.handle(
-		'flow:applyProposal',
+		'flow:confirmPending',
 		async (_event, opts: { taskCode: string; recordingId: string }) => {
 			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
-				throw new Error('提案应用请求无效')
+				throw new Error('待确认更新确认请求无效')
 			}
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			const proposal = await readProposal(recording)
-			if (!proposal) throw new Error('当前没有待决定的流程更新提案')
+			const pending = await readPending(recording)
+			if (!pending) throw new Error('当前没有待确认的流程更新')
 			const current = await loadFlow(recording.flowFile)
-			if (proposal.baseVersion !== current.version) {
+			if (pending.baseVersion !== current.version) {
 				throw new Error(
-					`提案基于 v${proposal.baseVersion} 生成，当前流程已是 v${current.version}（提案生成后有新的修改生效）。请先 Discard 该提案，再重新生成。`,
+					`待确认版本基于 v${pending.baseVersion} 生成，当前流程已是 v${current.version}（生成后有新的修改生效）。请重新生成。`,
 				)
 			}
-			// 生效前先存旧版历史快照（source 按提案来源映射；写失败不阻塞）。
-			await writeFlowHistorySnapshot(
+			const updated = await persistFlowUpdate(
 				recording,
-				current,
-				proposal.source === 'takeover-repair' ? 'repair-apply' : 'refine-apply',
-				proposal.summary || `Apply ${proposal.source} proposal`,
+				pending.flow,
+				pending.source === 'takeover-repair' ? 'repair-apply' : 'refine-apply',
+				pending.summary || `Confirm ${pending.source} pending update`,
 			)
-			const updated = parseFlow({ ...proposal.flow, version: current.version + 1 }, recording.flowFile)
-			await saveFlow(updated, recording.flowFile, { backup: true })
-			// 提案文件与标记同生同灭；清理失败只记日志（残留提案会因 baseVersion
-			// 落后被 Apply 拒绝并提示重新生成，用户可 Discard 兜底）。
+			// pending 文件与标记同生同灭；清理失败只记日志（残留 pending 会因
+			// baseVersion 落后被 Confirm 拒绝并提示重新生成，用户可 Discard 兜底）。
 			try {
-				await rm(proposalPathOf(recording), { force: true })
-				await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingProposal: undefined })
+				await rm(pendingPathOf(recording), { force: true })
+				await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingUpdate: undefined })
 			} catch (error) {
-				console.warn(`[flowlink] 提案清理失败（忽略）: ${(error as Error).message}`)
+				console.warn(`[flowlink] pending 清理失败（忽略）: ${(error as Error).message}`)
 			}
 			return updated
 		},
 	)
 
 	ipcMain.handle(
-		'flow:discardProposal',
+		'flow:discardPending',
 		async (_event, opts: { taskCode: string; recordingId: string }) => {
 			if (!opts || typeof opts.taskCode !== 'string' || typeof opts.recordingId !== 'string') {
-				throw new Error('提案丢弃请求无效')
+				throw new Error('待确认更新丢弃请求无效')
 			}
 			await taskStore.list()
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
-			await rm(proposalPathOf(recording), { force: true })
-			await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingProposal: undefined })
+			await rm(pendingPathOf(recording), { force: true })
+			await taskStore.patchRecording(opts.taskCode, opts.recordingId, { pendingUpdate: undefined })
 			return true
+		},
+	)
+
+	/* ---------- 接管修复直落盘：不产生 pending，version+1 即刻生效 ---------- */
+	ipcMain.handle(
+		'flow:directUpdate',
+		async (
+			_event,
+			opts: { taskCode: string; recordingId: string; flow: unknown; summary?: string },
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				!opts.flow ||
+				typeof opts.flow !== 'object'
+			) {
+				throw new Error('流程直落盘请求无效')
+			}
+			await taskStore.list()
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			if (!recording.isMerged) throw new Error('原始录制不适用直落盘（请走 REPAIRED- 另存路径）')
+			// 先完整校验再生效；不做 baseVersion 校验（修复以最新现场为准，历史快照兜底回滚）。
+			const flow = parseFlow(opts.flow, recording.flowFile)
+			return persistFlowUpdate(
+				recording,
+				flow,
+				'repair-apply',
+				typeof opts.summary === 'string' && opts.summary.trim()
+					? opts.summary
+					: 'Takeover repair direct update',
+			)
 		},
 	)
 }

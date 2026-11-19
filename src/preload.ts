@@ -104,24 +104,27 @@ const api = {
 			ipcRenderer.invoke('flow:updateVariables', opts),
 		updateSteps: (opts: { taskCode: string; recordingId: string; steps: unknown[] }) =>
 			ipcRenderer.invoke('flow:updateSteps', opts),
-		/** REFINED 单线演进（第三轮）：AI 对已 REFINED 记录的修改落盘为提案，Process 标签页并排对比后 Apply/Discard */
-		saveProposal: (opts: {
+		/** REFINED 单线演进：AI 对已 REFINED 记录的修改暂存为 pending（不落正式盘），AI 面板 Confirm/Discard 决议 */
+		stagePending: (opts: {
 			taskCode: string
 			recordingId: string
 			source: 'refine' | 'takeover-repair'
 			flow: unknown
 			summary?: string
 			risks?: string[]
-		}) => ipcRenderer.invoke('flow:saveProposal', opts),
-		/** 读取未决定提案（无则 null）：{version, createdAt, source, flow, summary, risks, baseVersion} */
-		loadProposal: (opts: { taskCode: string; recordingId: string }) =>
-			ipcRenderer.invoke('flow:loadProposal', opts),
-		/** 应用提案：存历史快照 → 校验 → 覆盖正式 Flow（version+1，.bak 保留）→ 清提案；返回新 flow */
-		applyProposal: (opts: { taskCode: string; recordingId: string }) =>
-			ipcRenderer.invoke('flow:applyProposal', opts),
-		/** 丢弃提案：删提案文件与 pendingProposal 标记 */
-		discardProposal: (opts: { taskCode: string; recordingId: string }) =>
-			ipcRenderer.invoke('flow:discardProposal', opts),
+		}) => ipcRenderer.invoke('flow:stagePending', opts),
+		/** 读取未决议 pending（无则 null）：{version, createdAt, source, flow, summary, risks, baseVersion} */
+		loadPending: (opts: { taskCode: string; recordingId: string }) =>
+			ipcRenderer.invoke('flow:loadPending', opts),
+		/** 确认 pending：存历史快照 → 校验 baseVersion → 覆盖正式 Flow（version+1，.bak 保留）→ 清 pending；返回新 flow */
+		confirmPending: (opts: { taskCode: string; recordingId: string }) =>
+			ipcRenderer.invoke('flow:confirmPending', opts),
+		/** 丢弃 pending：删 pending 文件与 pendingUpdate 标记 */
+		discardPending: (opts: { taskCode: string; recordingId: string }) =>
+			ipcRenderer.invoke('flow:discardPending', opts),
+		/** 接管修复直落盘：历史快照 → version+1 覆盖正式 Flow（不产生 pending）；返回新 flow */
+		directUpdate: (opts: { taskCode: string; recordingId: string; flow: unknown; summary?: string }) =>
+			ipcRenderer.invoke('flow:directUpdate', opts),
 	},
 
 	browser: {
@@ -151,7 +154,7 @@ const api = {
 			'browser:urlChanged',
 			'browser:loading',
 			'browser:tabOpened',
-			'ai:proposal',
+			'ai:pending',
 		]
 		// 事件通道名称本身就是能力边界：即使通道名由渲染进程传入，也只能
 		// 订阅下方明确允许的事件，不能监听任意 IPC 消息。

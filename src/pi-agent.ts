@@ -422,6 +422,40 @@ export async function piStatus(): Promise<{
   }
 }
 
+/** 传输类失败特征：连接被对端关闭/socket 中断/请求在响应前失败（非模型内容错误）。 */
+const TRANSPORT_ERROR_RE =
+  /other side closed|socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|fetch failed/i;
+
+function isTimeoutText(text: string): boolean {
+  return /timed out|timeout/i.test(text);
+}
+
+/** 面向用户的传输失败文案：指向本地代理空闲超时排查，与模型输出无效类错误区分。 */
+const TRANSPORT_ERROR_MESSAGE =
+  "模型请求在传输层被中断（常见原因：本地代理空闲超时约 30 秒掐断了长请求）。" +
+  "请调大本地代理的空闲/响应超时（建议 ≥300 秒）后重试。";
+
+async function sendPiPromptOnce(
+  prompt: string,
+  cwd: string,
+  settings: Required<PiSettings>,
+  proxy: PiProxyOptions,
+  timeoutMs: number,
+): Promise<PiPromptResult> {
+  try {
+    const response = await sendPiWorkerRequest(prompt, cwd, settings, proxy, timeoutMs);
+    return response.ok
+      ? { ok: true, text: response.text || "" }
+      : { ok: false, text: "", error: response.error || "Pi agent request failed" };
+  } catch (error) {
+    return {
+      ok: false,
+      text: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function runPiPrompt(
   options: PiPromptOptions,
 ): Promise<PiPromptResult> {
@@ -444,16 +478,17 @@ export async function runPiPrompt(
       Math.min(options.timeoutMs ?? settings.timeoutMs, 600_000),
     );
 
-    const response = await sendPiWorkerRequest(
-      prompt,
-      options.cwd,
-      settings,
-      proxy,
-      timeoutMs,
-    );
-    return response.ok
-      ? { ok: true, text: response.text || "" }
-      : { ok: false, text: "", error: response.error || "Pi agent request failed" };
+    let result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs);
+    // 传输类失败（且非超时）：间隔 1 秒自动重发同一 prompt 一次；仍失败给出可操作文案。
+    const failureText = result.error || "";
+    if (!result.ok && !isTimeoutText(failureText) && TRANSPORT_ERROR_RE.test(failureText)) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs);
+      if (!result.ok && TRANSPORT_ERROR_RE.test(result.error || "")) {
+        return { ok: false, text: "", error: TRANSPORT_ERROR_MESSAGE };
+      }
+    }
+    return result;
   } catch (error) {
     return {
       ok: false,

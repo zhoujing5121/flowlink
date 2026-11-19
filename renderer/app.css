@@ -4128,207 +4128,25 @@ body {
   text-align: center;
 }
 
-/* ---------------- REFINED 单线演进：提案对比视图（并排双图 + 差异高亮） ---------------- */
+/* ---------------- REFINED 单线演进：AI 面板 pending Confirm / Discard 快捷块 ---------------- */
 
-.process-proposal {
-  position: absolute;
-  inset: 0;
-  z-index: 6;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-}
-
-.process-proposal[hidden] {
-  display: none;
-}
-
-.process-proposal-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
-  border-bottom: 1px solid #e8ddba;
+.assistant-pending-actions {
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e8ddba;
+  border-radius: 8px;
   background: #fffdf3;
 }
 
-.proposal-banner-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.proposal-banner-title {
-  font-size: 14px;
+.assistant-pending-title {
+  font-size: 12px;
   font-weight: 700;
   color: #6b5200;
 }
 
-.proposal-banner-meta {
-  font-size: 12px;
-  color: #6c7278;
-}
-
-.proposal-banner-actions {
+.assistant-pending-buttons {
   display: flex;
   gap: 8px;
-  flex-shrink: 0;
-}
-
-.process-proposal-panes {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
-.proposal-pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  border-right: 1px solid #e4e7ea;
-}
-
-.proposal-pane:last-child {
-  border-right: none;
-}
-
-.proposal-pane-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 16px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #49525a;
-  background: #f7f8f9;
-  border-bottom: 1px solid #e4e7ea;
-}
-
-.proposal-pane-version {
-  font-weight: 400;
-  color: #6c7278;
-}
-
-.proposal-pane-scroll {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 24px;
-  box-sizing: border-box;
-}
-
-.proposal-pane-empty {
-  position: absolute;
-  top: 24px;
-  left: 24px;
-  right: 24px;
-  padding: 8px 12px;
-  border: 1px solid #c5cdd4;
-  color: #49525a;
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.process-proposal-notes {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 16px;
-  border-top: 1px solid #dadde0;
-  background: #fafbfc;
-}
-
-.process-proposal-notes p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: #49525a;
-  overflow-wrap: anywhere;
-}
-
-.proposal-stale {
-  color: #8a4b00;
-}
-
-.proposal-legend {
-  display: flex;
-  gap: 14px;
-  font-size: 12px;
-  color: #6c7278;
-}
-
-.proposal-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.proposal-legend-item::before {
-  content: "";
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  border: 1.5px solid;
-}
-
-.proposal-legend-item.added::before {
-  border-color: #00884a;
-  background: #edf8f1;
-}
-
-.proposal-legend-item.removed::before {
-  border-color: #b00020;
-  background: #fdeef0;
-}
-
-.proposal-legend-item.changed::before {
-  border-color: #d99a06;
-  background: #fdf6e3;
-}
-
-/* 差异高亮：组卡与步骤行（新增绿 / 删除红 / 修改黄），对比视图专用叠加。 */
-
-.canvas-group.diff-added {
-  border-color: #00884a;
-  box-shadow: 0 0 0 2px rgba(0, 136, 74, 0.25);
-  background: #f3fbf6;
-}
-
-.canvas-group.diff-removed {
-  border-color: #b00020;
-  box-shadow: 0 0 0 2px rgba(176, 0, 32, 0.22);
-  background: #fdf2f3;
-}
-
-.canvas-group.diff-changed {
-  border-color: #d99a06;
-  box-shadow: 0 0 0 2px rgba(217, 154, 6, 0.28);
-  background: #fffaf0;
-}
-
-.canvas-step.diff-added {
-  border-color: #00884a;
-  background: #edf8f1;
-}
-
-.canvas-step.diff-removed {
-  border-color: #b00020;
-  background: #fdeef0;
-}
-
-.canvas-step.diff-changed {
-  border-color: #d99a06;
-  background: #fdf6e3;
-}
-
-.process-decision.diff-changed {
-  box-shadow: 0 0 0 2px rgba(217, 154, 6, 0.4);
 }
 
 .grouped-steps {

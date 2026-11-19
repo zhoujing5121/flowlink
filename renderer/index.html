@@ -782,6 +782,32 @@
                 AI Continue
               </button>
             </div>
+            <!-- REFINED 单线演进：存在未决议 pending 时显示 Confirm / Discard -->
+            <div
+              class="quick-action-group assistant-pending-actions"
+              data-quick-block="pending"
+              hidden
+            >
+              <div class="assistant-pending-title">
+                有待确认的 AI 更新
+              </div>
+              <div class="assistant-pending-buttons">
+                <button
+                  type="button"
+                  class="btn"
+                  data-pending-action="confirm"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  class="btn secondary"
+                  data-pending-action="discard"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
             <div class="quick-action-group" data-quick-block="group" hidden>
               <div class="assistant-group-options">
                 <button type="button" id="assistantGroupRecord">
@@ -1131,73 +1157,6 @@
                       +
                     </button>
                     <button data-canvas-fit>Fit to canvas</button>
-                  </div>
-                  <!-- REFINED 单线演进：未决定提案的并排对比视图（接管整个画布） -->
-                  <div class="process-proposal" hidden>
-                    <div class="process-proposal-banner">
-                      <div class="proposal-banner-main">
-                        <span class="proposal-banner-title">
-                          有来自 AI 的流程更新待决定
-                        </span>
-                        <span class="proposal-banner-meta"></span>
-                      </div>
-                      <div class="proposal-banner-actions">
-                        <button
-                          type="button"
-                          class="btn"
-                          data-proposal-action="apply"
-                        >
-                          Apply
-                        </button>
-                        <button
-                          type="button"
-                          class="btn secondary"
-                          data-proposal-action="discard"
-                        >
-                          Discard
-                        </button>
-                      </div>
-                    </div>
-                    <div class="process-proposal-panes">
-                      <section
-                        class="proposal-pane"
-                        data-proposal-pane="current"
-                      >
-                        <header class="proposal-pane-title">
-                          <span>当前流程</span>
-                          <span class="proposal-pane-version"></span>
-                        </header>
-                        <div class="proposal-pane-scroll">
-                          <div
-                            class="process-canvas-world proposal-world"
-                          ></div>
-                        </div>
-                      </section>
-                      <section
-                        class="proposal-pane"
-                        data-proposal-pane="proposed"
-                      >
-                        <header class="proposal-pane-title">
-                          <span>提案流程</span>
-                          <span class="proposal-pane-version"></span>
-                        </header>
-                        <div class="proposal-pane-scroll">
-                          <div
-                            class="process-canvas-world proposal-world"
-                          ></div>
-                        </div>
-                      </section>
-                    </div>
-                    <footer class="process-proposal-notes">
-                      <p class="proposal-summary" hidden></p>
-                      <p class="proposal-risks" hidden></p>
-                      <p class="proposal-stale" role="alert" hidden></p>
-                      <div class="proposal-legend">
-                        <span class="proposal-legend-item added">新增</span>
-                        <span class="proposal-legend-item removed">删除</span>
-                        <span class="proposal-legend-item changed">修改</span>
-                      </div>
-                    </footer>
                   </div>
                 </div>
                 <div class="instruction-view" data-result-tab="Instruction" hidden>
