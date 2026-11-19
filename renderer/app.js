@@ -1463,7 +1463,7 @@ function fillProcessPanel(panel, item) {
       const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
       const groupKey = node.groupId || node.id;
       const selected = item.selectedGroup === groupKey;
-      section.dataset.canvasGroup = node.id;
+      section.dataset.canvasGroup = groupKey;
       section.classList.toggle("selected", selected);
       const icon = section.querySelector(".canvas-group-icon");
       icon.src = groupFaviconUrl(view.url);
