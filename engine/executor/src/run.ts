@@ -550,17 +550,16 @@ export async function runFlowInBrowserContext(
 		}
 
 		const flat = flattenSteps(flow.steps)
-		const groupStartIndices = new Map<string, number>()
-		let nextGroupStart = 0
-		for (const step of flow.steps) {
-			if (step.kind === 'group') {
-				groupStartIndices.set(step.id, nextGroupStart)
-				nextGroupStart += flattenSteps([step]).length
-			} else {
-				nextGroupStart += 1
-			}
+		// condition 分支目标解析：步骤 id（Flow 内唯一，与组 id 共享命名空间）→ 扁平下标；
+		// 重复 id 防御性取首次出现。
+		const stepIndexById = new Map<string, number>()
+		for (let index = 0; index < flat.length; index++) {
+			const stepId = flat[index]!.step.id
+			if (!stepIndexById.has(stepId)) stepIndexById.set(stepId, index)
 		}
 		const groupVisitCounts = new Map<string, number>()
+		/** 防环护栏的「当前所在顶层组」：扁平游标从组外落到组内任意步骤（含组中段）记一次进入 */
+		let lastGroupId: string | undefined
 
 		// AI 单步接管后的续跑：钳制到 [0, flat.length]；>0 时本 run 从该下标起步。
 		const rawStartCursor = input.startCursor ?? 0
@@ -653,13 +652,18 @@ export async function runFlowInBrowserContext(
 				opts.onStep?.(bypassedResult)
 				continue
 			}
-			const groupVisitCount =
-				item.groupId && groupStartIndices.get(item.groupId) === flatCursor
-					? (groupVisitCounts.get(item.groupId) ?? 0) + 1
+			// 防环护栏：扁平游标从组外进入某顶层组内任意步骤（顺序走到组头、condition
+			// 跳到组头或组中段）时该组访问计数 +1；组内顺序推进不重复计数。
+			const enteringGroupId =
+				item.groupId !== undefined && item.groupId !== lastGroupId
+					? item.groupId
 					: undefined
-			if (item.groupId && groupVisitCount !== undefined) {
-				groupVisitCounts.set(item.groupId, groupVisitCount)
+			let groupVisitCount: number | undefined
+			if (enteringGroupId !== undefined) {
+				groupVisitCount = (groupVisitCounts.get(enteringGroupId) ?? 0) + 1
+				groupVisitCounts.set(enteringGroupId, groupVisitCount)
 			}
+			lastGroupId = item.groupId
 			// 中止只影响尚未执行的步骤；崩溃后也逐项报告 skip，维持结果与剩余步骤一一对应。
 			if (opts.abortSignal?.aborted) {
 				const stepResult: StepResult = {
@@ -941,9 +945,9 @@ export async function runFlowInBrowserContext(
 						}
 					}
 					if (!outcome) throw lastError
-					const targetGroupId = outcome.matches
-						? rendered.trueGroupId
-						: rendered.falseGroupId
+					const targetStepId = outcome.matches
+						? rendered.trueStepId
+						: rendered.falseStepId
 					stepLogPush(
 						`condition ${outcome.matches ? 'true' : 'false'}: ${outcome.note}` +
 							(retry > 0
@@ -952,16 +956,18 @@ export async function runFlowInBrowserContext(
 									: `（${retry} 次重评未命中，${windowMs}ms 窗口耗尽）`
 								: ''),
 					)
-					branchCursor =
-						targetGroupId === undefined
-							? flat.length
-							: groupStartIndices.get(targetGroupId)
-					if (branchCursor === undefined) {
-						throw new StepFailure(
-							'NOT_ACTIONABLE',
-							`condition 引用了不存在的 group "${targetGroupId}"`,
-						)
+					if (targetStepId !== undefined) {
+						// 分支目标存在 → 跳到该步骤（同 Flow 内任意已存在步骤，不再限于组开头）
+						branchCursor = stepIndexById.get(targetStepId)
+						if (branchCursor === undefined) {
+							throw new StepFailure(
+								'NOT_ACTIONABLE',
+								`condition 引用了不存在的 step "${targetStepId}"`,
+							)
+						}
+						stepLogPush(`condition 分支 → 跳到步骤 "${targetStepId}"`)
 					}
+					// 缺省分支（未指定目标）：不跳转、顺序继续（不清 branchCursor、不终止）
 					expectNote = `condition=${outcome.matches}`
 				} else if (rendered.kind === 'wait' && rendered.condition === 'userOperation') {
 					phase = 'action'
@@ -1176,8 +1182,8 @@ export async function runFlowInBrowserContext(
 			if (branchCursor !== undefined) {
 				// 分支跳转：为被跳过的每个步骤补报 skip（RunReport 自解释，UI 无需推断对齐）。
 				// 与 abort 路径的 skip 报告同构；不计入 pass/fail 统计，不影响 stopOnFailure 与组访问计数。
-				const skipEnd = branchCursor >= flat.length ? flat.length : branchCursor
-				for (let skipCursor = flatCursor + 1; skipCursor < skipEnd; skipCursor++) {
+				// 目标可以是任意已存在步骤：回跳（目标下标 ≤ 当前）不产生 skip 区间，直接回游标。
+				for (let skipCursor = flatCursor + 1; skipCursor < branchCursor; skipCursor++) {
 					const skipped = flat[skipCursor]!
 					const skipResult: StepResult = {
 						stepId: skipped.stepId,
@@ -1195,8 +1201,9 @@ export async function runFlowInBrowserContext(
 					})
 					opts.onStep?.(skipResult)
 				}
-				if (branchCursor >= flat.length) break
 				flatCursor = branchCursor - 1
+				// 跳转消费即复位：后续缺省分支（不指定目标）不得复用本次跳转目标。
+				branchCursor = undefined
 			}
 		}
 		observedPageCount = pages.count

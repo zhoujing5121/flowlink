@@ -48,7 +48,7 @@ export interface Projection {
 
 export type GenerateResult =
 	| { ok: true; flow: Flow; title: string; summary: string; rationale: string[]; risks: string[] }
-	| { ok: false; error: string }
+	| { ok: false; error: string; detail: { stage: string; reason: string } }
 
 /** flow 级来源元数据（写入生成结果 meta.sourceFlows；镜像 schema 定义）。 */
 export interface FlowSourceMeta {
@@ -175,7 +175,7 @@ const STEP_SCALAR_FIELDS: Record<string, string[]> = {
 	upload: ['files'],
 	wait: ['condition', 'ms', 'prompt'],
 	assert: ['assertion'],
-	condition: ['assertion', 'trueGroupId', 'falseGroupId'],
+	condition: ['assertion', 'trueStepId', 'falseStepId'],
 	extract: ['into', 'prop', 'attr'],
 	script: ['code'],
 	dialog: ['action', 'promptText'],
@@ -579,7 +579,8 @@ export function collectTemplateRefs(steps: Step[]): { used: Set<string>; defined
 		if (value === undefined) return
 		for (const name of parseTemplate(value)) used.add(name)
 	}
-	const visitAssertion = (assertion: Assertion): void => {
+	const visitAssertion = (assertion: Assertion | undefined): void => {
+		if (!assertion) return
 		if (assertion.kind === 'text') {
 			use(assertion.equals)
 			use(assertion.contains)
@@ -722,7 +723,30 @@ function annotateSourceFlowIds(
 	}
 }
 
+/** assert/condition 缺断言定义时整步丢弃（模型增强步骤非录制证据），返回剩余步骤与风险说明。 */
+export function dropStepsWithoutAssertion(steps: Step[]): { steps: Step[]; dropped: string[] } {
+	const dropped: string[] = []
+	const visit = (list: Step[]): Step[] => {
+		const out: Step[] = []
+		for (const step of list) {
+			if (step.kind === 'group') {
+				out.push({ ...step, steps: visit(step.steps) })
+				continue
+			}
+			if ((step.kind === 'assert' || step.kind === 'condition') && !step.assertion) {
+				dropped.push(`模型输出的校验步骤 ${step.id} 缺少断言定义，已移除`)
+				continue
+			}
+			out.push(step)
+		}
+		return out
+	}
+	return { steps: visit(steps), dropped }
+}
+
 export async function generateRefinedFlow(options: GenerateFlowOptions): Promise<GenerateResult> {
+	// 阶段标注：失败时错误对象带 detail（阶段+底层原因），AI 面板直接展示完整文本。
+	let stage = '准备'
 	try {
 		if (!Array.isArray(options.flowFiles) || !options.flowFiles.length) {
 			throw new Error('No source flows were selected for refinement.')
@@ -730,12 +754,14 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		if (typeof options.runPrompt !== 'function') {
 			throw new Error('A Pi prompt runner is required to generate a refined flow.')
 		}
+		stage = '加载源流程'
 		const flows: Flow[] = []
 		for (const file of options.flowFiles) flows.push(await loadFlow(file))
 		const projection = projectFlows(flows)
 		if (!options.templates?.autoSanitize || !options.templates?.refine) {
 			throw new Error('Pi generation prompt templates are required (config/prompts.json).')
 		}
+		stage = '组装提示词'
 		const prompt =
 			options.mode === 'auto'
 				? buildAutoSanitizePrompt(flows[0]!, projection, options.templates.autoSanitize)
@@ -751,18 +777,25 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				`The refinement prompt is too large (${prompt.length} characters); split the flow or remove steps.`,
 			)
 		}
+		stage = '调用模型'
 		const timeoutMs = Math.max(5_000, Math.min(options.timeoutMs ?? 180_000, 600_000))
 		const result = await options.runPrompt(prompt, timeoutMs)
 		if (!result.ok) throw new Error(result.error || 'Pi agent request failed')
 
+		stage = '解析模型输出'
 		const parsed = extractJsonObject(result.text) as Record<string, unknown>
 		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
 			throw new Error('Pi response is not a JSON object; the source was left unchanged.')
 		}
+		stage = '步骤再水化'
 		const refIdsByStep = new Map<Record<string, unknown>, string[]>()
 		let steps = rehydrateSteps(parsed.steps, projection.library, {
 			onStepRefs: (step, refIds) => refIdsByStep.set(step, refIds),
 		})
+		// 容忍策略：模型输出的 assert/condition 缺断言定义 → 丢弃该步并记 risk，
+		// 让细化可成功产出而非整次失败（否则 collectTemplateRefs 读 undefined.kind 崩溃）。
+		const assertionDrop = dropStepsWithoutAssertion(steps)
+		steps = assertionDrop.steps
 		// 受控重锚定：修复证据命中库元素 → 前插 source:'ai' 候选（observed 不动）。
 		if (options.reanchor?.length) steps = applyReanchor(steps, options.reanchor)
 		const sources = options.sources?.length ? options.sources : undefined
@@ -772,6 +805,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
 		// 2) 剪除输出中不再被引用的变量，避免 Reference 页出现死参数；
 		// 3) 源流程有 secret 变量而输出不再使用 → 追加一条 risk。
+		stage = '参数守卫'
 		const { used, defined } = collectTemplateRefs(steps)
 		for (const name of used) {
 			if (!defined.has(name) && !variables.some((v) => v.name === name)) {
@@ -783,6 +817,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		const secretDropped =
 			flows.some((f) => (f.variables ?? []).some((v) => v.secret)) &&
 			!prunedVariables.some((v) => v.secret)
+		stage = '契约校验与落盘前组装'
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
 				? parsed.title.trim()
@@ -817,6 +852,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				...(Array.isArray(parsed.risks)
 					? parsed.risks.filter((item): item is string => typeof item === 'string')
 					: []),
+				...assertionDrop.dropped,
 				...(secretDropped
 					? [
 							'源流程包含密码变量 {{password}}，但生成结果不再引用它：凭据步骤可能被删除，请人工确认登录段是否完整',
@@ -825,6 +861,11 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 			],
 		}
 	} catch (error) {
-		return { ok: false, error: error instanceof Error ? error.message : String(error) }
+		const reason = error instanceof Error ? error.message : String(error)
+		return {
+			ok: false,
+			error: `Refine 失败（阶段：${stage}）：${reason}`,
+			detail: { stage, reason },
+		}
 	}
 }

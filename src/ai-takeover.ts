@@ -467,23 +467,19 @@ async function planRouting(
 	const gateNotes: string[] = []
 
 	// 顶层 group 起点 → 扁平下标（与 run.ts 的 groupStartIndices 同构）。
-	const groupStartIndices = new Map<string, number>()
-	let nextGroupStart = 0
-	for (const top of flow.steps) {
-		if (top.kind === 'group') {
-			groupStartIndices.set(top.id, nextGroupStart)
-			nextGroupStart += flattenSteps([top]).length
-		} else {
-			nextGroupStart += 1
-		}
-	}
+	const stepIndexById = new Map<string, number>()
+	flat.forEach((item, index) => {
+		if (item.step.id && !stepIndexById.has(item.step.id))
+			stepIndexById.set(item.step.id, index)
+	})
 	const visits = new Map<string, number>()
+	let previousGroupId: string | null = null
 
 	let cursor = fromStepIndex
 	while (cursor < flat.length) {
 		const item = flat[cursor]!
-		// 组访问计数：仅当游标落在组起点时计一次（与执行器一致）。
-		if (item.groupId && groupStartIndices.get(item.groupId) === cursor) {
+		// 组访问计数：游标从组外进入该组（任意位置，含分支跳入）计一次（与执行器一致）。
+		if (item.groupId && item.groupId !== previousGroupId) {
 			const count = (visits.get(item.groupId) ?? 0) + 1
 			visits.set(item.groupId, count)
 			if (count > GATE_GROUP_VISIT_LIMIT) {
@@ -494,6 +490,7 @@ async function planRouting(
 				break
 			}
 		}
+		previousGroupId = item.groupId ?? null
 		if (item.step.kind === 'condition') {
 			const condition = item.step as Extract<Step, { kind: 'condition' }>
 			const outcome = evaluateGate
@@ -506,24 +503,21 @@ async function planRouting(
 				cursor += 1
 				continue
 			}
-			const targetGroupId = outcome.matches ? condition.trueGroupId : condition.falseGroupId
+			const targetStepId = outcome.matches ? condition.trueStepId : condition.falseStepId
 			gateNotes.push(
 				`gate condition at step ${cursor + 1} evaluated ${outcome.matches} (${outcome.note}); routing to ${
-					targetGroupId ?? 'end of flow'
+					targetStepId ?? 'sequential continuation'
 				}`,
 			)
-			if (targetGroupId === undefined) {
-				// 缺省分支 = 结束整个运行：之后所有步骤跳过。
-				for (let i = cursor + 1; i < flat.length; i++) {
-					skipped.push({ step: flat[i]!, reason: 'gate condition ended the run' })
-				}
-				cursor = flat.length
-				break
+			if (targetStepId === undefined) {
+				// 缺省分支 = 顺序继续：执行组内下一步，不终止。
+				cursor += 1
+				continue
 			}
-			const branchCursor = groupStartIndices.get(targetGroupId)
+			const branchCursor = stepIndexById.get(targetStepId)
 			if (branchCursor === undefined) {
 				gateNotes.push(
-					`gate condition at step ${cursor + 1} referenced missing group "${targetGroupId}"; continue linearly`,
+					`gate condition at step ${cursor + 1} referenced missing step "${targetStepId}"; continue linearly`,
 				)
 				cursor += 1
 				continue

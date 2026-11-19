@@ -99,48 +99,77 @@
       segmentOf[i] = segments.length - 1;
     }
 
-    // —— 节点：顶层 group + 未分组伪组（连续顶层裸步骤兜底） ——
+    // —— 节点：顶层 group + 未分组伪组（连续顶层裸步骤兜底）。
+    // 组内全部 condition（任意位置，含嵌套组）提取为独立菱形判断节点，
+    // 动作步骤按条件位置切分为多张卡（卡片带 groupId 指回原组视图）。
     const nodes = [];
     const nodeById = new Map();
+    // 裸步骤 id → 覆盖它的节点（步骤级分支目标的边解析用）
+    const nodeByStepId = new Map();
     let cursor = 0;
     let counter = 0;
     let bareRun = [];
     const segmentIndexAt = (index) =>
       index < entries.length ? segmentOf[index] : segments.length - 1;
+    // 把一段连续扁平下标 [firstIndex, lastIndex) 按 condition 切成卡 + 判断节点。
     const flushBare = () => {
       if (!bareRun.length) return;
       const first = bareRun[0];
-      const node = {
+      emitRange(first, first + bareRun.length, {
         id: "ungrouped-" + ++counter,
         type: "ungrouped",
         label: "未分组步骤",
-        firstIndex: first,
-        lastIndex: first + bareRun.length,
-        segmentIndex: segmentIndexAt(first),
-        sourceFlowId: entries[first]?.step.sourceFlowId ?? null,
-        steps: [],
-      };
-      nodes.push(node);
-      nodeById.set(node.id, node);
+      });
       bareRun = [];
+    };
+    const emitRange = (firstIndex, lastIndex, meta) => {
+      let runStart = -1;
+      const flushCard = (endExclusive) => {
+        if (runStart < 0) return;
+        const node = {
+          id: meta.id + "-part" + runStart,
+          groupId: meta.id,
+          type: meta.type,
+          label: meta.label,
+          firstIndex: runStart,
+          lastIndex: endExclusive,
+          segmentIndex: segmentIndexAt(Math.min(runStart, entries.length - 1)),
+          sourceFlowId: entries[runStart]?.step.sourceFlowId ?? null,
+        };
+        nodes.push(node);
+        nodeById.set(node.id, node);
+        runStart = -1;
+      };
+      for (let i = firstIndex; i < lastIndex; i++) {
+        const entry = entries[i];
+        if (!entry) continue;
+        if (entry.step.kind === "condition") {
+          flushCard(i);
+          const decision = {
+            id: "cond-" + entry.flattenedStepId.replace(/[^-\w]/g, "-"),
+            type: "decision",
+            label: entry.step.label?.trim() || "条件判断",
+            firstIndex: entry.index,
+            lastIndex: entry.index + 1,
+            segmentIndex: segmentOf[entry.index] ?? 0,
+            sourceFlowId: entry.step.sourceFlowId ?? null,
+            conditionStep: entry.step,
+          };
+          nodes.push(decision);
+          nodeById.set(decision.id, decision);
+        } else if (runStart < 0) runStart = i;
+      }
+      flushCard(lastIndex);
     };
     for (const item of steps) {
       if (item && item.kind === "group") {
         flushBare();
         const count = countExecutable(item.steps);
-        const first = cursor;
-        const node = {
+        emitRange(cursor, cursor + count, {
           id: item.id,
           type: "group",
           label: item.label || item.id,
-          firstIndex: first,
-          lastIndex: first + count,
-          segmentIndex: segmentIndexAt(Math.min(first, entries.length - 1)),
-          sourceFlowId: entries[first]?.step.sourceFlowId ?? null,
-          steps: item.steps || [],
-        };
-        nodes.push(node);
-        nodeById.set(node.id, node);
+        });
         cursor += count;
       } else if (item && typeof item === "object") {
         bareRun.push(cursor);
@@ -148,37 +177,16 @@
       }
     }
     flushBare();
+    // 步骤级分支目标解析：每个扁平条目的裸步骤 id → 覆盖它的卡/判断节点。
     for (const node of nodes) {
-      if (node.type !== "group" && node.type !== "ungrouped") continue;
-      // 契约形态的 condition 是组最后一个可执行步骤：提取为独立菱形判断节点，
-      // 组卡只保留动作步骤（"更像流程图"：判断单独成节点，连接两个出向组）。
-      while (node.lastIndex > node.firstIndex) {
-        const entry = entries[node.lastIndex - 1];
-        if (!entry || entry.step.kind !== "condition") break;
-        node.lastIndex -= 1;
-        const decision = {
-          id: "cond-" + entry.flattenedStepId.replace(/[^-\w]/g, "-"),
-          type: "decision",
-          label: entry.step.label?.trim() || "条件判断",
-          firstIndex: entry.index,
-          lastIndex: entry.index + 1,
-          segmentIndex: segmentOf[entry.index] ?? 0,
-          sourceFlowId: entry.step.sourceFlowId ?? null,
-          conditionStep: entry.step,
-        };
-        nodes.push(decision);
-        nodeById.set(decision.id, decision);
+      if (node.type === "decision") {
+        if (node.conditionStep?.id) nodeByStepId.set(node.conditionStep.id, node);
+        continue;
       }
-    }
-    // 抽取后为空的组（整组只有一个 condition）不产卡片
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const node = nodes[i];
-      if (
-        (node.type === "group" || node.type === "ungrouped") &&
-        node.firstIndex === node.lastIndex
-      ) {
-        nodeById.delete(node.id);
-        nodes.splice(i, 1);
+      for (let i = node.firstIndex; i < node.lastIndex; i++) {
+        const entry = entries[i];
+        if (entry?.step?.id && !nodeByStepId.has(entry.step.id))
+          nodeByStepId.set(entry.step.id, node);
       }
     }
 
@@ -202,18 +210,23 @@
 
     // —— 边 ——
     const edges = [];
-    const addBranchEdges = (sourceNode, conditionStep) => {
+    // 分支边：目标解析到步骤 id（任意位置步骤/条件）；缺省分支 = 顺序继续
+    //（连到判定后的下一个顺延节点；段末则连段 End 哨）。
+    const addBranchEdges = (sourceNode, conditionStep, nextNode, segEnd) => {
       const targets = [
-        [conditionStep.trueGroupId, "是", "true"],
-        [conditionStep.falseGroupId, "否", "false"],
+        [conditionStep.trueStepId, "是", "true"],
+        [conditionStep.falseStepId, "否", "false"],
       ];
-      for (const [groupId, label, branch] of targets) {
-        const target = groupId ? nodeById.get(groupId) : undefined;
-        if (target && (target.type === "group" || target.type === "ungrouped")) {
+      for (const [stepId, label, branch] of targets) {
+        const target = stepId ? nodeByStepId.get(stepId) : undefined;
+        if (
+          target &&
+          (target.type === "group" || target.type === "ungrouped" || target.type === "decision")
+        ) {
           edges.push({
             from: sourceNode.id,
             to: target.id,
-            // 目标组序 ≤ 来源组序 → 回跳边（运行时受 FLOW_LOOP_LIMIT 3 次约束）
+            // 目标序 ≤ 来源序 → 回跳边（运行时受 FLOW_LOOP_LIMIT 3 次约束）
             kind:
               target.firstIndex <= sourceNode.firstIndex ? "back" : "branch",
             label,
@@ -223,21 +236,31 @@
               conditionStep.label?.trim() || conditionStep.id || "",
             crossSegment: target.segmentIndex !== sourceNode.segmentIndex,
           });
-        } else {
-          // 目标缺省 → 段内 End 哨（condition 分支落到"到此结束"）
-          const segEnd = endBySegment.get(sourceNode.segmentIndex);
-          if (segEnd)
-            edges.push({
-              from: sourceNode.id,
-              to: segEnd.id,
-              kind: "branch",
-              label,
-              branch,
-              conditionStepId: conditionStep.id || null,
-              conditionLabel:
-                conditionStep.label?.trim() || conditionStep.id || "",
-              crossSegment: false,
-            });
+        } else if (nextNode) {
+          // 缺省 = 顺序继续：不是终止，沿组内/组间下一步顺延。
+          edges.push({
+            from: sourceNode.id,
+            to: nextNode.id,
+            kind: "flow",
+            label,
+            branch,
+            conditionStepId: conditionStep.id || null,
+            conditionLabel:
+              conditionStep.label?.trim() || conditionStep.id || "",
+            crossSegment: nextNode.segmentIndex !== sourceNode.segmentIndex,
+          });
+        } else if (segEnd) {
+          edges.push({
+            from: sourceNode.id,
+            to: segEnd.id,
+            kind: "branch",
+            label,
+            branch,
+            conditionStepId: conditionStep.id || null,
+            conditionLabel:
+              conditionStep.label?.trim() || conditionStep.id || "",
+            crossSegment: false,
+          });
         }
       }
     };
@@ -261,26 +284,18 @@
       if (segStart) edges.push({ from: segStart.id, to: list[0].id, kind: "flow" });
       for (let i = 0; i < list.length; i++) {
         const node = list[i];
+        const next = list[i + 1];
         if (node.type === "decision") {
-          // 判断节点：只出分支边（是/否），无顺延
-          addBranchEdges(node, node.conditionStep);
+          // 判断节点：只出是/否分支边（有目标的连目标，缺省的顺序继续）。
+          addBranchEdges(node, node.conditionStep, next, segEnd);
           continue;
         }
-        // 组内 condition（含嵌套，规则与 ensureProcessGroups 的 branchEntries 一致）
-        // 都画是/否分支边。契约形态的尾置 condition 已提取为判断节点，
-        // 这里剩下的只可能是旧数据的组中段 condition（近似呈现：分支+顺延的超集）。
-        for (let j = node.firstIndex; j < node.lastIndex; j++) {
-          const entry = entries[j];
-          if (entry && entry.step.kind === "condition")
-            addBranchEdges(node, entry.step);
-        }
-        if (i + 1 < list.length)
-          edges.push({ from: node.id, to: list[i + 1].id, kind: "flow" });
+        if (next) edges.push({ from: node.id, to: next.id, kind: "flow" });
         else if (segEnd) edges.push({ from: node.id, to: segEnd.id, kind: "flow" });
       }
     }
 
-    return { nodes, edges, segments, entries, nodeById };
+    return { nodes, edges, segments, entries, nodeById, nodeByStepId };
   }
 
   /* ---------------- dagre 宏观布局 ---------------- */

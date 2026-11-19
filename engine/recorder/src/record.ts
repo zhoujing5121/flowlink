@@ -141,7 +141,14 @@ function withRecordingStop<T>(promise: Promise<T>, signal: AbortSignal | undefin
 	})
 }
 
-export async function record(opts: RecordOptions): Promise<RecordResult> {
+/**
+ * record() 的返回契约：在 RecordResult 之上暴露整页步骤截图清单。
+ * stepScreenshots 条目相对 `artifactsDir/record/`（如 "screenshots/step-0001.png"），
+ * 按步骤序排列；FLOWLINK_DISABLE_RECORDER_SHOTS=1 跳过采集时缺省。
+ */
+export type RecordResultWithStepShots = RecordResult & { stepScreenshots?: string[] }
+
+export async function record(opts: RecordOptions): Promise<RecordResultWithStepShots> {
 	const viewport = opts.viewport ?? DEFAULT_VIEWPORT
 	const headless = opts.headless ?? false
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
@@ -158,6 +165,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		if (elementsDirReady) return
 		await mkdir(elementsDir, { recursive: true })
 		elementsDirReady = true
+	}
+	const screenshotsDir = join(artifactsDir, 'record', 'screenshots')
+	let screenshotsDirReady = false
+	const ensureScreenshotsDir = async (): Promise<void> => {
+		if (screenshotsDirReady) return
+		await mkdir(screenshotsDir, { recursive: true })
+		screenshotsDirReady = true
 	}
 
 	/* ---------------- 采集通道状态 ---------------- */
@@ -228,6 +242,8 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 	const steps: Step[] = []
 	const variables = new Map<string, Variable>()
+	/** 整页步骤截图（相对 record/ 产物目录，如 "screenshots/step-0001.png"，按步骤序） */
+	const stepScreenshots: string[] = []
 	let stepSeq = 0
 	/** 上传文件占位变量序号：file_1 / file_2 … */
 	let uploadSeq = 0
@@ -885,9 +901,21 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 		const buildStep = async (action: CoalescedAction): Promise<Step | undefined> => {
 			const stepIndex = steps.length
 			const id = `s${++stepSeq}`
-			// 整页步骤截图（step-NNNN.png）已移除：与 Playwright CDP 截图的 GPU 表面
-			// 读回一起被列为录制闪烁的主嫌疑，且 rrweb 回放已覆盖其用途。
-			// main.ts stopRecordingSession 的 stepScreenshots 目录读取保留（兼容旧数据）。
+			// 整页步骤截图（step-NNNN.png）：screencast 整帧采集（与元素裁剪同机制，
+			// 无闪烁投诉记录），此处与元素裁剪同处 flush 串行链，天然互斥不竞争。
+			// FLOWLINK_DISABLE_RECORDER_SHOTS=1 时整体跳过（诊断开关）。
+			if (!recorderShotsDisabled()) {
+				const name = `step-${String(stepIndex + 1).padStart(4, '0')}.png`
+				await ensureScreenshotsDir()
+				const shot = await screenshotRegion(
+					pageOfAction(action),
+					undefined,
+					undefined,
+					undefined,
+					join(screenshotsDir, name),
+				)
+				if (shot) stepScreenshots.push(`screenshots/${name}`)
+			}
 			if (action.kind === 'navigate') {
 				// 机器跳转合成的 navigate 带 isOptional：回放时若浏览器已自行重定向则跳过
 				const isOptional = AUTO_NAVIGATION_TYPES.has(action.navigationType ?? '')
@@ -1605,7 +1633,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
 
 		// 写前 zod + 契约校验（非法 IR 绝不落盘）
 		await saveFlow(flow, opts.outPath)
-		return { flow, artifactsDir, rawPath }
+		return { flow, artifactsDir, rawPath, ...(stepScreenshots.length ? { stepScreenshots } : {}) }
 	} finally {
 		// 兜底：任何异常路径（drive 抛错、goto 失败、保存 flow 失败）都尝试保存一次登录态。
 		// persistStorageState 幂等，正常路径已经存过就不会重复写。
@@ -1623,7 +1651,7 @@ export type RecordOnPageOptions = Omit<RecordOptions, 'page' | 'attachOnly' | 'h
 	skipNavigate?: boolean
 }
 
-export async function recordOnPage(opts: RecordOnPageOptions): Promise<RecordResult> {
+export async function recordOnPage(opts: RecordOnPageOptions): Promise<RecordResultWithStepShots> {
 	return record({
 		...opts,
 		page: opts.page,

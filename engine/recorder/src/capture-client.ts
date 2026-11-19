@@ -437,7 +437,7 @@ export function normalizeEmitPayload(payload: unknown): RawEvent | undefined {
 }
 
 /**
- * 抓元素区域截图（用于 crop）。
+ * 抓区域截图（用于 crop）或整帧截图（用于步骤整页图）。
  *
  * **不要用 `locator.screenshot()`**：它会 scrollIntoView，导致录制时页面自己滚动 ——
  * 用户看到的就是"每输入一次页面闪一下"，而且滚动事件会被录制器当成用户操作录进 flow。
@@ -445,23 +445,27 @@ export function normalizeEmitPayload(payload: unknown): RawEvent | undefined {
  * 主路径是 **CDP screencast 单帧采集**（DevTools 预览同机制，绕开
  * `Page.captureScreenshot` 的 fromSurface GPU 表面读回，后者在 Windows 上
  * 与录制闪烁强相关）：startScreencast → 首帧 → ack → stop，Node 侧把整帧
- * PNG 落盘，裁剪区以帧内像素坐标写入同目录 sidecar json（`<crop>.png.json`），
- * 证据查看器按 sidecar 裁剪显示——零新增依赖。screencast 失败/超时则回退
- * `page.screenshot({ clip })`（旧路径，真裁剪、无 sidecar）。
- * 只支持主 frame（iframe 内的元素跳过 crop，回放不受影响）。
+ * PNG 落盘。裁剪模式（rect 给定，仅主 frame）额外把裁剪区以帧内像素坐标写入
+ * 同目录 sidecar json（`<crop>.png.json`），证据查看器按 sidecar 裁剪显示——
+ * 零新增依赖。整帧模式（rect 缺省）整帧直接落盘、跳过 sidecar。
+ * screencast 失败/超时则回退 `page.screenshot`（裁剪模式带 clip，整帧模式全视口）。
  */
 export async function screenshotRegion(
 	page: Page,
-	frame: Frame,
-	rect: { x: number; y: number; width: number; height: number },
-	scroll: { x: number; y: number },
+	frame: Frame | undefined,
+	rect: { x: number; y: number; width: number; height: number } | undefined,
+	scroll: { x: number; y: number } | undefined,
 	path: string,
 ): Promise<boolean> {
-	if (frame !== page.mainFrame()) return false
-	if (rect.width < 1 || rect.height < 1) return false
+	if (rect) {
+		// 裁剪模式的 sidecar 坐标只对主 frame 有意义（iframe 内元素跳过 crop，回放不受影响）
+		if (frame !== page.mainFrame()) return false
+		if (rect.width < 1 || rect.height < 1) return false
+	}
 	if (recorderShotsDisabled()) return false
-	if (await captureScreencastFrame(page, rect, scroll, path)) return true
-	return captureClippedScreenshot(page, rect, scroll, path)
+	const resolvedScroll = scroll ?? { x: 0, y: 0 }
+	if (await captureScreencastFrame(page, rect, resolvedScroll, path)) return true
+	return captureFallbackScreenshot(page, rect, resolvedScroll, path)
 }
 
 /** 诊断开关：为 1 时录制期完全不做元素截图（crop 缺省），用于真机 bisect 闪烁来源。 */
@@ -495,7 +499,7 @@ const SCREENCAST_FIRST_FRAME_TIMEOUT_MS = 1500
 
 async function captureScreencastFrame(
 	page: Page,
-	rect: { x: number; y: number; width: number; height: number },
+	rect: { x: number; y: number; width: number; height: number } | undefined,
 	scroll: { x: number; y: number },
 	path: string,
 ): Promise<boolean> {
@@ -533,6 +537,11 @@ async function captureScreencastFrame(
 		const frameWidth = png.readUInt32BE(16)
 		const frameHeight = png.readUInt32BE(20)
 		if (!frameWidth || !frameHeight) return false
+		// 整帧模式（步骤整页图）：无裁剪区，整帧直接落盘，不写 sidecar。
+		if (!rect) {
+			await writeFile(path, png)
+			return true
+		}
 		// 视口 CSS 尺寸 → 帧像素比例；metadata 缺失时退回 Playwright 视口信息。
 		const viewport = page.viewportSize()
 		const cssWidth = firstFrame.metadata?.deviceWidth || viewport?.width || frameWidth
@@ -565,10 +574,10 @@ async function captureScreencastFrame(
 	}
 }
 
-/** 旧路径：`page.screenshot({ clip })` 真裁剪（文档坐标），screencast 不可用时兜底。 */
-async function captureClippedScreenshot(
+/** 旧路径兜底：`page.screenshot`（裁剪模式带 clip 真裁剪（文档坐标），整帧模式全视口），screencast 不可用时回退。 */
+async function captureFallbackScreenshot(
 	page: Page,
-	rect: { x: number; y: number; width: number; height: number },
+	rect: { x: number; y: number; width: number; height: number } | undefined,
 	scroll: { x: number; y: number },
 	path: string,
 ): Promise<boolean> {
@@ -579,12 +588,16 @@ async function captureClippedScreenshot(
 			path,
 			animations: 'disabled',
 			timeout: 3000,
-			clip: {
-				x: Math.max(0, Math.round(rect.x + scroll.x)),
-				y: Math.max(0, Math.round(rect.y + scroll.y)),
-				width: Math.max(1, Math.round(rect.width)),
-				height: Math.max(1, Math.round(rect.height)),
-			},
+			...(rect
+				? {
+						clip: {
+							x: Math.max(0, Math.round(rect.x + scroll.x)),
+							y: Math.max(0, Math.round(rect.y + scroll.y)),
+							width: Math.max(1, Math.round(rect.width)),
+							height: Math.max(1, Math.round(rect.height)),
+						},
+					}
+				: {}),
 		})
 		return true
 	} catch {

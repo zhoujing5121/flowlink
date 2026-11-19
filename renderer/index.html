@@ -745,6 +745,7 @@
               hidden
             >
               <div class="assistant-refine-title"></div>
+              <div data-refine-chips class="assistant-refine-chips" hidden></div>
               <div data-refine-presets></div>
               <textarea
                 id="refineFreeText"
@@ -759,14 +760,28 @@
                 </button>
               </div>
             </div>
-            <button
-              type="button"
-              id="aiContinueTest"
-              class="ai-continue-test"
+            <div
+              class="quick-action-group"
+              data-quick-block="failure"
               hidden
             >
-              AI Continue · fix failed step, then resume
-            </button>
+              <button
+                type="button"
+                class="assistant-option"
+                data-ai-failure="analyze"
+                aria-label="Analyze last failure"
+              >
+                Analyze last failure
+              </button>
+              <button
+                type="button"
+                class="assistant-option"
+                data-ai-failure="continue"
+                aria-label="AI Continue"
+              >
+                AI Continue
+              </button>
+            </div>
             <div class="quick-action-group" data-quick-block="group" hidden>
               <div class="assistant-group-options">
                 <button type="button" id="assistantGroupRecord">
@@ -1731,14 +1746,14 @@
           <label data-field="expected"
             >Expected value<input name="expected"
           /></label>
-          <label data-field="trueGroupId"
-            >True group<select name="trueGroupId">
-              <option value="">End branch</option>
+          <label data-field="trueStepId"
+            >True step<select name="trueStepId">
+              <option value="">Sequential continue</option>
             </select></label
           >
-          <label data-field="falseGroupId"
-            >False group<select name="falseGroupId">
-              <option value="">End branch</option>
+          <label data-field="falseStepId"
+            >False step<select name="falseStepId">
+              <option value="">Sequential continue</option>
             </select></label
           >
           <label data-field="tabIndex"

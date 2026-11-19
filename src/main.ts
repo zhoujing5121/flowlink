@@ -1465,7 +1465,12 @@ function registerIpc(): void {
 				templates: getPromptTemplates().generation,
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
 			})
-			if (!result.ok) throw new Error(result.error)
+			if (!result.ok) {
+				// 完整错误文本随消息返回；detail（阶段+原因）供渲染层折叠展示。
+				const error = new Error(result.error) as Error & { detail?: { stage: string; reason: string } }
+				error.detail = result.detail
+				throw error
+			}
 			return {
 				flow: result.flow,
 				title: result.title,
@@ -1561,7 +1566,11 @@ function registerIpc(): void {
 				...(reanchor ? { reanchor } : {}),
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs }),
 			})
-			if (!result.ok) throw new Error(result.error)
+			if (!result.ok) {
+				const error = new Error(result.error) as Error & { detail?: { stage: string; reason: string } }
+				error.detail = result.detail
+				throw error
+			}
 			return {
 				// 完整已校验 Flow 一并返回：渲染层可不经拼装直接另存为新录制。
 				flow: result.flow,

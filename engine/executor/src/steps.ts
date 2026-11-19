@@ -73,18 +73,28 @@ export function prefixSteps(steps: Step[], executableCount: number): Step[] {
 		return { steps: result, used }
 	}
 	const result = take(steps, executableCount).steps
-	const groupIds = new Set(
-		result
-			.filter((step): step is Extract<Step, { kind: 'group' }> => step.kind === 'group')
-			.map((group) => group.id),
-	)
-	for (const group of result) {
-		if (group.kind !== 'group') continue
-		const last = group.steps.at(-1)
-		if (last?.kind !== 'condition') continue
-		if (last.trueGroupId && !groupIds.has(last.trueGroupId)) delete last.trueGroupId
-		if (last.falseGroupId && !groupIds.has(last.falseGroupId)) delete last.falseGroupId
+	// 悬空分支引用清理：condition 可位于组内任意位置，目标为步骤 id；
+	// 指向前缀 Flow 中不存在的步骤（被截断的后续组等）时删除该字段（缺省 = 顺序继续）。
+	const stepIds = new Set<string>()
+	const collectStepIds = (items: Step[]): void => {
+		for (const step of items) {
+			if (step.kind === 'group') collectStepIds(step.steps)
+			else stepIds.add(step.id)
+		}
 	}
+	collectStepIds(result)
+	const sanitizeConditionTargets = (items: Step[]): void => {
+		for (const step of items) {
+			if (step.kind === 'group') {
+				sanitizeConditionTargets(step.steps)
+				continue
+			}
+			if (step.kind !== 'condition') continue
+			if (step.trueStepId && !stepIds.has(step.trueStepId)) delete step.trueStepId
+			if (step.falseStepId && !stepIds.has(step.falseStepId)) delete step.falseStepId
+		}
+	}
+	sanitizeConditionTargets(result)
 	return result
 }
 

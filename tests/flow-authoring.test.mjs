@@ -83,7 +83,7 @@ function flow(steps, schemaVersion = 1) {
 	}
 }
 
-test('migrates schema v1 and validates condition branches against existing groups', () => {
+test('migrates schema v1 and validates condition branches against existing steps', () => {
 	const target = elementRef()
 	const input = flow([
 		{
@@ -95,7 +95,7 @@ test('migrates schema v1 and validates condition branches against existing group
 				id: 'branch',
 				target,
 				assertion: { kind: 'visible' },
-				trueGroupId: 'second',
+				trueStepId: 'pause',
 			}],
 		},
 		{
@@ -110,11 +110,15 @@ test('migrates schema v1 and validates condition branches against existing group
 	assert.equal(parsed.schemaVersion, 2)
 
 	const invalid = structuredClone(parsed)
-	invalid.steps[0].steps[0].trueGroupId = 'missing'
-	assert.throws(() => flowIO.parseFlow(invalid), /不存在的 group/)
+	invalid.steps[0].steps[0].trueStepId = 'missing'
+	assert.throws(() => flowIO.parseFlow(invalid), /不存在的 step/)
+	// 组 id 不再是合法分支目标
+	const toGroup = structuredClone(parsed)
+	toGroup.steps[0].steps[0].trueStepId = 'second'
+	assert.throws(() => flowIO.parseFlow(toGroup), /不存在的 step/)
 })
 
-test('rejects conditions before the end of a group and literal password assertions', () => {
+test('accepts mid-group conditions and rejects literal password assertions', () => {
 	const target = elementRef('password')
 	const input = flow([
 		{
@@ -126,14 +130,19 @@ test('rejects conditions before the end of a group and literal password assertio
 					kind: 'condition',
 					id: 'branch',
 					target,
-					assertion: { kind: 'value', equals: 'plaintext' },
+					assertion: { kind: 'value', equals: '{{password}}' },
+					falseStepId: 'pause',
 				},
 				{ kind: 'wait', id: 'pause', condition: 'timeout', ms: 10 },
 			],
 		},
 	])
-	assert.throws(() => flowIO.parseFlow(input), /condition.*最后一步/)
-	assert.throws(() => flowIO.parseFlow(input), /password 条件必须引用 secret 变量/)
+	const parsed = flowIO.parseFlow(input)
+	assert.equal(parsed.steps[0].steps[0].falseStepId, 'pause')
+
+	const invalid = structuredClone(input)
+	invalid.steps[0].steps[0].assertion = { kind: 'value', equals: 'plaintext' }
+	assert.throws(() => flowIO.parseFlow(invalid), /password 条件必须引用 secret 变量/)
 })
 
 test('records a new tab and the following switch back as distinct actions', () => {
@@ -160,7 +169,7 @@ test('prefixes preserve groups and remove branch targets outside the prefix', ()
 				id: 'branch',
 				target: elementRef(),
 				assertion: { kind: 'visible' },
-				trueGroupId: 'second',
+				trueStepId: 'pause',
 			}],
 		},
 		{
@@ -174,8 +183,8 @@ test('prefixes preserve groups and remove branch targets outside the prefix', ()
 	assert.equal(prefix.length, 1)
 	assert.equal(prefix[0].kind, 'group')
 	assert.equal(prefix[0].steps[0].kind, 'condition')
-	assert.equal(prefix[0].steps[0].trueGroupId, undefined)
-	assert.equal(original[0].steps[0].trueGroupId, 'second')
+	assert.equal(prefix[0].steps[0].trueStepId, undefined)
+	assert.equal(original[0].steps[0].trueStepId, 'pause')
 })
 
 test('Process renderer calls the exposed preload API for hydration and edits', async () => {

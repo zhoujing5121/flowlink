@@ -104,7 +104,7 @@ The AI-pane progress list SHALL mirror the graph group-by-group, and the taskflo
 
 The AI pane SHALL be advice-first: all clickable AI actions live in one quick-actions strip above the chat composer, and the panel body stays informational.
 
-快捷动作条容纳欢迎选项（合并/生成/优化）、带预设勾选与自由文本及继续按钮的 refine 表单、「用 AI 运行剩余步骤」接管按钮、分组重录/加节点动作；无可行动作时动作条自行隐藏。纯 label 润色作为 refine 预设之一（仅勾选它、无自由文本时走既有润色流：Pi 重写步骤标签、旧→新 diff 对话、确认后写回录制；与其他预设或自由文本组合则并入完整细化指令）。`@` 提及把当前任务的已存录制作为附件（自动补全选择器、可移除徽片）；附件进入建议与细化，Flow JSON 永不进入聊天记录（载荷在主进程从 store 组装，UI 状态不持有）。
+快捷动作条容纳欢迎选项（合并/生成/优化）、带预设勾选与自由文本及继续按钮的 refine 表单、唯一的 `AI Continue` 接管按钮（仅单步接管：AI 执行失败的那一步后回到程序回放；同名步骤两败即停，无全量接管入口）、分组重录/加节点动作；无可行动作时动作条自行隐藏。针对已有 REFINED 录制的 AI 更新生成流程提案（非直接落盘），在 Process 标签页以并排前后流程图对比呈现，由用户 Apply/Discard。`@` 提及把当前任务的已存录制作为附件（自动补全选择器、可移除徽片）；附件进入建议与细化，Flow JSON 永不进入聊天记录（载荷在主进程从 store 组装，UI 状态不持有）。
 
 #### Scenario: 附件不入记录
 - **WHEN** 用户 @ 附着一份 300 步的录制发送消息

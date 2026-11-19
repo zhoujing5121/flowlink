@@ -128,8 +128,8 @@
 						const value = step.url || step.text || step.value || ''
 						return value ? `${kind} · ${String(value).replace(/^(?:https?:\/\/)/, '')}` : kind
 					})
-					// 整页步骤截图已移除（录制闪烁优化）：只保留真实存在的截图，
-					// 不再补空占位到步数；Record 页空截图墙直接隐藏。
+					// 步骤截图只保留真实存在的文件，不补空占位到步数；
+					// 无截图时 Record 页显示空态说明（app.js renderRecordingScreenshots）。
 					item.media.screenshots = item.media.screenshots.slice(0, item.steps.length)
 					item.testResults = item.testFlowSteps.map(() => ({ status: 'pending' }))
 				} catch (err) {
@@ -624,8 +624,7 @@
 					image: `file:///${String(filePath).replace(/\\/g, '/')}`,
 					name: `Step-${String(index + 1).padStart(2, '0')}.png`,
 				}))
-			// 整页步骤截图已随录制闪烁优化移除（rrweb 回放为主展示）：
-			// 不再用空占位补齐到步数，无截图时 Record 页直接隐藏截图墙。
+			// 步骤截图不用空占位补齐到步数；无截图时 Record 页显示空态说明。
 			item.media = {
 				// 旧录制（webm 落盘）经 videoFile 回放；新录制走 rrwebDir 的 DOM 事件回放。
 				videoURL: result.recording.videoFile
@@ -1640,7 +1639,7 @@
 		} catch (err) {
 			const message = err?.message || String(err)
 			if (typeof appendAIMessage === 'function')
-				appendAIMessage(item, 'assistant', `Flow update failed: ${message}`)
+				appendAIMessage(item, 'assistant', 'Flow update failed — 展开查看完整错误详情。', { errorDetail: message })
 			renderSummaryWorkspace()
 		} finally {
 			item.repairInFlight = false
@@ -1951,10 +1950,8 @@
 						: { status: 'skip' }
 		}
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
-		if (!result.ok && typeof window.startFlowLinkAIAdvice === 'function') {
-			const failed = (result.steps || []).filter((step) => step.status === 'fail')
-			void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay failed. Diagnose the failed step(s) and the whole procedure using the execution result and captured evidence. Suggest a fix, but do not modify the source material unless the user explicitly requests a refined material.', failureContext: { ok: result.ok, error: result.error, metrics: result.metrics, failedSteps: failed, allResults: result.steps } })
-		}
+		// 失败后不自动发送 AI 消息：分析改为 AI 面板快捷区「Analyze last failure」
+		// 预设项，由用户点击触发（renderer/app.js analyzeLastFailure）。
 	})
 
 	/** AI 接管进度：单步完成（带 AI 徽标）或单步失败 */
@@ -2100,7 +2097,7 @@
 		// 异常终止后未执行到的步骤保持 Pending（不写任何值）；
 		// Skipped 仅来自引擎 skip 事件（分支未走/isOptional 未生效）。
 		if (item.resultTab === 'Test' || item.resultTab === 'Process') renderSummaryWorkspace()
-		if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'replay-failure', items: [item], reason: 'Replay terminated with an execution error. Analyze the error and procedure, then suggest evidence-backed repairs without changing the source material.', failureContext: { error: message, failedStepIndex: index } })
+		// 异常终止同样不自动发 AI 消息（「Analyze last failure」预设项按需触发）。
 	})
 
 	/* ================================================================

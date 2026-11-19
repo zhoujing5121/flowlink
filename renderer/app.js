@@ -1070,9 +1070,9 @@ const PROCESS_SOURCE_COLORS = [
   "#0f8a8a",
 ];
 
-/** 图节点 → 渲染视图：真实组走 ensureProcessGroups 视图；未分组伪组现做 */
+/** 图节点 → 渲染视图：真实组走 ensureProcessGroups 视图（切分卡经 groupId 指回原组）；未分组伪组现做 */
 function graphNodeView(node, entries, viewByGroupId) {
-  if (node.type === "group") return viewByGroupId.get(node.id) || null;
+  if (node.type === "group") return viewByGroupId.get(node.groupId || node.id) || null;
   if (node.type === "ungrouped") {
     const flowSteps = [];
     for (let i = node.firstIndex; i < node.lastIndex; i++)
@@ -1461,7 +1461,8 @@ function fillProcessPanel(panel, item) {
       const view = graphNodeView(node, graph.entries, viewByGroupId);
       if (!view) continue;
       const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
-      const selected = item.selectedGroup === node.id;
+      const groupKey = node.groupId || node.id;
+      const selected = item.selectedGroup === groupKey;
       section.dataset.canvasGroup = node.id;
       section.classList.toggle("selected", selected);
       const icon = section.querySelector(".canvas-group-icon");
@@ -1471,7 +1472,7 @@ function fillProcessPanel(panel, item) {
         icon.onerror = null;
       };
       const heading = section.querySelector(".canvas-group-heading");
-      heading.dataset.groupSelect = node.id;
+      heading.dataset.groupSelect = groupKey;
       heading.setAttribute("aria-pressed", String(selected));
       heading.textContent = view.number + " · " + view.name;
       // 分支徽标：该组是某个 condition 的 true/false 目标时说明"何时执行"。
@@ -1501,20 +1502,30 @@ function fillProcessPanel(panel, item) {
       // 回放态：组卡结果描边（全过=绿、有失败=红、全跳过=灰）
       const nodeStatus = graphNodeResultStatus(node, graph.entries, resultByStepId);
       if (nodeStatus) section.classList.add("result-" + nodeStatus);
+      // 组卡行区间对齐：切分卡只显示 [firstIndex, lastIndex) 覆盖的行
+      //（view.start 为组首行绝对下标；嵌套组行按旧近似处理）。
+      const rowOffset = Math.max(0, node.firstIndex - (view.start || 0));
       section.querySelector(".canvas-group-nodes").replaceChildren(
         ...(view.steps.length
           ? view.steps
-              // 尾置 condition 已提取为菱形判断节点：组卡只显示节点区间内的行
-              .slice(0, Math.max(0, node.lastIndex - node.firstIndex))
+              .slice(
+                Math.min(rowOffset, view.steps.length),
+                Math.min(
+                  rowOffset + Math.max(0, node.lastIndex - node.firstIndex),
+                  view.steps.length,
+                ),
+              )
               .map((text, index) =>
                 // 步骤行状态：flowStep 与 graph.entries 中的是同一对象引用，
                 // 展平时已标注 flattenedStepId（嵌套 group 行无标注，跳过状态叠加）
                 canvasStepNode(
                   view,
                   text,
-                  index,
+                  rowOffset + index,
                   item.summary === true,
-                  resultByStepId.get(view.flowSteps?.[index]?.flattenedStepId),
+                  resultByStepId.get(
+                    view.flowSteps?.[rowOffset + index]?.flattenedStepId,
+                  ),
                 ),
               )
           : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
@@ -2009,13 +2020,13 @@ function applyInstructionFieldValue(step, field, row, item) {
     case "expectParam":
       rebuildStepExpect(step, row);
       break;
-    case "trueGroupId":
-      if (text) step.trueGroupId = text;
-      else delete step.trueGroupId;
+    case "trueStepId":
+      if (text) step.trueStepId = text;
+      else delete step.trueStepId;
       break;
-    case "falseGroupId":
-      if (text) step.falseGroupId = text;
-      else delete step.falseGroupId;
+    case "falseStepId":
+      if (text) step.falseStepId = text;
+      else delete step.falseStepId;
       break;
     case "targetRef": {
       const flat = FlowGraph.flattenFlowSteps(item.processFlow.steps);
@@ -2452,18 +2463,28 @@ function renderInstructionDrawer(fieldsEl, item, entry, flat) {
         )}"${dis}></label>`,
       );
       if (step.kind === "condition") {
-        const groupOptions = [
-          { value: "", label: "（结束分支）" },
-          ...groups.map((group) => ({
-            value: group.id,
-            label: group.label,
-          })),
-        ];
+        // 分支目标 = 同 Flow 内任意已存在步骤（缺省 = 顺序继续）。
+        const stepOptions = [{ value: "", label: "（缺省：顺序继续）" }];
+        const collectSteps = (list) => {
+          for (const candidate of list || []) {
+            if (candidate?.kind === "group") collectSteps(candidate.steps);
+            else if (candidate?.id && candidate.id !== step.id)
+              stepOptions.push({
+                value: candidate.id,
+                label:
+                  (candidate.label?.trim() || candidate.id) +
+                  "（" +
+                  candidate.kind +
+                  "）",
+              });
+          }
+        };
+        collectSteps(groups.flatMap((group) => group.steps || []));
         grid.push(
-          select("trueGroupId", "为真跳转到", groupOptions, step.trueGroupId),
+          select("trueStepId", "为真跳转到", stepOptions, step.trueStepId),
         );
         grid.push(
-          select("falseGroupId", "为假跳转到", groupOptions, step.falseGroupId),
+          select("falseStepId", "为假跳转到", stepOptions, step.falseStepId),
         );
       }
       break;
@@ -2982,9 +3003,39 @@ async function moveInstructionStep(item, flatIndex, delta) {
 }
 
 /** 快操作：直接删除步骤（不加确认）。删空所在组时连同空组删除，并清理
- * 指向该组的 condition true/false 引用（与 deleteProcessGroup 同款清理）；
+ * 指向被删步骤的 condition true/false 引用改为缺省（顺序继续，与
+ * deleteProcessGroup 同款清理）；
  * 唯一组的最后一步不允许删（契约要求 Flow 至少保留一个组），保存失败用
  * 快照回滚并提示。 */
+// 收集组内全部步骤 id（含嵌套组，用于删除时清理步骤级分支目标）。
+function stepIdsOf(group) {
+  const ids = new Set();
+  const walk = (list) => {
+    for (const step of list || []) {
+      if (step?.kind === "group") walk(step.steps);
+      else if (step?.id) ids.add(step.id);
+    }
+  };
+  walk(group?.steps);
+  return ids;
+}
+
+// 步骤级分支目标清理：指向被删步骤 id 的 trueStepId/falseStepId 改为缺省
+//（顺序继续），避免悬空引用（契约校验会拒绝保存悬空目标）。
+function clearDanglingBranchRefs(steps, removedIds) {
+  if (!removedIds?.size) return;
+  const clear = (list) => {
+    for (const step of list || []) {
+      if (step?.kind === "group") clear(step.steps);
+      else if (step?.kind === "condition") {
+        if (step.trueStepId && removedIds.has(step.trueStepId)) delete step.trueStepId;
+        if (step.falseStepId && removedIds.has(step.falseStepId)) delete step.falseStepId;
+      }
+    }
+  };
+  clear(steps);
+}
+
 async function deleteInstructionStep(item, flatIndex) {
   // flush 成功会以服务端返回的 steps 替换引用，之后的查找都必须在 flush 之后做。
   await flushInstructionEdits(item);
@@ -3006,19 +3057,16 @@ async function deleteInstructionStep(item, flatIndex) {
     ? groupView.number + "-" + String(entry.index - groupView.start + 1).padStart(3, "0")
     : "步骤";
   const snapshot = structuredClone(steps);
+  const removedIds = new Set(entry.step.id ? [entry.step.id] : []);
+  const groupStepIds = stepIdsOf(group);
   group.steps.splice(group.steps.indexOf(entry.step), 1);
   let removedGroup = false;
   if (!group.steps.length) {
     steps.splice(steps.indexOf(group), 1);
     removedGroup = true;
-    for (const candidate of steps) {
-      if (candidate.kind !== "group") continue;
-      const last = candidate.steps.at(-1);
-      if (last?.kind !== "condition") continue;
-      if (last.trueGroupId === group.id) delete last.trueGroupId;
-      if (last.falseGroupId === group.id) delete last.falseGroupId;
-    }
+    for (const id of groupStepIds) removedIds.add(id);
   }
+  clearDanglingBranchRefs(steps, removedIds);
   item.instructionStepOpen = item.instructionStepOpen.filter(
     (value) => value !== entry.flattenedStepId,
   );
@@ -3165,9 +3213,16 @@ function fillRecordPanel(panel, item) {
 
 function renderRecordingScreenshots(section, screenshots) {
   const wall = section.querySelector(".recording-screenshots");
-  // 新录制不再产出整页步骤截图（录制闪烁优化；rrweb 回放为主展示）：
-  // 空列表时隐藏截图墙区块，不留占位。
-  wall.hidden = !screenshots.length;
+  // 步骤截图墙：无截图（旧录制 / 步骤截图采集被禁用）时显示空态说明，不渲染占位块。
+  wall.hidden = false;
+  if (!screenshots.length) {
+    const empty = document.createElement("p");
+    empty.className = "recording-screenshots-empty";
+    empty.textContent =
+      "这段录制没有步骤截图（历史录制，或步骤截图采集已用 FLOWLINK_DISABLE_RECORDER_SHOTS 禁用）。";
+    wall.replaceChildren(empty);
+    return;
+  }
   wall.replaceChildren(
     ...screenshots.map((file) => {
       const shot = rowTemplate("recordingScreenshotTemplate").cloneNode(true);
@@ -3260,7 +3315,11 @@ async function mountRrwebPlayer(root, rrwebDir) {
     return;
   }
   const usableTabs = (data.tabs || []).filter(
-    (tab) => Array.isArray(tab.events) && tab.events.length >= 2,
+    (tab) =>
+      Array.isArray(tab.events) &&
+      tab.events.length >= 2 &&
+      // 无全量快照事件的流永远画不出画面（黑屏静默），按不可回放过滤。
+      tab.events.some((event) => event && event.type === 2),
   );
   if (!usableTabs.length) {
     showError("这段录制没有可回放的 rrweb 事件。");
@@ -3335,6 +3394,43 @@ async function mountRrwebPlayer(root, rrwebDir) {
     return;
   }
 
+  // vendor.css 命中检测：rrweb 基础样式未生效时 mouse/mouse-tail 按文档流排版，
+  // 会把回放 iframe 挤出舞台（黑屏）。未命中 → 向各播放器根节点注入兜底内联
+  // 样式（wrapper/iframe/mouse-tail 定位三件套）并控制台告警；样式与渲染
+  // 双失败时由下方量测超时兜底转为显式错误，绝不静默黑屏。
+  const computedPosition = (el) => {
+    try {
+      return el ? getComputedStyle(el).position : "";
+    } catch {
+      return "";
+    }
+  };
+  let stylesMissed = false;
+  for (const entry of session.players.values()) {
+    const wrapper = entry.replayer.wrapper;
+    if (!wrapper) continue;
+    const tail = wrapper.querySelector(".replayer-mouse-tail");
+    const mouse = wrapper.querySelector(".replayer-mouse");
+    if (computedPosition(tail || mouse) === "absolute") continue;
+    stylesMissed = true;
+    wrapper.style.position = "relative";
+    const iframe = wrapper.querySelector("iframe");
+    if (iframe) {
+      iframe.style.display = "block";
+      iframe.style.position = "relative";
+    }
+    if (mouse) mouse.style.position = "absolute";
+    if (tail) {
+      tail.style.position = "absolute";
+      tail.style.pointerEvents = "none";
+    }
+  }
+  if (stylesMissed) {
+    console.warn(
+      "[rrweb] 基础样式未生效（dist/renderer-vendor.css 缺失或加载失败），已注入兜底内联样式。",
+    );
+  }
+
   session.base = Math.min(
     ...[...session.players.values()].map((entry) => {
       const meta = entry.replayer.getMetaData();
@@ -3396,6 +3492,12 @@ async function mountRrwebPlayer(root, rrwebDir) {
   });
   measureNotice.remove();
   if (mountId !== rrwebPlayerMountId) return;
+  if (!docWidth && stylesMissed) {
+    showError(
+      "回放器无法渲染画面：基础样式（dist/renderer-vendor.css）未加载，且播放器尺寸量测超时。请运行 npm run build 重新构建后重启应用。",
+    );
+    return;
+  }
   try {
     docWidth = docWidth || 1280;
     docHeight = docHeight || 720;
@@ -4469,8 +4571,9 @@ function summarizeRecordings() {
     );
     return;
   }
-  // Refine 打开选项模式：用户选择预设 + 补充说明后，再走共享的生成管线。
-  state.aiMode = "refine-options";
+  // Refine 打开欢迎选项菜单（merge/generate/optimize）；选 optimize 才进入
+  // 预设勾选+自由文本表单。进入分析页本身不再自动弹出任何欢迎选项。
+  state.refineMenuOpen = true;
   state.aiSourceIds = chosen.map((item) => item.id);
   state.aiOpen = true;
   renderRecordingWorkspace();
@@ -4938,18 +5041,76 @@ const REFINE_PRESETS = [
   "Move repeated text inputs into Reference variables",
 ];
 
+// 已勾选预设 → 可移除 chips（局部刷新，不触发面板重渲染）。
+function renderRefineChips(quickHost, state) {
+  const chipsHost = quickHost.querySelector("[data-refine-chips]");
+  if (!chipsHost) return;
+  const indices = state.aiRefinePresetIndices || [];
+  chipsHost.hidden = !indices.length;
+  chipsHost.replaceChildren(
+    ...indices.map((index) => {
+      const chip = rowTemplate("chatChipTemplate").cloneNode(true);
+      chip.textContent = REFINE_PRESETS[index];
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "chip-remove";
+      remove.setAttribute("aria-label", "Remove preset " + REFINE_PRESETS[index]);
+      remove.textContent = "×";
+      remove.onclick = () => {
+        state.aiRefinePresetIndices = (state.aiRefinePresetIndices || []).filter(
+          (i) => i !== index,
+        );
+        const input = quickHost.querySelector(
+          `input[data-refine-preset="${index}"]`,
+        );
+        if (input) input.checked = false;
+        renderRefineChips(quickHost, state);
+      };
+      chip.appendChild(remove);
+      return chip;
+    }),
+  );
+}
+
+// Test 失败预设项：点击才把失败上下文发给 AI（复用 replayFailure 默认文案）。
+function analyzeLastFailure() {
+  const recording = currentAssistantItem();
+  if (!recording) return;
+  const results = recording.testResults || [];
+  const failedSteps = results
+    .map((result, index) => ({ index, ...(result || {}) }))
+    .filter((entry) => entry.status === "fail");
+  if (!failedSteps.length) return;
+  void startAIAdvice({
+    mode: "replay-failure",
+    items: [recording],
+    failureContext: { ok: false, failedSteps, allResults: results },
+  });
+}
+
 function submitRefineOptions() {
   const state = recordingSession();
-  const presets = REFINE_PRESETS.filter(
-    (preset, index) =>
-      document.querySelector(`input[data-refine-preset="${index}"]`)?.checked,
-  );
+  // 勾选态存在 state（aiRefinePresetIndices），DOM 重建不丢；提交时组装
+  // 多行结构化指令：每勾选项一行 “- <preset>”，空行后跟自由文本。
+  const presets = (state.aiRefinePresetIndices || [])
+    .map((index) => REFINE_PRESETS[index])
+    .filter(Boolean);
   const freeText = $("refineFreeText")?.value.trim() || "";
   const instruction =
-    [...presets, freeText].filter(Boolean).join(" ") ||
+    [
+      presets.length ? presets.map((preset) => `- ${preset}`).join("\n") : "",
+      freeText,
+    ]
+      .filter(Boolean)
+      .join("\n\n") ||
     "Sanitize and structure the selected material(s) into labeled stages, removing redundant or accidental steps.";
   state.aiMode = undefined;
-  invokeAIMerge("input", instruction, { forceMaterial: true });
+  state.aiRefineFormBuilt = false;
+  invokeAIMerge("input", instruction, {
+    forceMaterial: true,
+    refinePresets: presets,
+    refineText: freeText,
+  });
 }
 
 /* ---------------- @ 提及与附件（录制 id 进 UI 状态，Flow 载荷只在主进程组装） ---------------- */
@@ -5117,6 +5278,18 @@ function renderAIPanel() {
   if (state.aiMode === "refine-options" && (!open || !state.aiSourceIds?.length))
     state.aiMode = undefined;
   const refineOptions = state.aiMode === "refine-options";
+  if (!refineOptions && state.aiRefineFormBuilt) {
+    // 离开 refine 模式即丢弃表单痕迹，下次进入重新构建（勾选态同步清空）。
+    state.aiRefineFormBuilt = false;
+    state.aiRefinePresetIndices = [];
+  }
+  // 快捷菜单状态位：切页/切换工作流（上下文键变化）时复位，
+  // merge/generate/optimize 只由 Refine 按钮触发出现。
+  const menuContext = `${recording?.id || ""}|${state.view || ""}|${recording?.resultTab || ""}`;
+  if (state.refineMenuContext !== menuContext) {
+    state.refineMenuContext = menuContext;
+    state.refineMenuOpen = false;
+  }
   $("drawer").classList.toggle("ai-open", !!open);
   $("recordingAssistant").hidden = !open;
   $("aiToggle")?.setAttribute("aria-expanded", String(!!open));
@@ -5152,7 +5325,12 @@ function renderAIPanel() {
   );
   const stepsHost = $("assistantSteps");
   const quickHost = $("assistantQuickActions");
-  const showOptions = !refineOptions && !testTab && !selectedGroup;
+  const showOptions = !!(
+    state.refineMenuOpen &&
+    !refineOptions &&
+    !testTab &&
+    !selectedGroup
+  );
   stepsHost.querySelector('[data-ai-block="steps"]').hidden = !showOptions;
   stepsHost.querySelector('[data-ai-block="test"]').hidden = !testTab;
   stepsHost.querySelector('[data-ai-block="group"]').hidden = !(
@@ -5170,15 +5348,34 @@ function renderAIPanel() {
     quickHost.querySelector(".assistant-refine-title").textContent =
       "Refine " +
       (count === 1 ? "1 selected material" : count + " selected materials");
-    quickHost.querySelector("[data-refine-presets]").replaceChildren(
-      ...REFINE_PRESETS.map((preset, index) => {
-        const label = rowTemplate("refinePresetTemplate").cloneNode(true);
-        label.querySelector("input").dataset.refinePreset = index;
-        label.querySelector("span").textContent = preset;
-        return label;
-      }),
-    );
-    quickHost.querySelector("#refineFreeText").value = "";
+    // 表单 DOM 只在进入 refine 模式时构建一次：输入期间任何重渲染都不重建
+    // 勾选/文本 DOM（勾选态存 state，chips 局部刷新），修复“输入重置勾选”。
+    if (!state.aiRefineFormBuilt) {
+      state.aiRefineFormBuilt = true;
+      state.aiRefinePresetIndices = [];
+      const presetsHost = quickHost.querySelector("[data-refine-presets]");
+      presetsHost.replaceChildren(
+        ...REFINE_PRESETS.map((preset, index) => {
+          const label = rowTemplate("refinePresetTemplate").cloneNode(true);
+          const input = label.querySelector("input");
+          input.dataset.refinePreset = index;
+          label.querySelector("span").textContent = preset;
+          return label;
+        }),
+      );
+      presetsHost.onchange = (e) => {
+        const input = e.target.closest("input[data-refine-preset]");
+        if (!input) return;
+        const index = Number(input.dataset.refinePreset);
+        const set = new Set(state.aiRefinePresetIndices || []);
+        if (input.checked) set.add(index);
+        else set.delete(index);
+        state.aiRefinePresetIndices = [...set].sort((a, b) => a - b);
+        renderRefineChips(quickHost, state);
+      };
+      quickHost.querySelector("#refineFreeText").value = "";
+      renderRefineChips(quickHost, state);
+    }
   }
   if (testTab) {
     const testSteps = recording?.testFlowSteps?.length
@@ -5249,31 +5446,24 @@ function renderAIPanel() {
         return node;
       }),
     );
-    // 失败后的 AI 接管入口：有失败步骤、无运行中的回放/接管时显示。
-    // 唯一入口 = 单步 AI 接管（runAiAssistedTest：AI 只执行失败的那一步，
-    // 成功后从下一步恢复程序回放，最多 6 次单步介入，同一单步两败即停；
-    // 第三轮决策：「接管全部剩余」入口已删除，remaining 仅存底层能力）。
-    const aiContinue = quickHost.querySelector("#aiContinueTest");
-    if (aiContinue) {
+    // Test 失败后的 AI 预设项（替代旧自动发消息 + #aiContinueTest 独立按钮）：
+    // 「Analyze last failure」点击才把失败上下文发给 AI；「AI Continue」点击
+    // 触发单步接管循环（runAiAssistedTest：只执行失败步后回到程序回放）。
+    // 仅存在失败结果且无运行中的回放/接管时可用。
+    const failureBlock = quickHost.querySelector('[data-quick-block="failure"]');
+    if (failureBlock) {
       const hasFail = results.some((result) => result?.status === "fail");
-      const canContinue = !!(
+      const canAssist = !!(
         recording?.recordingId &&
         hasFail &&
         !recording.testRunning &&
         !recording.assistedLoopActive &&
         !state.playbackInFlight
       );
-      aiContinue.hidden = !canContinue;
-      aiContinue.onclick = canContinue
-        ? () => {
-            if (typeof window.runAiAssistedTest === "function") {
-              void window.runAiAssistedTest(recording);
-            }
-          }
-        : null;
+      failureBlock.hidden = !canAssist;
     }
   } else {
-    quickHost.querySelector("#aiContinueTest").hidden = true;
+    quickHost.querySelector('[data-quick-block="failure"]').hidden = true;
   }
   if (selectedGroup && !testTab)
     stepsHost.querySelector(".assistant-group-name").textContent =
@@ -5295,11 +5485,25 @@ function renderAIPanel() {
     (child) => !child.hidden,
   );
   quickHost.onclick = (e) => {
+    const failureButton = e.target.closest("[data-ai-failure]");
+    if (failureButton) {
+      e.preventDefault();
+      if (failureButton.dataset.aiFailure === "analyze") analyzeLastFailure();
+      else if (typeof window.runAiAssistedTest === "function")
+        void window.runAiAssistedTest(recording);
+      return;
+    }
     if (testTab) return;
     const option = e.target.closest("[data-ai-option]");
     if (option) {
       e.preventDefault();
-      invokeAIMerge(option.dataset.aiOption);
+      // Optimize 二级展开：进入预设勾选+自由文本表单；merge/generate 走各自现有流程。
+      if (option.dataset.aiOption === "optimize") {
+        state.aiMode = "refine-options";
+        renderAIPanel();
+      } else {
+        invokeAIMerge(option.dataset.aiOption);
+      }
       return;
     }
     if (selectedGroup) {
@@ -5327,30 +5531,63 @@ function renderAIPanel() {
 
   $("assistantChat").replaceChildren(
     ...item.chat.map((message) => {
-      // 聊天记录只存文本 + 附件 id/name 芯片；Flow JSON 永不进入 transcript。
+      // 聊天记录只存文本 + 预设/附件徽章；Flow JSON 永不进入 transcript。
       const element = rowTemplate("assistantMessageTemplate").cloneNode(true);
       element.classList.add(message.role);
       element.setAttribute(
         "aria-label",
         message.role === "user" ? "User" : "AI",
       );
-      element.insertBefore(
-        document.createTextNode(message.text),
-        element.firstChild,
-      );
+      const chipsHost = element.querySelector(".message-attachments");
+      // 失败消息：完整错误文本（阶段+原因）以可折叠详情呈现，不再要求查日志。
+      if (message.errorDetail) {
+        const details = document.createElement("details");
+        details.className = "message-error-details";
+        const summary = document.createElement("summary");
+        summary.textContent = message.text;
+        const pre = document.createElement("pre");
+        pre.textContent = message.errorDetail;
+        details.append(summary, pre);
+        element.insertBefore(details, element.firstChild);
+      } else if (
+        message.role === "user" &&
+        Array.isArray(message.presets) &&
+        message.presets.length
+      ) {
+        chipsHost.replaceChildren(
+          ...message.presets.map((preset) => {
+            const chip = rowTemplate("chatChipTemplate").cloneNode(true);
+            chip.textContent = preset;
+            return chip;
+          }),
+        );
+        element.insertBefore(chipsHost, element.firstChild);
+        element.insertBefore(
+          document.createTextNode(message.text),
+          chipsHost.nextSibling,
+        );
+      } else {
+        element.insertBefore(
+          document.createTextNode(message.text),
+          element.firstChild,
+        );
+      }
       if (
         message.role === "user" &&
         Array.isArray(message.attachments) &&
         message.attachments.length
       ) {
-        const chips = element.querySelector(".message-attachments");
-        chips.replaceChildren(
-          ...message.attachments.map((attachment) => {
-            const chip = rowTemplate("chatChipTemplate").cloneNode(true);
-            chip.textContent = "@" + attachment.name;
-            return chip;
-          }),
-        );
+        const attachmentsHost = element.querySelector(".message-attachments");
+        if (!attachmentsHost.hasChildNodes()) {
+          attachmentsHost.replaceChildren(
+            ...message.attachments.map((attachment) => {
+              const chip = rowTemplate("chatChipTemplate").cloneNode(true);
+              chip.textContent = "@" + attachment.name;
+              return chip;
+            }),
+          );
+          element.appendChild(attachmentsHost);
+        }
       }
       return element;
     }),
@@ -5458,9 +5695,9 @@ function aiRequestNeedsMaterial(text) {
   return /generate\s+(?:a\s+)?(?:refined|improved|new)\s+(?:workflow|material|recording|flow)|create\s+(?:a\s+)?refined\s+(?:material|workflow|flow)|\b(?:apply|implement|fix|modify|update|refine)\b.{0,35}\b(?:step|material|workflow|flow|recording)\b|生成.{0,8}(?:优化|改进|新).{0,6}(?:材料|流程|录制)|生成优化后的材料|生成 refined material/i.test(text || "");
 }
 
-function appendAIMessage(item, role, text) {
+function appendAIMessage(item, role, text, extra = {}) {
   ensureAssistantData(item);
-  item.chat.push({ role, text: String(text || "") });
+  item.chat.push({ role, text: String(text || ""), ...extra });
   setAssistantDraft(item, "");
   renderAIPanel();
 }
@@ -5606,6 +5843,9 @@ async function invokeAIMerge(option, prompt, extra = {}) {
   item.chat.push({
     role: "user",
     text: userText,
+    ...(Array.isArray(extra.refinePresets) && extra.refinePresets.length
+      ? { presets: extra.refinePresets }
+      : {}),
     ...(attachmentItems.length
       ? {
           attachments: attachmentItems.map((entry) => ({
@@ -5631,7 +5871,14 @@ async function invokeAIMerge(option, prompt, extra = {}) {
       renderAIPanel();
       await generateRefinedMaterial(sources, userText, recording || item);
     } catch (error) {
-      appendAIMessage(item, "assistant", `Could not create refined material: ${error instanceof Error ? error.message : String(error)}`);
+      // 完整错误文本（含阶段+原因）随 errorDetail 透出，面板可折叠查看。
+      const full = error instanceof Error ? error.message : String(error);
+      appendAIMessage(
+        item,
+        "assistant",
+        "Could not create refined material — 展开查看完整错误详情。",
+        { errorDetail: full },
+      );
     }
     return;
   }
@@ -5703,7 +5950,8 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
 }
 
 
-// Bridge integration points used after recorder stop and replay failures.
+// Bridge integration point: recorder-stop advice (recording-complete 模式)。
+// 回放失败诊断不再自动发送，改由「Analyze last failure」预设项触发。
 window.startFlowLinkAIAdvice = startAIAdvice;
 
 // 应用级轻提示：普通信息 6 秒后自动消失，警告需手动关闭。
@@ -5928,16 +6176,20 @@ function processStepLabel(step, index, groups = []) {
     return `${kindText} · 元素出现${target ? ` · ${target}` : ""}`;
   }
   if (step.kind === "condition") {
-    const name = (id) => groups.find((group) => group.id === id)?.label || id || "结束";
-    return `${kindText} · ${step.assertion.kind} · 是 → ${name(step.trueGroupId)} · 否 → ${name(step.falseGroupId)}`;
+    const flatSteps = executableFlowSteps(groups.flatMap((group) => group.steps || []));
+    const name = (id) =>
+      flatSteps.find((candidate) => candidate.id === id)?.label?.trim() ||
+      id ||
+      "顺序继续";
+    return `${kindText} · ${step.assertion.kind} · 是 → ${name(step.trueStepId)} · 否 → ${name(step.falseStepId)}`;
   }
   return `${kindText}${target ? ` · ${target}` : ""}`;
 }
 
 function ensureProcessGroups(item) {
   if (Array.isArray(item?.processFlow?.steps)) {
-    // 收集 condition 步骤（含嵌套 group），给作为其 true/false 目标的组
-    // 附加 branchEntries，供 Process 视图显示"该组何时被执行"的分支说明。
+    // 收集 condition 步骤（含嵌套 group），给作为其 true/false 目标步骤
+    // 所属的组附加 branchEntries，供 Process 视图显示"该组何时被执行"的分支说明。
     const conditionSteps = [];
     const collectConditions = (steps) => {
       for (const step of steps || []) {
@@ -5946,14 +6198,32 @@ function ensureProcessGroups(item) {
       }
     };
     collectConditions(item.processFlow.steps);
+    // 步骤 id → 所属顶层组 id（分支目标解析到组，用于组卡徽标）。
+    const groupByStepId = new Map();
+    for (const group of item.processFlow.steps) {
+      if (group?.kind !== "group") continue;
+      const walk = (list) => {
+        for (const step of list || []) {
+          if (step?.kind === "group") walk(step.steps);
+          else if (step?.id) groupByStepId.set(step.id, group.id);
+        }
+      };
+      walk(group.steps);
+    }
     const branchEntriesOf = (groupId) =>
       conditionSteps
-        .filter(
-          (step) => step.trueGroupId === groupId || step.falseGroupId === groupId,
-        )
+        .filter((step) => {
+          const trueGroup = step.trueStepId
+            ? groupByStepId.get(step.trueStepId)
+            : undefined;
+          const falseGroup = step.falseStepId
+            ? groupByStepId.get(step.falseStepId)
+            : undefined;
+          return trueGroup === groupId || falseGroup === groupId;
+        })
         .map((step) => ({
           conditionLabel: step.label?.trim() || step.id,
-          whenTrue: step.trueGroupId === groupId,
+          whenTrue: groupByStepId.get(step.trueStepId) === groupId,
         }));
     let start = 0;
     return item.processFlow.steps
@@ -6122,7 +6392,7 @@ async function hydrateProcessProposal(item) {
  * 再水化/重锚定会微调候选顺序，属于生成管线噪声，不视为业务修改。 */
 const PROPOSAL_DIFF_FIELDS = [
   "kind", "label", "execution", "isOptional", "timeout", "settle", "expect",
-  "value", "key", "url", "assertion", "trueGroupId", "falseGroupId",
+  "value", "key", "url", "assertion", "trueStepId", "falseStepId",
   "into", "prop", "attr", "ms", "condition", "files", "action", "promptText",
   "code", "index", "button", "clickCount", "modifiers", "position", "clear",
   "to", "delta",
@@ -7239,17 +7509,7 @@ function showManualStepEditor(item, groupId, insertAtIndex) {
     (step) => step.kind === "group" && step.id === groupId,
   );
   if (!group) return;
-  // 组尾追加时 condition 必须保持末位；指定插入位置（Instruction「在此后插入」）
-  // 时钳到 condition 之前，而不是拒绝。
-  if (
-    group.steps.at(-1)?.kind === "condition" &&
-    insertAtIndex === undefined
-  ) {
-    void showWorkspaceNotice(
-      "A condition must remain the final step in its group, so steps cannot be added after it. Add steps to another group instead.",
-    );
-    return;
-  }
+  // 契约已放宽：condition 可位于组内任意位置，无需钳位/拒绝插入。
   const dialog = rowTemplate("processStepEditorTemplate").cloneNode(true);
   dialog.querySelector("[data-step-editor-title]").textContent =
     insertAtIndex === undefined
@@ -7257,8 +7517,14 @@ function showManualStepEditor(item, groupId, insertAtIndex) {
       : `Insert step into ${group.label}`;
   const form = dialog.querySelector("form");
   const groups = item.processFlow.steps.filter((step) => step.kind === "group");
-  const groupOptions = groups
-    .map((candidate) => `<option value="${escapeHTML(candidate.id)}">${escapeHTML(candidate.label)}</option>`)
+  // 分支目标 = 同 Flow 内任意已存在步骤（缺省 = 顺序继续）。
+  const stepOptions = executableFlowSteps(item.processFlow.steps)
+    .map(
+      (step) =>
+        `<option value="${escapeHTML(step.id)}">${escapeHTML(
+          (step.label?.trim() || step.id) + "（" + step.kind + "）",
+        )}</option>`,
+    )
     .join("");
   const targetReferences = executableFlowSteps(item.processFlow.steps)
     .map((step, index) => ({ step, index }))
@@ -7286,8 +7552,8 @@ function showManualStepEditor(item, groupId, insertAtIndex) {
       .map((target) => `<option value="${target.index}">${escapeHTML(target.label)}</option>`)
       .join(""),
   );
-  form.elements.trueGroupId.insertAdjacentHTML("beforeend", groupOptions);
-  form.elements.falseGroupId.insertAdjacentHTML("beforeend", groupOptions);
+  form.elements.trueStepId.insertAdjacentHTML("beforeend", stepOptions);
+  form.elements.falseStepId.insertAdjacentHTML("beforeend", stepOptions);
   if (!hasElementRefs)
     form.elements.waitCondition.querySelector('option[value="element"]')?.remove();
 
@@ -7324,7 +7590,7 @@ function showManualStepEditor(item, groupId, insertAtIndex) {
     input: ["targetRef", "value", "secret", "variableName"],
     select: ["targetRef", "value"],
     assert: ["targetRef", "assertionKind", "expected"],
-    condition: ["targetRef", "assertionKind", "expected", "trueGroupId", "falseGroupId"],
+    condition: ["targetRef", "assertionKind", "expected", "trueStepId", "falseStepId"],
   };
   const updateFields = () => {
     const kind = form.elements.kind.value;
@@ -7463,8 +7729,8 @@ function showManualStepEditor(item, groupId, insertAtIndex) {
         step.assertion = { kind: assertionKind };
       }
       if (kind === "condition") {
-        if (values.trueGroupId.value) step.trueGroupId = values.trueGroupId.value;
-        if (values.falseGroupId.value) step.falseGroupId = values.falseGroupId.value;
+        if (values.trueStepId.value) step.trueStepId = values.trueStepId.value;
+        if (values.falseStepId.value) step.falseStepId = values.falseStepId.value;
       }
     }
     if (kind === "switchTab") step.index = Number(values.tabIndex.value);
@@ -8072,18 +8338,13 @@ async function deleteProcessGroup(item, groupId) {
     }
     if (
       !(await confirmWorkspaceAction(
-        `Delete group “${groups.find((group) => group.id === groupId)?.label}” and its steps? Branches pointing to it will end at that branch.`,
+        `Delete group “${groups.find((group) => group.id === groupId)?.label}” and its steps? Branches pointing into it will fall back to sequential continuation.`,
       ))
     )
       return;
+    const removedIds = stepIdsOf(groups.find((group) => group.id === groupId));
     item.processFlow.steps.splice(groupIndex, 1);
-    for (const group of item.processFlow.steps) {
-      if (group.kind !== "group") continue;
-      const last = group.steps.at(-1);
-      if (last?.kind !== "condition") continue;
-      if (last.trueGroupId === groupId) delete last.trueGroupId;
-      if (last.falseGroupId === groupId) delete last.falseGroupId;
-    }
+    clearDanglingBranchRefs(item.processFlow.steps, removedIds);
     item.selectedGroup = null;
     try {
       await persistProcessFlow(item);
@@ -8164,13 +8425,8 @@ async function mergeProcessGroupIntoNext(item, groupId) {
   if (position < 0 || position >= groups.length - 1) return;
   const current = groups[position];
   const next = groups[position + 1];
-  // condition 必须是其 group 的最后一步：并入下一组会让它落到中间，契约会拒绝保存。
-  if (current.steps.at(-1)?.kind === "condition") {
-    await showWorkspaceNotice(
-      `“${current.label}” ends with a condition branch, which must stay final in its group. This group cannot be merged.`,
-    );
-    return;
-  }
+  // 契约已放宽：condition 可位于组内任意位置，尾置 condition 的组并入
+  // 下一组同样合法（分支目标是步骤 id，不随组结构变化悬空）。
   if (
     !(await confirmWorkspaceAction(
       `Merge “${current.label}” into “${next.label}”? The merged group keeps the name “${next.label}”.`,
@@ -8179,14 +8435,6 @@ async function mergeProcessGroupIntoNext(item, groupId) {
     return;
   next.steps = [...current.steps, ...next.steps];
   steps.splice(steps.indexOf(current), 1);
-  // 指向被并掉分组的条件分支改为到该分支结束（与删除分组的清理语义一致）。
-  for (const group of steps) {
-    if (group.kind !== "group") continue;
-    const last = group.steps.at(-1);
-    if (last?.kind !== "condition") continue;
-    if (last.trueGroupId === current.id) delete last.trueGroupId;
-    if (last.falseGroupId === current.id) delete last.falseGroupId;
-  }
   item.selectedGroup = next.id;
   try {
     await persistProcessFlow(item);

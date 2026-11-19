@@ -293,8 +293,9 @@ const conditionStep = BaseStepSchema.extend({
 	kind: z.literal('condition'),
 	target: ElementRefSchema.optional(),
 	assertion: AssertionSchema,
-	trueGroupId: z.string().min(1).optional(),
-	falseGroupId: z.string().min(1).optional(),
+	/** 分支跳转目标：同 Flow 内已存在步骤的 id（组 id 不是合法目标）；缺省 = 顺序继续。 */
+	trueStepId: z.string().min(1).optional(),
+	falseStepId: z.string().min(1).optional(),
 })
 
 const extractStep = BaseStepSchema.extend({
@@ -489,12 +490,20 @@ export function validateFlowContract(flow: Flow): string[] {
 		(step): step is Extract<Step, { kind: 'group' }> => step.kind === 'group',
 	)
 	const groupIds = new Set<string>()
-	const groupsById = new Map<string, Extract<Step, { kind: 'group' }>>()
 	for (const group of topLevelGroups) {
 		if (groupIds.has(group.id)) errors.push(`steps: group id "${group.id}" 重复`)
 		groupIds.add(group.id)
-		groupsById.set(group.id, group)
 	}
+	// condition 分支目标的解析域：Flow 内全部步骤 id（含各层 group 内，递归扁平化收集；
+	// 组 id 不是合法目标——步骤 id 与组 id 共享命名空间且步骤 id 全局唯一）。
+	const stepIds = new Set<string>()
+	const collectStepIds = (list: Step[]): void => {
+		for (const step of list) {
+			if (step.kind === 'group') collectStepIds(step.steps)
+			else stepIds.add(step.id)
+		}
+	}
+	collectStepIds(flow.steps)
 	// 递归检查所有引用并累积诊断；发现一项错误后继续遍历，避免只报告首个问题。
 	const visitRef = (ref: ElementRef, where: string): void => {
 		// 候选顺序本身决定解析优先级，同分允许保留原顺序，因此只拒绝逆序项。
@@ -523,12 +532,7 @@ export function validateFlowContract(flow: Flow): string[] {
 			}
 		}
 	}
-	const visitStep = (
-		step: Step,
-		where: string,
-		groupId?: string,
-		isFinalGroupStep = false,
-	): void => {
+	const visitStep = (step: Step, where: string): void => {
 		switch (step.kind) {
 			case 'click':
 			case 'hover': {
@@ -571,11 +575,6 @@ export function validateFlowContract(flow: Flow): string[] {
 				if ('target' in step && step.target) visitRef(step.target, `${where}.target`)
 				break
 			case 'condition': {
-				if (!groupId) {
-					errors.push(`${where}: condition 必须直接位于顶层 group 中`)
-				} else if (!isFinalGroupStep) {
-					errors.push(`${where}: condition 必须是所在 group 的最后一步`)
-				}
 				if (!step.target) errors.push(`${where}: condition assertion 缺少 target`)
 				if (
 					step.assertion.kind === 'text' &&
@@ -596,11 +595,9 @@ export function validateFlowContract(flow: Flow): string[] {
 					}
 				}
 				if (step.target) visitRef(step.target, `${where}.target`)
-				for (const target of [step.trueGroupId, step.falseGroupId]) {
-					if (target && !groupIds.has(target)) {
-						errors.push(`${where}: condition 引用了不存在的 group "${target}"`)
-					} else if (target && !groupsById.get(target)?.steps.length) {
-						errors.push(`${where}: condition 目标 group "${target}" 不能为空`)
+				for (const target of [step.trueStepId, step.falseStepId]) {
+					if (target && !stepIds.has(target)) {
+						errors.push(`${where}: condition 引用了不存在的 step "${target}"`)
 					}
 				}
 				break
@@ -634,12 +631,7 @@ export function validateFlowContract(flow: Flow): string[] {
 	flow.steps.forEach((step, index) => {
 		if (step.kind === 'group') {
 			step.steps.forEach((child, childIndex) =>
-				visitStep(
-					child,
-					`steps[${index}].steps[${childIndex}]`,
-					step.id,
-					childIndex === step.steps.length - 1,
-				),
+				visitStep(child, `steps[${index}].steps[${childIndex}]`),
 			)
 			return
 		}
