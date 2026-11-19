@@ -3243,6 +3243,8 @@ function renderRecordingScreenshots(section, screenshots) {
  * ================================================================ */
 let rrwebPlayerSession = null;
 let rrwebPlayerMountId = 0;
+/** mountRrwebPlayer 的加载快照：诊断报告在播放器未挂载/挂载失败时也要能给出事实。 */
+let rrwebDiag = null;
 
 function teardownRrwebPlayer(root) {
   if (rrwebPlayerSession) {
@@ -3250,6 +3252,7 @@ function teardownRrwebPlayer(root) {
     rrwebPlayerSession = null;
     session.destroy();
   }
+  rrwebDiag = null;
   if (!root) return;
   root.hidden = true;
   root.querySelector(".rrweb-player-stage")?.replaceChildren();
@@ -3259,6 +3262,8 @@ function teardownRrwebPlayer(root) {
     errorBox.hidden = true;
     errorBox.textContent = "";
   }
+  const diagnostic = root.querySelector(".rrweb-diagnostic");
+  if (diagnostic) diagnostic.hidden = true;
 }
 
 function rrwebPlayerNotice(text) {
@@ -3275,6 +3280,274 @@ function rrwebTimeLabel(ms) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+function copyTextFallback(text, done) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (document.execCommand("copy")) done?.();
+    else showFlowlinkNotice("复制失败，请手动选择报告文本复制。", "warn");
+  } catch {
+    showFlowlinkNotice("复制失败，请手动选择报告文本复制。", "warn");
+  }
+  textarea.remove();
+}
+
+/** 统计 document.styleSheets 中 .replayer-* 规则命中情况（跨域表记 access denied）。 */
+function rrwebVendorCssDiagnostics() {
+  const result = { sheets: 0, denied: 0, rules: 0, matchedSheets: [] };
+  const countRules = (rules, sheetLabel) => {
+    let found = 0;
+    for (const rule of rules) {
+      const selector = rule.selectorText || "";
+      if (selector.includes(".replayer-")) found++;
+      const nested = rule.cssRules;
+      if (nested) found += countRules(nested, sheetLabel);
+    }
+    if (found) result.matchedSheets.push(`${sheetLabel} (${found})`);
+    return found;
+  };
+  for (const sheet of Array.from(document.styleSheets || [])) {
+    result.sheets++;
+    const label = sheet.href || "(inline)";
+    try {
+      result.rules += countRules(Array.from(sheet.cssRules || []), label);
+    } catch {
+      result.denied++;
+      result.matchedSheets.push(`${label} (access denied)`);
+    }
+  }
+  return result;
+}
+
+/** 采集当前回放环境事实，生成纯文本诊断报告；任何子项失败都不抛异常。 */
+function collectRrwebDiagnostics(root) {
+  const lines = [];
+  const push = (line) => lines.push(line);
+  push("FlowLink rrweb replay diagnostics");
+  push("generated: " + new Date().toISOString());
+  push("");
+  push("[load]");
+  const diag = rrwebDiag;
+  if (!diag) {
+    push("phase: not-mounted (no rrweb session for the current item)");
+  } else {
+    push("phase: " + diag.phase);
+    push("dir: " + (diag.dir || "(unknown)"));
+    if (diag.error) push("error: " + diag.error);
+    push(
+      "tabs loaded: " +
+        (diag.tabs?.length || 0) +
+        " (usable: " +
+        (diag.usableTabs || 0) +
+        ")",
+    );
+    push("total events: " + (diag.totalEvents || 0));
+    push("activations: " + (diag.activations || 0));
+    for (const [index, tab] of (diag.tabs || []).entries())
+      push(
+        "  tab #" +
+          (index + 1) +
+          ' "' +
+          (tab.label || "") +
+          '": events=' +
+          tab.events +
+          " metaSnapshots=" +
+          tab.metaSnapshots,
+      );
+    push(
+      "stylesMissed (fallback inline styles injected): " +
+        (diag.stylesMissed ? "yes" : "no"),
+    );
+  }
+  push("");
+  push("[vendor css]");
+  try {
+    const css = rrwebVendorCssDiagnostics();
+    push(
+      "styleSheets scanned: " +
+        css.sheets +
+        " (access denied: " +
+        css.denied +
+        ")",
+    );
+    push(".replayer-* rules found: " + css.rules);
+    for (const entry of css.matchedSheets) push("  " + entry);
+  } catch (err) {
+    push("vendor css check failed: " + (err?.message || err));
+  }
+  push("");
+  push("[live session]");
+  const describeEl = (el) => {
+    if (!el) return "(missing)";
+    try {
+      const cs = getComputedStyle(el);
+      return (
+        "position=" +
+        cs.position +
+        " display=" +
+        cs.display +
+        " client=" +
+        el.clientWidth +
+        "x" +
+        el.clientHeight
+      );
+    } catch (err) {
+      return "(computed style failed: " + (err?.message || err) + ")";
+    }
+  };
+  const describeRect = (el) => {
+    if (!el) return "(missing)";
+    try {
+      const r = el.getBoundingClientRect();
+      return (
+        "rect=" +
+        Math.round(r.x) +
+        "," +
+        Math.round(r.y) +
+        " " +
+        Math.round(r.width) +
+        "x" +
+        Math.round(r.height)
+      );
+    } catch (err) {
+      return "(rect failed: " + (err?.message || err) + ")";
+    }
+  };
+  const session = rrwebPlayerSession;
+  if (!session || !session.players?.size) {
+    push("session: not mounted");
+  } else {
+    for (const entry of session.players.values()) {
+      push('tab "' + entry.label + '":');
+      try {
+        const meta = entry.replayer.getMetaData();
+        push(
+          "  meta: startTime=" +
+            meta.startTime +
+            " totalTime=" +
+            meta.totalTime,
+        );
+      } catch (err) {
+        push("  meta: (getMetaData failed: " + (err?.message || err) + ")");
+      }
+      const wrapper = entry.replayer.wrapper;
+      push("  wrapper: " + describeEl(wrapper));
+      const iframe = wrapper?.querySelector("iframe");
+      push("  iframe: " + describeRect(iframe) + " " + describeEl(iframe));
+      try {
+        const doc = iframe?.contentDocument;
+        push(
+          "  iframe-doc: " +
+            (doc
+              ? "readyState=" +
+                doc.readyState +
+                " bodyChildren=" +
+                (doc.body ? doc.body.childElementCount : "no-body") +
+                " sheets=" +
+                doc.styleSheets.length +
+                " htmlBg=" +
+                (doc.documentElement
+                  ? getComputedStyle(doc.documentElement).backgroundColor
+                  : "?")
+              : "NULL"),
+        );
+      } catch (err) {
+        push("  iframe-doc: (access failed: " + (err?.message || err) + ")");
+      }
+      push("  mouse: " + describeEl(wrapper?.querySelector(".replayer-mouse")));
+      push(
+        "  mouse-tail: " +
+          describeEl(wrapper?.querySelector(".replayer-mouse-tail")),
+      );
+      push(
+        "  tab-view: hidden=" +
+          entry.container.hidden +
+          " client=" +
+          entry.container.clientWidth +
+          "x" +
+          entry.container.clientHeight,
+      );
+    }
+  }
+  push("");
+  push("[layout]");
+  try {
+    const stage = root?.querySelector(".rrweb-player-stage");
+    if (stage) {
+      const cs = getComputedStyle(stage);
+      push(
+        "stage: client=" +
+          stage.clientWidth +
+          "x" +
+          stage.clientHeight +
+          " styleHeight=" +
+          (stage.style.height || "(none)") +
+          " display=" +
+          cs.display +
+          " position=" +
+          cs.position +
+          " overflow=" +
+          cs.overflow,
+      );
+    } else push("stage: (missing)");
+    const views = root
+      ? Array.from(root.querySelectorAll(".rrweb-tab-view"))
+      : [];
+    push("tab-views: " + views.length);
+    for (const [index, view] of views.entries())
+      push(
+        "  view #" +
+          (index + 1) +
+          ": hidden=" +
+          view.hidden +
+          " client=" +
+          view.clientWidth +
+          "x" +
+          view.clientHeight,
+      );
+    if (root) {
+      push(
+        "player-root: hidden=" +
+          root.hidden +
+          " client=" +
+          root.clientWidth +
+          "x" +
+          root.clientHeight,
+      );
+      const errorBox = root.querySelector(".rrweb-error");
+      push(
+        "error-box: hidden=" +
+          (errorBox?.hidden ?? "(missing)") +
+          " text=" +
+          JSON.stringify(errorBox?.textContent || ""),
+      );
+    }
+  } catch (err) {
+    push("layout check failed: " + (err?.message || err));
+  }
+  return lines.join("\n");
+}
+
+function showRrwebDiagnostics(root) {
+  if (!root) return;
+  const box = root.querySelector(".rrweb-diagnostic");
+  const report = box?.querySelector(".rrweb-diagnostic-report");
+  if (!box || !report) return;
+  let text;
+  try {
+    text = collectRrwebDiagnostics(root);
+  } catch (err) {
+    text = "diagnostics failed: " + (err?.message || err);
+  }
+  report.textContent = text;
+  box.hidden = false;
+  report.focus?.();
+}
+
 async function mountRrwebPlayer(root, rrwebDir) {
   if (!root) return;
   teardownRrwebPlayer(root);
@@ -3288,6 +3561,10 @@ async function mountRrwebPlayer(root, rrwebDir) {
   const followBtn = root.querySelector(".rrweb-follow");
   const errorBox = root.querySelector(".rrweb-error");
   const showError = (message) => {
+    if (rrwebDiag) {
+      rrwebDiag.phase = "error";
+      rrwebDiag.error = message;
+    }
     stage.replaceChildren();
     tabsRow.replaceChildren();
     errorBox.hidden = false;
@@ -3295,6 +3572,37 @@ async function mountRrwebPlayer(root, rrwebDir) {
     timeLabel.textContent = "0:00 / 0:00";
     seek.max = 0;
     seek.value = 0;
+  };
+  // 诊断入口在任何阶段（含加载失败）都必须可用，故在最早的 early return 之前绑定。
+  const diagnosticBox = root.querySelector(".rrweb-diagnostic");
+  const diagnoseBtn = root.querySelector(".rrweb-diagnose");
+  if (diagnoseBtn) diagnoseBtn.onclick = () => showRrwebDiagnostics(root);
+  const copyBtn = root.querySelector(".rrweb-diagnostic-copy");
+  if (copyBtn)
+    copyBtn.onclick = () => {
+      const report = diagnosticBox?.querySelector(".rrweb-diagnostic-report");
+      const text = report?.textContent || "";
+      if (!text) return;
+      const done = () => showFlowlinkNotice("诊断报告已复制。");
+      if (navigator.clipboard?.writeText)
+        navigator.clipboard.writeText(text).then(done, () =>
+          copyTextFallback(text, done),
+        );
+      else copyTextFallback(text, done);
+    };
+  const closeDiagBtn = root.querySelector(".rrweb-diagnostic-close");
+  if (closeDiagBtn && diagnosticBox) closeDiagBtn.onclick = () => (diagnosticBox.hidden = true);
+  if (diagnosticBox) diagnosticBox.hidden = true;
+  rrwebDiag = {
+    dir: rrwebDir,
+    phase: "loading",
+    startedAt: new Date().toISOString(),
+    tabs: [],
+    totalEvents: 0,
+    usableTabs: 0,
+    activations: 0,
+    stylesMissed: false,
+    error: "",
   };
   stage.replaceChildren(rrwebPlayerNotice("正在加载录制数据…"));
   errorBox.hidden = true;
@@ -3325,6 +3633,20 @@ async function mountRrwebPlayer(root, rrwebDir) {
     showError("这段录制没有可回放的 rrweb 事件。");
     return;
   }
+  rrwebDiag.phase = "mounted";
+  rrwebDiag.tabs = usableTabs.map((tab) => ({
+    tabId: tab.tabId,
+    label: tab.label || "",
+    events: tab.events.length,
+    metaSnapshots: tab.events.filter((event) => event && event.type === 2)
+      .length,
+  }));
+  rrwebDiag.totalEvents = usableTabs.reduce(
+    (sum, tab) => sum + tab.events.length,
+    0,
+  );
+  rrwebDiag.usableTabs = usableTabs.length;
+  rrwebDiag.activations = (data.activations || []).length;
 
   const session = {
     players: new Map(),
@@ -3425,6 +3747,7 @@ async function mountRrwebPlayer(root, rrwebDir) {
       tail.style.pointerEvents = "none";
     }
   }
+  if (rrwebDiag) rrwebDiag.stylesMissed = stylesMissed;
   if (stylesMissed) {
     console.warn(
       "[rrweb] 基础样式未生效（dist/renderer-vendor.css 缺失或加载失败），已注入兜底内联样式。",
@@ -3625,9 +3948,10 @@ async function mountRrwebPlayer(root, rrwebDir) {
   };
   session.raf = requestAnimationFrame(tick);
 
-  stage.replaceChildren(
-    ...[...session.players.values()].map((entry) => entry.container),
-  );
+  // 只清加载提示，绝不移动 tab-view 容器：iframe 一旦脱离文档其 document 即销毁，
+  // 重新插入产生新空文档，rrweb 2.2 的沙箱注册（WeakSet）随之失效，之后所有
+  // FullSnapshot 重建静默抛 REBUILD_TARGET_ERROR —— 回放永久黑屏的根因。
+  stage.querySelectorAll(".rrweb-notice").forEach((node) => node.remove());
   applyView();
 }
 
@@ -4916,6 +5240,22 @@ window.addEventListener("message", (e) => {
     });
 });
 
+// 画布右键菜单（步骤/组）为 position:fixed：点击菜单外任意处关闭。
+// canvas.onclick 只覆盖画布内，画布外（AI 面板等）的点击在此统一关闭。
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest("#canvasStepMenu,#canvasGroupMenu")) return;
+  const stepMenu = document.getElementById("canvasStepMenu");
+  if (stepMenu && !stepMenu.hidden) {
+    stepMenu.hidden = true;
+    stepMenu.dataset.stepIndex = "";
+  }
+  const groupMenu = document.getElementById("canvasGroupMenu");
+  if (groupMenu && !groupMenu.hidden) {
+    groupMenu.hidden = true;
+    groupMenu.dataset.groupId = "";
+  }
+});
+
 $("profileTab").onclick = () => showDrawerTab("Profile");
 $("designTab").onclick = () => showDrawerTab("Design");
 $("previous").onclick = () => {
@@ -5950,8 +6290,8 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
 }
 
 
-// Bridge integration point: recorder-stop advice (recording-complete 模式)。
-// 回放失败诊断不再自动发送，改由「Analyze last failure」预设项触发。
+// AI 分析统一由用户显式触发：「Analyze last failure」预设项（replay-failure 模式）。
+// 停录后零自动 AI：bridge 停录路径不再调用 recording-complete 模式（round5）。
 window.startFlowLinkAIAdvice = startAIAdvice;
 
 // 应用级轻提示：普通信息 6 秒后自动消失，警告需手动关闭。
@@ -7848,6 +8188,7 @@ function bindProcessMap() {
   canvas.onclick = (e) => {
     if (proposalActive()) return;
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
+    if (!e.target.closest("#canvasGroupMenu")) hideGroupMenu();
     const select =
       e.target.closest("[data-group-select]") ||
       (!e.target.closest("button")
@@ -7951,7 +8292,7 @@ function bindProcessMap() {
     if (
       e.button !== 0 ||
       e.target.closest(
-        ".canvas-group,.canvas-view-controls,#canvasStepMenu,.canvas-group-actions",
+        ".canvas-group,.canvas-view-controls,#canvasStepMenu,#canvasGroupMenu,.canvas-group-actions",
       )
     )
       return;
@@ -7978,6 +8319,12 @@ function bindProcessMap() {
       if (e.key === "0") fit();
       else scale(e.key === "-" ? 1 / 1.2 : 1.2);
     } else if (e.key === "Escape") {
+      // 菜单打开时 Esc 只关菜单，不触发画布取消选中等其它行为。
+      if (!stepMenu.hidden || (groupMenu && !groupMenu.hidden)) {
+        hideStepMenu();
+        hideGroupMenu();
+        return;
+      }
       item.selectedGroup = null;
       canvas.querySelectorAll(".canvas-group").forEach((g) => {
         g.classList.remove("selected");
@@ -7993,14 +8340,31 @@ function bindProcessMap() {
     }
   };
   const stepMenu = canvas.querySelector("#canvasStepMenu");
+  const groupMenu = canvas.querySelector("#canvasGroupMenu");
   const hideStepMenu = () => {
     stepMenu.hidden = true;
     stepMenu.dataset.stepIndex = "";
   };
+  const hideGroupMenu = () => {
+    if (!groupMenu) return;
+    groupMenu.hidden = true;
+    groupMenu.dataset.groupId = "";
+  };
+  // 菜单 position:fixed，直接用视口坐标定位，右/下边界按视口夹取，
+  // 彻底规避 world 的 translate/scale 换算与 canvas overflow:hidden 裁剪。
+  const placeMenu = (menu, e) => {
+    menu.hidden = false;
+    const width = menu.offsetWidth || 160;
+    const height = menu.offsetHeight || 200;
+    menu.style.left =
+      Math.max(8, Math.min(window.innerWidth - width - 8, e.clientX)) + "px";
+    menu.style.top =
+      Math.max(8, Math.min(window.innerHeight - height - 8, e.clientY)) + "px";
+  };
   const showStepMenu = (e, stepIndex) => {
     e.preventDefault();
     e.stopPropagation();
-    hideStepMenu();
+    hideGroupMenu();
     const stepEl = e.target.closest(".canvas-step");
     if (!stepEl) return;
     const groupEl = stepEl.closest("[data-canvas-group]");
@@ -8012,12 +8376,61 @@ function bindProcessMap() {
     const isFirst = Number(stepIndex) === group.start;
     stepMenu.querySelector("[data-step-break]").disabled = isFirst;
     stepMenu.dataset.stepIndex = String(stepIndex);
-    const rect = canvas.getBoundingClientRect();
-    stepMenu.style.left =
-      Math.min(rect.width - 128, Math.max(0, e.clientX - rect.left)) + "px";
-    stepMenu.style.top =
-      Math.min(rect.height - 96, Math.max(0, e.clientY - rect.top)) + "px";
-    stepMenu.hidden = false;
+    placeMenu(stepMenu, e);
+  };
+  const showGroupMenu = (e, groupEl) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideStepMenu();
+    if (!groupMenu) return;
+    const groupId = groupEl?.dataset.canvasGroup;
+    const groups = ensureProcessGroups(item);
+    const index = groups.findIndex((g) => g.id === groupId);
+    if (index < 0) return;
+    // 禁用规则与组操作按钮同源（见上方 setEditState 的 editBlockedReason）。
+    const flowReady = Boolean(item.processFlow);
+    const recordingNow = recordingSession().stage === "recording";
+    const playbackActive =
+      !!item.testRunning || recordingSession().playbackInFlight === true;
+    const editBlockedReason = !flowReady
+      ? item.processFlowError
+        ? "The recorded Flow could not be loaded for this item."
+        : "Loading the recorded Flow…"
+      : recordingNow
+        ? "Stop the recording to edit steps and groups."
+        : playbackActive
+          ? "Stop the running replay to edit steps and groups."
+          : "";
+    groupMenu.dataset.groupId = groupId;
+    const setItem = (name, reason) => {
+      const btn = groupMenu.querySelector(`[data-cmenu-group="${name}"]`);
+      if (!btn) return;
+      btn.disabled = Boolean(reason);
+      btn.title = reason || "";
+    };
+    setItem("rename", editBlockedReason);
+    setItem(
+      "up",
+      editBlockedReason ||
+        (index === 0 ? "This is already the first group." : ""),
+    );
+    setItem(
+      "down",
+      editBlockedReason ||
+        (index === groups.length - 1 ? "This is already the last group." : ""),
+    );
+    setItem(
+      "merge",
+      editBlockedReason ||
+        (index === groups.length - 1
+          ? "There is no group below to merge into."
+          : ""),
+    );
+    setItem("delete", "");
+    setItem("record", "");
+    setItem("before", "");
+    setItem("after", "");
+    placeMenu(groupMenu, e);
   };
   canvas.oncontextmenu = (e) => {
     if (proposalActive()) return;
@@ -8027,6 +8440,12 @@ function bindProcessMap() {
       return false;
     }
     hideStepMenu();
+    const groupEl = e.target.closest("[data-canvas-group]");
+    if (groupEl) {
+      showGroupMenu(e, groupEl);
+      return false;
+    }
+    hideGroupMenu();
   };
   stepMenu.onclick = (e) => {
     e.stopPropagation();
@@ -8122,6 +8541,30 @@ function bindProcessMap() {
       renderSummaryWorkspace();
     }
   };
+  if (groupMenu)
+    groupMenu.onclick = (e) => {
+      e.stopPropagation();
+      const groupId = groupMenu.dataset.groupId;
+      if (!groupId) return;
+      const btn = e.target.closest("[data-cmenu-group]");
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.cmenuGroup;
+      hideGroupMenu();
+      // 菜单项与组操作按钮同源：直接复用现有组操作函数（含确认流程）。
+      if (action === "rename") void renameProcessGroup(item, groupId);
+      else if (action === "up") void moveProcessGroup(item, groupId, "up");
+      else if (action === "down")
+        void moveProcessGroup(item, groupId, "down");
+      else if (action === "merge")
+        void mergeProcessGroupIntoNext(item, groupId);
+      else if (action === "delete") deleteProcessGroup(item, groupId);
+      else if (action === "record")
+        beginGroupRecording(item, groupId, "replace");
+      else if (action === "before")
+        beginGroupRecording(item, groupId, "before");
+      else if (action === "after")
+        beginGroupRecording(item, groupId, "after");
+    };
   requestAnimationFrame(fit);
 }
 async function beginGroupRecording(item, groupId, mode) {

@@ -595,7 +595,7 @@
 				state.allExplicit = false
 				hideNativeBrowser()
 				renderRecordingWorkspace()
-				if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped and only fallback steps were available. Review the captured material and advise what evidence is missing for reliable replay. Do not generate a replacement material yet.' })
+				// 停录后零自动 AI：不再自动调用 recording-complete 分析（round5）。
 				return
 			}
 
@@ -676,7 +676,7 @@
 			hideNativeBrowser()
 			state.browserElement.hidden = true
 			renderRecordingWorkspace()
-			if (typeof window.startFlowLinkAIAdvice === 'function') void window.startFlowLinkAIAdvice({ mode: 'recording-complete', items: [item], reason: 'The recording has stopped. Review the initial recording, captured steps, target evidence, navigation and cross-tab/system transitions. Give actionable advice for improving replay reliability. Do not generate a refined material until the user explicitly asks.' })
+			// 停录后零自动 AI：不再自动调用 recording-complete 分析（round5）。
 		} catch (err) {
 			console.error('[bridge] 停止录制失败：', err)
 			state.pending = null

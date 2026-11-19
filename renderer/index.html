@@ -1104,6 +1104,24 @@
                     <button data-step-modify>Modify</button>
                     <button data-step-break>Break</button>
                   </div>
+                  <div class="canvas-step-menu" id="canvasGroupMenu" hidden>
+                    <button data-cmenu-group="rename">Rename</button>
+                    <button data-cmenu-group="up">Move up</button>
+                    <button data-cmenu-group="down">Move down</button>
+                    <button data-cmenu-group="merge">
+                      Merge into next
+                    </button>
+                    <button data-cmenu-group="delete">Delete</button>
+                    <button data-cmenu-group="record">
+                      Re-record this group
+                    </button>
+                    <button data-cmenu-group="before">
+                      Insert recording before
+                    </button>
+                    <button data-cmenu-group="after">
+                      Insert recording after
+                    </button>
+                  </div>
                   <div class="canvas-view-controls">
                     <button data-canvas-zoom="out" aria-label="Zoom out">
                       -
@@ -1329,8 +1347,39 @@
                       >
                         Follow tabs
                       </button>
+                      <button
+                        type="button"
+                        class="btn rrweb-diagnose"
+                        aria-label="Run replay diagnostics"
+                      >
+                        回放诊断
+                      </button>
                     </div>
                     <div class="rrweb-error" hidden></div>
+                    <div class="rrweb-diagnostic" hidden>
+                      <div class="rrweb-diagnostic-bar">
+                        <span>回放诊断报告</span>
+                        <div class="rrweb-diagnostic-actions">
+                          <button
+                            type="button"
+                            class="btn rrweb-diagnostic-copy"
+                          >
+                            复制报告
+                          </button>
+                          <button
+                            type="button"
+                            class="btn secondary rrweb-diagnostic-close"
+                            aria-label="Close diagnostics"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                      <pre
+                        class="rrweb-diagnostic-report"
+                        tabindex="0"
+                      ></pre>
+                    </div>
                   </div>
                   <section class="recording-video">
                     <video
