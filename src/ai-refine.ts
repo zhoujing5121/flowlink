@@ -816,7 +816,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		const sourceSecretNames = new Set(
 			flows.flatMap((flow) => (flow.variables ?? []).filter((variable) => variable.secret).map((variable) => variable.name)),
 		)
-		const secretDropped = [...sourceSecretNames].some((name) => !usedOrDefined.has(name))
+		const secretDroppedNames = [...sourceSecretNames].filter((name) => !usedOrDefined.has(name))
 		stage = '契约校验与落盘前组装'
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
@@ -853,9 +853,9 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 					? parsed.risks.filter((item): item is string => typeof item === 'string')
 					: []),
 				...assertionDrop.dropped,
-				...(secretDropped
+				...(secretDroppedNames.length
 					? [
-							'源流程包含密码变量 {{password}}，但生成结果不再引用它：凭据步骤可能被删除，请人工确认登录段是否完整',
+							`源流程包含 secret 变量（${secretDroppedNames.map((name) => `{{${name}}}`).join(', ')}），但生成步骤不再引用：凭据步骤可能已被删除，请人工确认相关步骤`,
 						]
 					: []),
 			],
