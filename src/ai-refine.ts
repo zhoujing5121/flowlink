@@ -803,8 +803,8 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		const variables = mergeVariables(flows, parsed.variables)
 		// 参数保护守卫（不依赖模型自觉）：
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
-		// 2) 剪除输出中不再被引用的变量，避免 Reference 页出现死参数；
-		// 3) 源流程有 secret 变量而输出不再使用 → 追加一条 risk。
+		// 2) 源 Flow 的变量定义属于流程契约，不能因模型改写步骤或引用扫描范围而被删除；
+		// 3) 源流程有 secret 变量而输出步骤不再引用 → 追加一条 risk。
 		stage = '参数守卫'
 		const { used, defined } = collectTemplateRefs(steps)
 		for (const name of used) {
@@ -813,10 +813,10 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 			}
 		}
 		const usedOrDefined = new Set([...used, ...defined])
-		const prunedVariables = variables.filter((v) => usedOrDefined.has(v.name))
-		const secretDropped =
-			flows.some((f) => (f.variables ?? []).some((v) => v.secret)) &&
-			!prunedVariables.some((v) => v.secret)
+		const sourceSecretNames = new Set(
+			flows.flatMap((flow) => (flow.variables ?? []).filter((variable) => variable.secret).map((variable) => variable.name)),
+		)
+		const secretDroppedNames = [...sourceSecretNames].filter((name) => !usedOrDefined.has(name))
 		stage = '契约校验与落盘前组装'
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
@@ -834,7 +834,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				// 本次的直接源，transitive 可按 flowId 沿各源 flow 的 meta 追溯。
 				...(sources ? { meta: { ...flows[0]!.meta, sourceFlows: sources } } : {}),
 				steps,
-				variables: prunedVariables,
+				variables,
 				stats: undefined,
 				selfHealed: [],
 			},
@@ -853,9 +853,9 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 					? parsed.risks.filter((item): item is string => typeof item === 'string')
 					: []),
 				...assertionDrop.dropped,
-				...(secretDropped
+				...(secretDroppedNames.length
 					? [
-							'源流程包含密码变量 {{password}}，但生成结果不再引用它：凭据步骤可能被删除，请人工确认登录段是否完整',
+							`源流程包含 secret 变量（${secretDroppedNames.map((name) => `{{${name}}}`).join(', ')}），但生成步骤不再引用：凭据步骤可能已被删除，请人工确认相关步骤`,
 						]
 					: []),
 			],

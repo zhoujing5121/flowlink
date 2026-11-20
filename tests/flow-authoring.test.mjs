@@ -570,3 +570,36 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 	assert.equal(providerError.ok, false)
 	assert.equal(providerError.error, 'provider down')
 })
+
+
+test('generateRefinedFlow preserves source variable definitions independently of step pruning', async () => {
+	const parsed = flowIO.parseFlow({
+		...flow([
+			{ kind: 'navigate', id: 's0', url: 'https://example.test' },
+			{ kind: 'input', id: 's1', target: elementRef(), value: '{{account}}' },
+		]),
+		variables: [
+			{ name: 'account', type: 'string', defaultValue: 'alice', secret: false, source: 'input' },
+			{ name: 'unused', type: 'string', defaultValue: 'kept', secret: false, source: 'input' },
+			{ name: 'password', type: 'secret', secret: true, source: 'input' },
+		],
+	})
+	const file = join(tempDir, 'ai-refine-variable-source.json')
+	await flowIO.saveFlow(parsed, file)
+	const projection = aiRefine.projectFlows([parsed])
+	const ok = await aiRefine.generateRefinedFlow({
+		flowFiles: [file],
+		templates: promptGenerationTemplates,
+		runPrompt: async () => ({
+			ok: true,
+			text: JSON.stringify({
+				title: 'Variable inheritance',
+				steps: JSON.parse(projection.flows[0].stepsJson),
+			}),
+		}),
+	})
+	assert.equal(ok.ok, true)
+	assert.deepEqual(ok.flow.variables.map((variable) => variable.name), ['account', 'unused', 'password'])
+	assert.equal(ok.flow.variables.find((variable) => variable.name === 'account').defaultValue, 'alice')
+	assert.equal(ok.flow.variables.find((variable) => variable.name === 'password').secret, true)
+})
