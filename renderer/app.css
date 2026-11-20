@@ -5131,11 +5131,18 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 0 0 16px;
+  width: fit-content;
+  max-width: 85%;
+  padding: 8px 14px;
+  border-radius: 14px;
+  background: #eff1f4;
 }
 
 .assistant-message.user {
-  background: #eff1f2;
+  margin-left: auto;
   padding: 8px 16px;
+  background: #17181c;
+  color: #fff;
 }
 
 .assistant-composer {

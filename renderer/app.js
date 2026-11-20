@@ -5899,6 +5899,17 @@ function renderAIPanel() {
         Array.isArray(message.presets) &&
         message.presets.length
       ) {
+        // 勾选项已以芯片呈现，正文剔除对应的 “- <preset>” 行避免同内容出现两次；
+        // message.text 本身保留完整指令供 AI 对话历史使用。
+        const presetLines = new Set(
+          message.presets.map((preset) => `- ${preset}`),
+        );
+        const freeText = message.text
+          .split("\n")
+          .filter((line) => !presetLines.has(line))
+          .join("\n")
+          .replace(/^\n+/, "")
+          .replace(/\n+$/, "");
         chipsHost.replaceChildren(
           ...message.presets.map((preset) => {
             const chip = rowTemplate("chatChipTemplate").cloneNode(true);
@@ -5907,10 +5918,12 @@ function renderAIPanel() {
           }),
         );
         element.insertBefore(chipsHost, element.firstChild);
-        element.insertBefore(
-          document.createTextNode(message.text),
-          chipsHost.nextSibling,
-        );
+        if (freeText) {
+          element.insertBefore(
+            document.createTextNode(freeText),
+            chipsHost.nextSibling,
+          );
+        }
       } else {
         element.insertBefore(
           document.createTextNode(message.text),
