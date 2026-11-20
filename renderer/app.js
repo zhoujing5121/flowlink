@@ -6180,6 +6180,10 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
     stepDetails: sources[0].stepDetails || [],
     processGroups: undefined,
     references: [],
+    referenceVariablesLoaded: false,
+    referenceVariablesLoading: false,
+    referenceVariablesGeneration: (sources[0].referenceVariablesGeneration || 0) + 1,
+    referenceLoadError: "",
     resultTab: "Process",
     aiRationale: Array.isArray(result.rationale) ? result.rationale : [],
     aiRisks: Array.isArray(result.risks) ? result.risks : [],
@@ -6991,6 +6995,7 @@ async function confirmPendingUpdate(item) {
     item.processFlow = null;
     item.processFlowLoaded = false;
     item.processFlowError = "";
+    invalidateReferenceVariables(item);
     await hydrateProcessFlow(item);
     rebuildItemTestFlow(item);
     showFlowlinkNotice(`已确认，流程更新为 v${flow?.version ?? ""}`);
@@ -7400,15 +7405,31 @@ function ensureReferenceFiles(item) {
   return item.references;
 }
 
+// A refined Flow can replace the variable definitions while keeping the same recording item.
+// Invalidate only variable rows (uploaded Reference files remain session-local) and use a
+// generation token so an older in-flight load cannot overwrite the refreshed definitions.
+function invalidateReferenceVariables(item) {
+  if (!item) return;
+  item.referenceVariablesGeneration = (item.referenceVariablesGeneration || 0) + 1;
+  if (Array.isArray(item.references))
+    item.references = item.references.filter((reference) => reference.kind !== "variable");
+  item.referenceVariablesLoaded = false;
+  item.referenceVariablesLoading = false;
+  item.referenceLoadError = "";
+}
+
 async function hydrateReferenceVariables(item) {
   if (!item || item.referenceVariablesLoaded || item.referenceVariablesLoading) return false;
   if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.load) {
     item.referenceVariablesLoaded = true;
     return false;
   }
+  const generation = (item.referenceVariablesGeneration || 0) + 1;
+  item.referenceVariablesGeneration = generation;
   item.referenceVariablesLoading = true;
   try {
     const flow = await window.flowlink.flow.load(item.flowFile);
+    if (item.referenceVariablesGeneration !== generation) return false;
     const knownNames = new Set(
       ensureReferenceFiles(item)
         .filter((reference) => reference.kind === "variable")
@@ -7431,11 +7452,13 @@ async function hydrateReferenceVariables(item) {
     item.referenceVariablesLoaded = true;
     return true;
   } catch (error) {
+    if (item.referenceVariablesGeneration !== generation) return false;
     item.referenceLoadError = error instanceof Error ? error.message : String(error);
     console.error("[reference] Unable to load flow variables:", error);
     return false;
   } finally {
-    item.referenceVariablesLoading = false;
+    if (item.referenceVariablesGeneration === generation)
+      item.referenceVariablesLoading = false;
   }
 }
 
