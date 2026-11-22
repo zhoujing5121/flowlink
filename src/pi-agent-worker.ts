@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { perf } from "./perf.js";
 import type { PiSkillConfig } from "./pi-config.js";
+import { appLog, appLogFields } from "./app-logger.js";
 import {
 	assertGenerationToolRegistry,
 	buildReadAllowlist,
@@ -265,7 +266,20 @@ async function runPrompt(request: PiWorkerPromptRequest): Promise<string> {
   timing.mark("session-created");
   const session = created.session as PiSessionLike;
   if (generated) {
-    assertGenerationToolRegistry(session.getActiveToolNames());
+    const activeTools = session.getActiveToolNames();
+    appLog(
+      "info",
+      "pi-worker",
+      appLogFields({
+        req: request.id,
+        mode: "generation",
+        skills: skills!.map((skill) => skill.name).join("|"),
+        activeTools: activeTools.join(","),
+      }),
+    );
+    assertGenerationToolRegistry(activeTools);
+  } else {
+    appLog("info", "pi-worker", appLogFields({ req: request.id, mode: "text", tools: "none" }));
   }
 
   try {
@@ -322,13 +336,19 @@ parentPort.on("message", (message: PiWorkerRequest | PiProxyResolutionResult) =>
     return;
   }
   void runPrompt(request).then(
-    (text) => workerPort.postMessage({ type: "prompt-result", id: request.id, ok: true, text }),
-    (error: unknown) =>
+    (text) => {
+      appLog("info", "pi-worker", appLogFields({ req: request.id, ok: true, textChars: text.length }));
+      workerPort.postMessage({ type: "prompt-result", id: request.id, ok: true, text });
+    },
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      appLog("error", "pi-worker", appLogFields({ req: request.id, ok: false, error: message.slice(0, 300) }));
       workerPort.postMessage({
         type: "prompt-result",
         id: request.id,
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      }),
+        error: message,
+      });
+    },
   );
 });

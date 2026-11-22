@@ -21,6 +21,7 @@ import {
 	type Variable,
 } from '../engine/schema/src/index.js'
 import { formatTemplate, type GenerationTemplates } from './prompts.js'
+import { appLog, appLogFields } from './app-logger.js'
 
 export interface PromptRunner {
 	(prompt: string, timeoutMs: number): Promise<{ ok: boolean; text: string; error?: string }>
@@ -772,13 +773,22 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 						options.conversation,
 						options.templates.refine,
 					)
+		appLog('info', 'ai-refine', appLogFields({
+			template: options.mode === 'auto' ? 'autoSanitize' : 'refine',
+			sources: flows.length,
+			sourceSteps: flows.reduce((total, flow) => total + flow.steps.length, 0),
+			instructionChars: options.instruction?.length ?? 0,
+			conversationTurns: options.conversation?.length ?? 0,
+			promptChars: prompt.length,
+		}))
 		if (prompt.length > PROMPT_CAP) {
 			throw new Error(
 				`The refinement prompt is too large (${prompt.length} characters); split the flow or remove steps.`,
 			)
 		}
 		stage = '调用模型'
-		const timeoutMs = Math.max(5_000, Math.min(options.timeoutMs ?? 180_000, 600_000))
+		// 默认 300s：43k+ 字符提示 + 工具调用 + 代理链路下 180s 实测不够（2026-11-22 真机超时）。
+		const timeoutMs = Math.max(5_000, Math.min(options.timeoutMs ?? 300_000, 600_000))
 		const result = await options.runPrompt(prompt, timeoutMs)
 		if (!result.ok) throw new Error(result.error || 'Pi agent request failed')
 

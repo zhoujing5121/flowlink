@@ -26,10 +26,36 @@ import { evaluateAssertion, flattenSteps, playOnPage, prefixSteps, type RunResul
 import { resolve as resolveElement } from '../engine/resolver/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
 import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
+import { appLog, appLogFields } from './app-logger.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/* 应用公共日志：与录制数据同主目录（userData/flowlink/logs/flowlink.log）。
+ * 在模块加载即设置（早于 whenReady 与任何 worker 创建），启动 perf 计时也能落盘；
+ * worker 线程在创建时继承该环境变量。 */
+process.env.FLOWLINK_LOG_DIR = join(app.getPath('userData'), 'flowlink', 'logs')
+appLog('info', 'app', appLogFields({ logDir: process.env.FLOWLINK_LOG_DIR, configDir: join(app.getAppPath(), 'config') }))
+
+/** 生成结果结构摘要（日志诊断用）：steps=N 只是顶层数组长度，业务分组是嵌套的 kind:'group' 步骤。 */
+type StructureStep = { kind?: string; label?: string; steps?: StructureStep[] }
+function describeFlowStructure(steps: StructureStep[]): string {
+	const groups: string[] = []
+	let totalActions = 0
+	const walk = (list: StructureStep[]): void => {
+		for (const step of list) {
+			if (step.kind === 'group') {
+				groups.push(step.label ?? '(unlabeled)')
+				walk(step.steps ?? [])
+			} else {
+				totalActions += 1
+			}
+		}
+	}
+	walk(steps)
+	return `topLevel=${steps.length} groups=[${groups.join('|')}] nestedActions=${totalActions}`
+}
 
 /* Electron CDP：Playwright connectOverCDP 的前提 */
 app.commandLine.appendSwitch('remote-debugging-port', '0')
@@ -1468,6 +1494,13 @@ function registerIpc(): void {
 				})
 			}
 			await mkdir(flowsRoot, { recursive: true })
+			appLog('info', 'pi:generateFlow', appLogFields({
+				task: opts.taskCode,
+				recordings: opts.recordingIds.join('|'),
+				sourceTitles: sources.map((item) => item.title).join('|'),
+				instruction: opts.instruction !== undefined ? String(opts.instruction).slice(0, 160) : '(none)',
+				conversationTurns: Array.isArray(opts.conversation) ? opts.conversation.length : 0,
+			}))
 			const result = await generateRefinedFlow({
 				flowFiles,
 				sources,
@@ -1481,6 +1514,13 @@ function registerIpc(): void {
 				templates: getPromptTemplates().generation,
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs, skills: getGenerationSkills() }),
 			})
+			appLog(result.ok ? 'info' : 'error', 'pi:generateFlow', appLogFields({
+				ok: result.ok,
+				title: result.ok ? result.title : undefined,
+				steps: result.ok ? result.flow.steps.length : undefined,
+				structure: result.ok ? describeFlowStructure(result.flow.steps) : undefined,
+				error: result.ok ? undefined : (result.error ?? '').slice(0, 200),
+			}))
 			if (!result.ok) {
 				// 完整错误文本随消息返回；detail（阶段+原因）供渲染层折叠展示。
 				const error = new Error(result.error) as Error & { detail?: { stage: string; reason: string } }
@@ -1575,6 +1615,11 @@ function registerIpc(): void {
 			]
 				.filter(Boolean)
 				.join('\n\n')
+			appLog('info', 'pi:repairFlow', appLogFields({
+				recording: opts.recordingId,
+				instructionChars: instruction.length,
+				reanchorEntries: reanchor?.length ?? 0,
+			}))
 			const result = await generateRefinedFlow({
 				flowFiles: [recording.flowFile],
 				instruction,
@@ -1582,6 +1627,13 @@ function registerIpc(): void {
 				...(reanchor ? { reanchor } : {}),
 				runPrompt: (prompt, timeoutMs) => runPiPrompt({ prompt, cwd: flowsRoot, timeoutMs, skills: getGenerationSkills() }),
 			})
+			appLog(result.ok ? 'info' : 'error', 'pi:repairFlow', appLogFields({
+				ok: result.ok,
+				title: result.ok ? result.title : undefined,
+				steps: result.ok ? result.flow.steps.length : undefined,
+				structure: result.ok ? describeFlowStructure(result.flow.steps) : undefined,
+				error: result.ok ? undefined : (result.error ?? '').slice(0, 200),
+			}))
 			if (!result.ok) {
 				const error = new Error(result.error) as Error & { detail?: { stage: string; reason: string } }
 				error.detail = result.detail

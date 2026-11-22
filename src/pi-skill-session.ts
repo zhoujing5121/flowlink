@@ -21,6 +21,7 @@ import {
 import { Type } from "typebox";
 
 import { SKILL_READ_BUDGET_CHARS, type PiSkillConfig } from "./pi-config.js";
+import { appLog, appLogFields } from "./app-logger.js";
 
 /** 生成模式会话最终可调用工具的唯一合法清单。 */
 const GENERATION_TOOL_ALLOWLIST = ["read"] as const;
@@ -94,77 +95,94 @@ export function createRestrictedReadTool(options: RestrictedReadOptions): ToolDe
 			),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("Operation aborted");
 			const requested = params.path;
-			if (typeof requested !== "string" || !requested.trim()) {
-				throw new Error("read requires a file path.");
-			}
-			const cwd = ctx?.cwd || process.cwd();
-			const resolved = resolve(cwd, requested);
-
-			let stats;
 			try {
-				stats = statSync(resolved);
-			} catch {
-				throw new Error(
-					`read rejected: '${requested}' does not exist. Only built-in skill files are readable.`,
-				);
-			}
-			if (!stats.isFile()) {
-				throw new Error(
-					`read rejected: '${requested}' is not a regular file; directories are not readable.`,
-				);
-			}
-			let real: string;
-			try {
-				real = realpathSync(resolved);
-			} catch {
-				throw new Error(
-					`read rejected: '${requested}' could not be resolved to a real path.`,
-				);
-			}
-			if (!allowlist.has(normalizeRealPath(real))) {
-				throw new Error(
-					`read rejected: '${requested}' is outside the built-in skill files allowlist. ` +
-						"Only SKILL.md files and their listed reference files inside the app's skill directory can be read.",
-				);
-			}
+				if (signal?.aborted) throw new Error("Operation aborted");
+				if (typeof requested !== "string" || !requested.trim()) {
+					throw new Error("read requires a file path.");
+				}
+				const cwd = ctx?.cwd || process.cwd();
+				const resolved = resolve(cwd, requested);
 
-			let text = readFileSync(real, "utf8");
-			if (text.includes("\u0000")) {
-				throw new Error(`read rejected: '${requested}' looks like a binary file.`);
-			}
-			if (params.offset !== undefined || params.limit !== undefined) {
-				const lines = text.split("\n");
-				const start =
-					params.offset !== undefined
-						? Math.max(0, Math.floor(params.offset) - 1)
-						: 0;
-				if (start >= lines.length && lines.length > 0) {
+				let stats;
+				try {
+					stats = statSync(resolved);
+				} catch {
 					throw new Error(
-						`Offset ${params.offset} is beyond end of file (${lines.length} lines total)`,
+						`read rejected: '${requested}' does not exist. Only built-in skill files are readable.`,
 					);
 				}
-				const end =
-					params.limit !== undefined
-						? Math.min(lines.length, start + Math.max(0, Math.floor(params.limit)))
-						: lines.length;
-				text = lines.slice(start, end).join("\n");
-			}
+				if (!stats.isFile()) {
+					throw new Error(
+						`read rejected: '${requested}' is not a regular file; directories are not readable.`,
+					);
+				}
+				let real: string;
+				try {
+					real = realpathSync(resolved);
+				} catch {
+					throw new Error(
+						`read rejected: '${requested}' could not be resolved to a real path.`,
+					);
+				}
+				if (!allowlist.has(normalizeRealPath(real))) {
+					throw new Error(
+						`read rejected: '${requested}' is outside the built-in skill files allowlist. ` +
+							"Only SKILL.md files and their listed reference files inside the app's skill directory can be read.",
+					);
+				}
 
-			const remaining = budgetChars - usedChars;
-			if (text.length > remaining) {
-				throw new Error(
-					`read rejected: skill read budget exhausted. This read needs ${text.length} characters ` +
-						`but only ${remaining} of ${budgetChars} remain for this request. ` +
-						"Reading is never silently truncated.",
+				let text = readFileSync(real, "utf8");
+				if (text.includes("\u0000")) {
+					throw new Error(`read rejected: '${requested}' looks like a binary file.`);
+				}
+				if (params.offset !== undefined || params.limit !== undefined) {
+					const lines = text.split("\n");
+					const start =
+						params.offset !== undefined
+							? Math.max(0, Math.floor(params.offset) - 1)
+							: 0;
+					if (start >= lines.length && lines.length > 0) {
+						throw new Error(
+							`Offset ${params.offset} is beyond end of file (${lines.length} lines total)`,
+						);
+					}
+					const end =
+						params.limit !== undefined
+							? Math.min(lines.length, start + Math.max(0, Math.floor(params.limit)))
+							: lines.length;
+					text = lines.slice(start, end).join("\n");
+				}
+
+				const remaining = budgetChars - usedChars;
+				if (text.length > remaining) {
+					throw new Error(
+						`read rejected: skill read budget exhausted. This read needs ${text.length} characters ` +
+							`but only ${remaining} of ${budgetChars} remain for this request. ` +
+							"Reading is never silently truncated.",
+					);
+				}
+				usedChars += text.length;
+				appLog(
+					"info",
+					"pi-skill-read",
+					appLogFields({ file: real, chars: text.length, budgetUsed: usedChars, budget: budgetChars }),
 				);
+				return {
+					content: [{ type: "text", text }],
+					details: undefined,
+				};
+			} catch (error) {
+				appLog(
+					"warn",
+					"pi-skill-read",
+					appLogFields({
+						path: requested,
+						reason: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+					}),
+				);
+				throw error;
 			}
-			usedChars += text.length;
-			return {
-				content: [{ type: "text", text }],
-				details: undefined,
-			};
 		},
 	});
 }

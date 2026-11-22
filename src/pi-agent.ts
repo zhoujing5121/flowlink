@@ -15,6 +15,7 @@ import {
 	createBuiltInPiConfigSource,
 	type PiSkillConfig,
 } from "./pi-config.js";
+import { appLog, appLogFields } from "./app-logger.js";
 import type { PromptTemplates } from "./prompts.js";
 
 export interface PiPromptOptions {
@@ -270,6 +271,16 @@ function getPiWorker(): Worker {
     if (!request) return;
     clearTimeout(request.timer);
     pendingPiRequests.delete(response.id);
+    appLog(
+      response.ok ? "info" : "error",
+      "pi-agent",
+      appLogFields({
+        req: response.id,
+        ok: response.ok,
+        textChars: response.ok ? (response.text ?? "").length : undefined,
+        error: response.ok ? undefined : (response.error ?? "").slice(0, 200),
+      }),
+    );
     request.resolve(response);
     if (pendingPiRequests.size === 0) worker.unref();
   });
@@ -324,14 +335,30 @@ function sendPiWorkerRequest(
   const id = ++nextPiRequestId;
   const configSource = createBuiltInPiConfigSource(getConfigDirectory());
   // 中心 systemPrompt 组装点：prompts.json systemPrompt + 可选 AGENTS.md 领域知识段。
+  const agentsKnowledge = configSource.loadAgentsKnowledge();
   const systemPrompt = appendAgentsKnowledge(
     configSource.loadPrompts().systemPrompt,
-    configSource.loadAgentsKnowledge(),
+    agentsKnowledge,
+  );
+  appLog(
+    "info",
+    "pi-agent",
+    appLogFields({
+      req: id,
+      mode: skills ? "generation" : "text",
+      model: settings.model,
+      promptChars: prompt.length,
+      systemPromptChars: systemPrompt.length,
+      agentsChars: agentsKnowledge.trim().length,
+      skills: skills ? skills.map((skill) => skill.name).join("|") : "(none)",
+      timeoutMs,
+    }),
   );
   worker.ref();
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      appLog("error", "pi-agent", appLogFields({ req: id, error: `timed out after ${timeoutMs} ms` }));
       rejectPiWorkerRequests(worker, new Error(`Pi timed out after ${timeoutMs} ms`));
       void worker.terminate();
     }, timeoutMs);
