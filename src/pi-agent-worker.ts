@@ -2,6 +2,13 @@ import { parentPort } from "node:worker_threads";
 import { join } from "node:path";
 
 import { perf } from "./perf.js";
+import type { PiSkillConfig } from "./pi-config.js";
+import {
+	assertGenerationToolRegistry,
+	buildReadAllowlist,
+	createRestrictedReadTool,
+	toSdkSkills,
+} from "./pi-skill-session.js";
 
 interface PiRuntimeConfig {
   authPath: string;
@@ -21,6 +28,8 @@ interface PiWorkerPromptRequest extends PiRuntimeConfig {
     | { mode: "environment" }
     | { mode: "system" }
     | { mode: "explicit"; url: string };
+  /** 生成模式（pi:generateFlow / pi:repairFlow）：注入内置 Skills 并仅暴露受限 read 工具。 */
+  skills?: PiSkillConfig[];
 }
 
 /** 预热请求：只加载 SDK 并按 key 填充运行时缓存，不发起 provider 请求。 */
@@ -51,6 +60,7 @@ interface PiSessionLike {
   }>;
   prompt(message: string): Promise<void>;
   getLastAssistantText(): string | undefined;
+  getActiveToolNames(): string[];
   dispose(): void;
 }
 
@@ -196,6 +206,9 @@ async function createResourceLoader(
   pi: PiSdk,
   request: PiWorkerPromptRequest,
 ) {
+  // 生成模式：noSkills 短路默认/用户/项目发现后，skillsOverride 恒被应用——
+  // 只有 FlowLink 内置 Skills 进入会话（SDK 1.5.1 源码级行为）。
+  const generationSkills = request.skills ? toSdkSkills(request.skills) : undefined;
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: request.cwd,
     agentDir: request.configDir,
@@ -206,6 +219,14 @@ async function createResourceLoader(
     noContextFiles: true,
     systemPromptOverride: () => request.systemPrompt,
     appendSystemPromptOverride: () => [],
+    ...(generationSkills
+      ? {
+          skillsOverride: () => ({
+            skills: generationSkills,
+            diagnostics: [],
+          }),
+        }
+      : {}),
   });
   await resourceLoader.reload();
   return resourceLoader;
@@ -219,17 +240,33 @@ async function runPrompt(request: PiWorkerPromptRequest): Promise<string> {
   const { pi, modelRuntime, model } = await createRuntime(request);
   await createProxyDispatcher(request.proxy, model.baseUrl);
   const resourceLoader = await createResourceLoader(pi, request);
+  // 会话按请求分两种模式：
+  // - 文本模式（advice 等非生成调用）：noTools "all"，模型无任何工具、无 Skills。
+  // - 生成模式（pi:generateFlow / pi:repairFlow）：noTools "builtin" 剔除内置工具但保留
+  //   customTools，tools allowlist ["read"] 与以 "read" 注册的自定义受限工具组合，
+  //   最终模型可调用工具仅此一个（创建后断言注册表）。
+  const generated = request.skills !== undefined;
+  const skills = request.skills;
   const created = await pi.createAgentSession({
     cwd: request.cwd,
     model,
     modelRuntime,
     sessionManager: pi.SessionManager.inMemory(),
     resourceLoader,
-    noTools: "all",
+    ...(generated
+      ? {
+          noTools: "builtin" as const,
+          tools: ["read"],
+          customTools: [createRestrictedReadTool({ allowlist: buildReadAllowlist(skills!) })],
+        }
+      : { noTools: "all" as const }),
     thinkingLevel: request.thinkingLevel,
   });
   timing.mark("session-created");
   const session = created.session as PiSessionLike;
+  if (generated) {
+    assertGenerationToolRegistry(session.getActiveToolNames());
+  }
 
   try {
     await session.prompt(request.prompt);

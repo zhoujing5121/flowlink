@@ -7,7 +7,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test",
+    "test": "node --import tsx --test",
     "start": "node scripts/start.mjs",
     "dev": "node scripts/start.mjs --dev",
     "package": "npm run build && electron-packager . FlowLink --platform=win32 --arch=x64 --icon=resources/icon.ico --out=release --overwrite && node package.mjs"
@@ -24,12 +24,13 @@
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^45.2.3",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "allowScripts": {
     "electron@45.2.3": true,
-    "esbuild@0.24.2": true,
+    "esbuild@0.28.2": true,
     "@google/genai@2.21.0": true,
     "protobufjs@7.6.6": true,
     "@google/genai@1.52.0": true,

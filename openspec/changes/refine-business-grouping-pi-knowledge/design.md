@@ -8,6 +8,7 @@
 - 当前真实入口是 pi:generateFlow 与 pi:repairFlow。autoSanitize 是生成模板名，不代表录制完成后自动触发流程。
 - advice 和 browser takeover 有独立调用语义；本 change 不给它们启用 Skills。
 - 预算策略为超限显式失败，不静默截断。
+- 2026-11-20 审查已在 SDK 1.5.1 源码级验证三项前提：`DefaultResourceLoader` 在 `noSkills: true` 下仍会应用 `skillsOverride`（先短路为空发现结果，再交 override）；`noTools: "builtin"` 保留 customTools、仅剔除内置工具；自定义工具以名 `read` 注册时覆盖注册表同名槽位，成为模型唯一可见的 read。另确认：Pi 系统提示构建器只在 declaredTools 含名为 `read` 或 `bash` 的工具时注入 Skills 提示段——改名会使 Skills 对模型完全不可见，这是工具名锁定的根因。
 
 ## Goals / Non-Goals
 
@@ -48,29 +49,29 @@
 
 - 只从内置 config/skills/ 发现带合法 SKILL.md 的 Skill 目录。
 - frontmatter 至少校验 name 与 description；遵循 Pi 格式约束（name 小写字母/数字/连字符，最长 64；description 最长 1024）。拒绝重复名称、非法路径、缺失字段和无效元数据。
-- 关闭默认/用户/项目 Skills 自动发现，并通过 Pi SDK DefaultResourceLoader 的 skillsOverride（或锁定版本中等效的受控入口）只提供 FlowLink 内置 Skills。
-- 保持 noSkills: true 与 override 的组合行为必须通过 1.5.1 实测确认；若该版本不支持，使用等效的显式 Skills 列表构造方式，不能打开默认目录发现。
+- 关闭默认/用户/项目 Skills 自动发现，并通过 Pi SDK DefaultResourceLoader 的 skillsOverride 只提供 FlowLink 内置 Skills。
+- noSkills: true 与 override 的组合已在 1.5.1 源码级确认可行（override 恒被应用）；实现时仍以运行时断言确认默认 home/project Skills 不会被发现。若该版本不支持，使用等效的显式 Skills 列表构造方式，不能打开默认目录发现。
 - Skills 只在 pi:generateFlow、pi:repairFlow 两个真实入口可用；advice、takeover、prewarm 不加载 Skills。
 
-### D4. 严格只读工具：唯一自定义 read
+### D4. 严格只读工具：唯一自定义 read（命名锁定）
 
 Pi 会话采用「禁用所有内置工具，再仅允许一个自定义读取工具」的原则。
 
-- 在锁定 SDK 版本上验证 noTools: "builtin" + tools: ["read"] + customTools: [restrictedRead] 的确切行为。
+- **工具名锁定为 `read`**：Pi 系统提示构建器只在会话声明名为 `read`/`bash` 的工具时注入 Skills 提示段（readers 列表硬编码），改用其他名字会使 Skills 列表对模型完全不可见、原生机制失效。因此不设「改名回退」路径。
+- 在锁定 SDK 版本上验证 noTools: "builtin" + tools: ["read"] + customTools: [restrictedRead] 的确切行为，并以自动化断言最终工具注册表（1.5.1 源码级已确认机制可行：customTools 存活、自定义 read 覆盖注册表同名槽位）。
 - 只注册自定义 read；其解析与打开文件逻辑必须自行实施 allowlist，不能调用默认通用文件读取器。
 - 允许范围仅限内置 Skill 根目录下的 SKILL.md 及被明确列入 Skill 包的纯文本参考文件。不得读取项目源码、任意 config 文件、用户文件、系统文件或网络资源。
 - 拒绝绝对路径、路径穿越、根目录外路径、符号链接逃逸、目录读取、二进制、可执行文件及脚本扩展名。
 - 不注册 Bash、PowerShell、Write、Edit、Grep、Find、LS 等工具；Skill frontmatter 的 allowed-tools 与 shell 命令插值一律拒绝。
-- 对最终工具注册表做测试：模型实际可调用的工具只有受限 read。若 SDK 出现内置 read 冲突，改用明确命名的 Skill 专用读取工具并同步调整 Skill 指令，不得暴露内置 read。
+- 若实测注册表断言失败（如内置 read 残留、非受限 read 暴露），视为阻塞问题重新评估设计；不得改名绕过，不得开放默认 read 或通用文件读取。
 
 ### D5. 预算与错误处理
 
 以下是 FlowLink 侧建议限制，不是 Pi SDK 硬限制：
 
 - AGENTS.md 最多 8,000 字符。
-- 所有 Skill 描述合计最多 8,000 字符。
+- 所有 Skill 描述合计最多 8,000 字符（内置 Skills 规模由此预算兜底，不设个数上限——没有可用的相关性选择机制，个数上限无法落地）。
 - 单个 SKILL.md 最多 10,000 字符。
-- 单次请求最多启用 3 个 Skills，按任务相关性选择。
 - 单次请求通过 read 累计读取 Skill 正文/参考内容最多 20,000 字符。
 
 超限、非法 frontmatter、Skill 名称冲突、越权路径访问都应显式报错或拒绝；不得静默截断、放宽权限或回退到通用文件读取。读取工具限制单次读取长度并累计预算。
@@ -95,7 +96,7 @@ Pi 会话采用「禁用所有内置工具，再仅允许一个自定义读取�
 
 ## Risks / Trade-offs
 
-- **SDK 版本差异或 read 冲突**：对 1.5.1 做集成测试，验证 skillsOverride、noSkills、noTools、tools、customTools 组合和最终工具注册表；失败时采用 Skill 专用读取工具，不放开默认工具。
+- **SDK 版本差异或 read 冲突**：三项机制前提已在 1.5.1 源码级验证；实现时仍以最终工具注册表断言为准，断言失败视为阻塞问题重新评估设计（不改名绕过、不放开默认工具）。
 - **路径校验漏洞**：使用规范化路径、真实路径检查和符号链接边界检查；测试路径穿越、绝对路径、符号链接和编码绕过。
 - **Skill 提示注入**：Skill 只作为参考数据；输出契约和工具权限由 FlowLink 固定控制。
 - **模型忽略 Skills**：模型按需读取，真机验证 Skill 被正确发现和读取。
@@ -104,4 +105,4 @@ Pi 会话采用「禁用所有内置工具，再仅允许一个自定义读取�
 
 ## Migration Plan
 
-无用户数据迁移。未配置 AGENTS.md/Skills 时保持现有默认行为。实施后执行 npm run build、npx tsc --noEmit、SDK 工具注册测试、路径安全测试和真实生成/修复流程验证。回滚时恢复 Pi worker 原有无工具会话和配置读取逻辑即可。
+无用户数据迁移。未配置 AGENTS.md/Skills 时保持现有默认行为。实施引入 node:test + tsx 测试基建，验证基线为 npm run build、npx tsc --noEmit、node --test（覆盖 Skills 发现/校验、路径安全、生成会话工具注册表）和真实生成/修复流程验证。回滚时恢复 Pi worker 原有无工具会话和配置读取逻辑即可。

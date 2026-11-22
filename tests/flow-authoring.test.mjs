@@ -568,7 +568,8 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 		runPrompt: async () => ({ ok: false, text: '', error: 'provider down' }),
 	})
 	assert.equal(providerError.ok, false)
-	assert.equal(providerError.error, 'provider down')
+	// 错误文案带阶段包装（Refine 失败（阶段：…）），底层原因必须保留
+	assert.match(providerError.error, /provider down/)
 })
 
 

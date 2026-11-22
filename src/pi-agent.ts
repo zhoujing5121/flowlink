@@ -10,12 +10,19 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 import { perfSinceAppStart } from "./perf.js";
-import { loadPromptTemplates, type PromptTemplates } from "./prompts.js";
+import {
+	appendAgentsKnowledge,
+	createBuiltInPiConfigSource,
+	type PiSkillConfig,
+} from "./pi-config.js";
+import type { PromptTemplates } from "./prompts.js";
 
 export interface PiPromptOptions {
   prompt: string;
   cwd: string;
   timeoutMs?: number;
+  /** 内置 Skills（生成模式）：仅在 pi:generateFlow / pi:repairFlow 路径传入；advice/takeover/prewarm 不传。 */
+  skills?: PiSkillConfig[];
 }
 
 export interface PiPromptResult {
@@ -66,7 +73,12 @@ function getConfigDirectory(): string {
 
 /** Pi 提示词模板（config/prompts.json）：主进程生成管线与渲染层建议共用。 */
 export function getPromptTemplates(): PromptTemplates {
-  return loadPromptTemplates(getConfigDirectory());
+  return createBuiltInPiConfigSource(getConfigDirectory()).loadPrompts();
+}
+
+/** 生成会话的内置 Skills（config/skills/&lt;name&gt;/SKILL.md）：非法/超预算配置显式抛错。 */
+export function getGenerationSkills(): PiSkillConfig[] {
+  return createBuiltInPiConfigSource(getConfigDirectory()).loadSkills();
 }
 
 function getAuthPath(): string {
@@ -306,10 +318,16 @@ function sendPiWorkerRequest(
   settings: Required<PiSettings>,
   proxy: PiProxyOptions,
   timeoutMs: number,
+  skills?: PiSkillConfig[],
 ): Promise<PiWorkerResponse> {
   const worker = getPiWorker();
   const id = ++nextPiRequestId;
-  const systemPrompt = loadPromptTemplates(getConfigDirectory()).systemPrompt;
+  const configSource = createBuiltInPiConfigSource(getConfigDirectory());
+  // 中心 systemPrompt 组装点：prompts.json systemPrompt + 可选 AGENTS.md 领域知识段。
+  const systemPrompt = appendAgentsKnowledge(
+    configSource.loadPrompts().systemPrompt,
+    configSource.loadAgentsKnowledge(),
+  );
   worker.ref();
 
   return new Promise((resolve, reject) => {
@@ -332,6 +350,7 @@ function sendPiWorkerRequest(
         model: settings.model,
         thinkingLevel: settings.thinkingLevel,
         proxy,
+        ...(skills ? { skills } : {}),
       });
     } catch (error) {
       clearTimeout(timer);
@@ -441,9 +460,10 @@ async function sendPiPromptOnce(
   settings: Required<PiSettings>,
   proxy: PiProxyOptions,
   timeoutMs: number,
+  skills?: PiSkillConfig[],
 ): Promise<PiPromptResult> {
   try {
-    const response = await sendPiWorkerRequest(prompt, cwd, settings, proxy, timeoutMs);
+    const response = await sendPiWorkerRequest(prompt, cwd, settings, proxy, timeoutMs, skills);
     return response.ok
       ? { ok: true, text: response.text || "" }
       : { ok: false, text: "", error: response.error || "Pi agent request failed" };
@@ -478,12 +498,12 @@ export async function runPiPrompt(
       Math.min(options.timeoutMs ?? settings.timeoutMs, 600_000),
     );
 
-    let result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs);
+    let result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs, options.skills);
     // 传输类失败（且非超时）：间隔 1 秒自动重发同一 prompt 一次；仍失败给出可操作文案。
     const failureText = result.error || "";
     if (!result.ok && !isTimeoutText(failureText) && TRANSPORT_ERROR_RE.test(failureText)) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
-      result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs);
+      result = await sendPiPromptOnce(prompt, options.cwd, settings, proxy, timeoutMs, options.skills);
       if (!result.ok && TRANSPORT_ERROR_RE.test(result.error || "")) {
         return { ok: false, text: "", error: TRANSPORT_ERROR_MESSAGE };
       }

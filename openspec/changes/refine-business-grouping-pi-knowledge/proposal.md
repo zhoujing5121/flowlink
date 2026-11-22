@@ -15,8 +15,8 @@ Refine/autoSanitize 的分组质量不稳定：现有提示词缺少可操作的
   - 保持默认 Skills 发现关闭；通过受控的 Skills override 提供经过 FlowLink 校验的内置 Skills。
   - Pi 只获得一个自定义 `read` 工具。该工具只允许读取内置 Skill 目录中的 Skill 文件/明确允许的文本参考文件；拒绝目录外路径、路径穿越、符号链接逃逸、二进制和脚本文件。
   - 禁用所有其他内置工具及脚本执行能力；不提供 Bash、PowerShell、Write、Edit、Grep、Find、LS 等工具。严格权限不能由 Skill frontmatter 或 Skill 正文改变。
-  - 对锁定的 Pi SDK 版本验证 `noTools: "builtin"`、自定义 `read` 工具和 `skillsOverride` 的组合行为；若存在工具冲突，采用等效的显式自定义 Skill 读取机制，不得回退开放通用文件读取。
-- **Skills 的启用范围**：只在当前实际存在的生成和修复请求中启用 Skills（`pi:generateFlow`、`pi:repairFlow`）；advice、takeover、prewarm 不加载 Skills。当前 `autoSanitize` 是生成模板，不代表存在录制后自动触发流程；本 change 不恢复自动细化。
+  - 自定义受限工具**锁定命名 `read`**：Pi 原生 Skills 的系统提示段只在会话声明名为 `read`/`bash` 的工具时注入，改名会使 Skills 对模型完全不可见。对锁定的 Pi SDK 版本验证 `noTools: "builtin"`、`tools: ["read"]` 与 `skillsOverride` 的组合并断言最终工具注册表；若实测出现非受限 read 暴露等异常，视为阻塞问题重新评估设计，不得改名绕过，不得回退开放通用文件读取。
+- **Skills 的启用范围**：只在当前实际存在的生成和修复请求中启用 Skills（`pi:generateFlow`、`pi:repairFlow`）；advice、takeover、prewarm 不加载 Skills。当前 `autoSanitize` 是生成模板，不代表存在录制后自动触发流程；本 change 不恢复自动细化，并同步移除主 spec 中已过时的录制后自动细化 requirement（代码已停用）。
 - **AGENTS.md 与 Prompts 配置**：`config/AGENTS.md` 继续作为 Pi 全局指导内容，在中心 systemPrompt 组装点追加，作用于现有 `runPiPrompt` 调用；`config/prompts.json` 继续承载系统提示与各场景模板。
 - **配置来源边界（为未来预留，不扩范围）**：将 Prompts、AGENTS.md、Skills 的读取与校验收敛在一个小型 Pi 配置来源接口/模块后面。当前唯一实现是应用内置 `config/` 文件，保持现有默认行为；未来管理员配置页可以接入同一边界。当前不实现管理员页面、用户账号、角色、权限管理、远程配置或用户级覆盖。
 - **不可信内容边界**：录制数据、页面文本、Skill 内容均视为数据/参考资料，不得覆盖系统提示、输出契约、元素引用纪律或工具白名单。
@@ -33,6 +33,7 @@ Refine/autoSanitize 的分组质量不稳定：现有提示词缺少可操作的
   - 更新生成提示词的业务分组与验证不变量。
   - 更新 Pi 受限会话要求：只暴露受控的 Skill 文件读取能力，保持无脚本执行和无任意文件访问。
   - 新增 Pi 配置来源边界与内置 Skills 加载/校验契约；AGENTS.md 仍在中心提示词组装点追加。
+  - 移除已过时的「录制后自动细化（Auto-refine twin）」requirement——代码在提案制改造中已停用，spec 未同步。
 
 ## Impact
 
@@ -43,6 +44,7 @@ Refine/autoSanitize 的分组质量不稳定：现有提示词缺少可操作的
 - 新增或调整轻量 Pi 配置模块：集中读取/校验 Prompts、AGENTS.md、Skill 元数据及内置 Skill 路径；不把 Skill 正文整体注入生成模板。
 - `src/main.ts`：只在 `pi:generateFlow` 与 `pi:repairFlow` 请求路径传递受控 Skill 配置。
 - 新增 `docs/pi-knowledge.md`：说明配置分工、Skill 格式、严格读取边界和未来配置来源扩展点。
+- 引入 node:test + tsx 测试基建（devDependency）与首批安全回归测试（Skills 发现/校验、路径安全、生成会话工具注册表）。
 - 不改 Flow schema、普通用户 UI、IPC 对外功能或 takeover 行为。
 
 ## Out of Scope
