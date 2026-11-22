@@ -26,17 +26,19 @@ import { evaluateAssertion, flattenSteps, playOnPage, prefixSteps, type RunResul
 import { resolve as resolveElement } from '../engine/resolver/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
 import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
-import { appLog, appLogFields } from './app-logger.js'
+import { appLog, appLogFields, startupLogFileName } from './app-logger.js'
 import type { Flow } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-/* 应用公共日志：与录制数据同主目录（userData/flowlink/logs/flowlink.log）。
- * 在模块加载即设置（早于 whenReady 与任何 worker 创建），启动 perf 计时也能落盘；
- * worker 线程在创建时继承该环境变量。 */
+/* 应用公共日志：与录制数据同主目录（userData/flowlink/logs/flowlink-<启动时间戳>.log），
+ * 每次启动生成新文件，旧文件保留。在模块加载即设置（早于 whenReady 与任何 worker 创建），
+ * 启动 perf 计时也能落盘；完整路径经 FLOWLINK_LOG_FILE 传递，worker 线程创建时
+ * 继承该环境变量，与主进程写同一个文件。 */
 process.env.FLOWLINK_LOG_DIR = join(app.getPath('userData'), 'flowlink', 'logs')
-appLog('info', 'app', appLogFields({ logDir: process.env.FLOWLINK_LOG_DIR, configDir: join(app.getAppPath(), 'config') }))
+process.env.FLOWLINK_LOG_FILE = join(process.env.FLOWLINK_LOG_DIR, startupLogFileName())
+appLog('info', 'app', appLogFields({ logFile: process.env.FLOWLINK_LOG_FILE, configDir: join(app.getAppPath(), 'config') }))
 
 /** 生成结果结构摘要（日志诊断用）：steps=N 只是顶层数组长度，业务分组是嵌套的 kind:'group' 步骤。 */
 type StructureStep = { kind?: string; label?: string; steps?: StructureStep[] }

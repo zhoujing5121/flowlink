@@ -5126,23 +5126,20 @@ body {
 }
 
 .assistant-message {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 16px;
+  line-height: 24px;
+  color: #000;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 0 0 16px;
-  width: fit-content;
-  max-width: 85%;
-  padding: 8px 14px;
-  border-radius: 14px;
-  background: #eff1f4;
 }
 
 .assistant-message.user {
   margin-left: auto;
   padding: 8px 16px;
-  background: #17181c;
-  color: #fff;
+  width: fit-content;
+  max-width: 100%;
+  background: #e4f4eb;
 }
 
 .assistant-composer {
@@ -5990,6 +5987,68 @@ body {
   min-height: 0;
   overflow: visible;
   overscroll-behavior: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recording-assistant .assistant-content .assistant-message {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.recording-assistant .assistant-content .assistant-message.user {
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+/* 等待 AI 回复的动画指示器（绿色方块绕轨道旋转）。 */
+.assistant-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: #101416;
+}
+
+.assistant-thinking-icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  overflow: visible;
+}
+
+.assistant-thinking-orbit {
+  transform-origin: 15px 15px;
+  animation: assistant-square-orbit 1.8s linear infinite;
+}
+
+.assistant-thinking-square {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: assistant-square-upright 1.8s linear infinite;
+}
+
+@keyframes assistant-square-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes assistant-square-upright {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-thinking-orbit,
+  .assistant-thinking-square {
+    animation: none;
+  }
 }
 
 /* Shared right edge for list controls, table and pagination. */

@@ -5877,6 +5877,10 @@ function renderAIPanel() {
   $("assistantChat").replaceChildren(
     ...item.chat.map((message) => {
       // 聊天记录只存文本 + 预设/附件徽章；Flow JSON 永不进入 transcript。
+      // 等待回复中的占位消息（thinking:true）以动画指示器呈现，回复到达后被替换。
+      if (message.thinking) {
+        return rowTemplate("assistantThinkingTemplate").cloneNode(true);
+      }
       const element = rowTemplate("assistantMessageTemplate").cloneNode(true);
       element.classList.add(message.role);
       element.setAttribute(
@@ -6287,12 +6291,18 @@ async function invokeAIMerge(option, prompt, extra = {}) {
         : [];
   const replaceLast = (text) => {
     const last = item.chat[item.chat.length - 1];
-    if (last?.role === "assistant" && last.text.startsWith("Pi is reviewing")) last.text = text;
-    else item.chat.push({ role: "assistant", text });
+    if (last?.role === "assistant" && last.text.startsWith("Pi is reviewing")) {
+      last.text = text;
+      delete last.thinking;
+    } else item.chat.push({ role: "assistant", text });
     renderAIPanel();
   };
   try {
-    item.chat.push({ role: "assistant", text: "Pi is reviewing the recording evidence…" });
+    item.chat.push({
+      role: "assistant",
+      text: "Pi is reviewing the recording evidence…",
+      thinking: true,
+    });
     renderAIPanel();
     const { text: answer, intent } = await askPiForAdvice(
       item,
@@ -6340,7 +6350,8 @@ async function invokeAIMerge(option, prompt, extra = {}) {
         : `${answer}\n\n${ADVICE_INTENT_FALLBACK_HINT}`,
     );
   } catch (error) {
-    appendAIMessage(item, "assistant", `Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
+    // 占位的 thinking 消息一并被替换，避免面板停留在 Thinking 动画。
+    replaceLast(`Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
   }
 }
 

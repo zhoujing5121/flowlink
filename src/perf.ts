@@ -1,7 +1,7 @@
 /**
  * W1 计时辅助：在关键路径边界打印一行 `[perf]` 日志（Date.now() 精度即可），
  * 作为冷启动、Record 首跳与 Pi 首条消息的前后对比证据。常开、每边界一行。
- * 同时写入应用公共日志（FLOWLINK_LOG_DIR 设置后落 flowlink.log，与业务日志同文件）。
+ * 同时写入应用公共日志（启动时生成的 flowlink-<时间戳>.log，与业务日志同文件）。
  */
 import { appLog } from './app-logger.js'
 
