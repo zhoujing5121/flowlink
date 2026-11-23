@@ -3617,11 +3617,11 @@ body {
   top: 0;
 }
 
-/* 小地图（X6 MiniMap 插件）：画布右下角悬浮；空画布时由 JS 置 hidden */
+/* 小地图（X6 MiniMap 插件）：画布右下角悬浮，上移避开缩放控件；空画布时由 JS 置 hidden */
 .process-minimap {
   position: absolute;
   right: 8px;
-  bottom: 8px;
+  bottom: 72px;
   z-index: 4;
   padding: 4px;
   background: #fff;
@@ -3949,6 +3949,7 @@ body {
 .canvas-step {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-start;
   gap: 8px;
@@ -4151,7 +4152,7 @@ body {
   text-align: center;
 }
 
-/* ---------------- Process 工具栏：Flow|Swimlane 视图菜单 + Expend + 级别切换器 ---------------- */
+/* ---------------- Process 工具栏：Flow|Swimlane 视图菜单 + Expand + 级别切换器 ---------------- */
 
 .process-toolbar {
   position: absolute;
@@ -4493,8 +4494,10 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* 卡内明细行（Expend）：Flow 卡行下与泳道卡通用 */
+/* 卡内明细行（Expand）：Flow 卡行下与泳道卡通用；占满整行换行到概述下方 */
 .canvas-action-list {
+  flex-basis: 100%;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2px;

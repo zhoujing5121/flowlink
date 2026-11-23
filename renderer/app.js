@@ -1311,7 +1311,7 @@ function canvasStepNodeFromRow(row) {
       step.append(ai);
     }
   }
-  // Expend 明细行（卡内下一级）：demo 的 canvas-action-list 同款。
+  // Expand 明细行（卡内下一级）：demo 的 canvas-action-list 同款。
   if (row.details?.length) {
     const list = document.createElement("div");
     list.className = "canvas-action-list";
@@ -1396,7 +1396,7 @@ function buildFlowDecisionElement(data) {
   return root;
 }
 
-/** 泳道任务卡 DOM：heading（编号+名称+执行方式）+ Expend 明细行（模板克隆）。 */
+/** 泳道任务卡 DOM：heading（编号+名称+执行方式）+ Expand 明细行（模板克隆）。 */
 function buildLaneTaskElement(data) {
   const root = document.createElement("div");
   root.className = "flow-node-body";
@@ -1650,7 +1650,7 @@ function buildProcessEdgeCells(graph, overlay) {
 
 /* ============================================================
  * Process 双视图（add-swimlane-and-level-views）：
- * view = flow | swimlane、level = 1..最深组级、expanded = Expend 开关、
+ * view = flow | swimlane、level = 1..最深组级、expanded = Expand 开关、
  * drill = 下钻组链 —— 四者均为 UI 状态（挂 item，不落盘、不进 Flow JSON）。
  * 级别切换器 = 编号图例位置的可点击段（枚举 Flow 实际深度；扁平数据隐藏
  * L1、默认「下一级」）；双击分组卡下钻一级，面包屑返回；视图切换重置下钻。
@@ -1666,7 +1666,7 @@ function countFlowLeaves(list) {
   return n;
 }
 
-/** 步骤「说明明细」一行（Expend 卡内明细；demo 的 action 明细同款）。 */
+/** 步骤「说明明细」一行（Expand 卡内明细；demo 的 action 明细同款）。 */
 function stepDetailText(item, index) {
   const detail = item?.stepDetails?.[index];
   if (!detail) return "";
@@ -1735,7 +1735,7 @@ function resolveProcessViewState(item, flow) {
   };
 }
 
-/** 工具栏填充：视图菜单 radio 态、Expend 开关、级别切换器段、下钻面包屑。 */
+/** 工具栏填充：视图菜单 radio 态、Expand 开关、级别切换器段、下钻面包屑。 */
 function fillProcessToolbar(canvas, item, state) {
   const swim = state.view === "swimlane";
   const viewLabel = canvas.querySelector("[data-process-view-label]");
@@ -1756,9 +1756,9 @@ function fillProcessToolbar(canvas, item, state) {
   const expandBtn = canvas.querySelector("[data-process-expand]");
   if (expandBtn) {
     expandBtn.setAttribute("aria-expanded", String(state.expanded));
-    expandBtn.title = state.expanded ? "Collapse action" : "Expend action";
+    expandBtn.title = state.expanded ? "Collapse action" : "Expand action";
     const label = expandBtn.querySelector("[data-process-expand-label]");
-    if (label) label.textContent = state.expanded ? "Collapse" : "Expend";
+    if (label) label.textContent = state.expanded ? "Collapse" : "Expand";
     expandBtn
       .querySelector(".process-chevron")
       ?.classList.toggle("is-expanded", state.expanded);
@@ -2076,7 +2076,7 @@ function fillProcessPanel(panel, item) {
       "Process 流程图引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
   }
 
-  // —— 视图状态（flow|swimlane × level × Expend × 下钻链；UI 状态不落盘）——
+  // —— 视图状态（flow|swimlane × level × Expand × 下钻链；UI 状态不落盘）——
   const viewState = resolveProcessViewState(item, flow);
   fillProcessToolbar(canvas, item, viewState);
 
@@ -2212,8 +2212,8 @@ function fillProcessPanel(panel, item) {
       const branchEntries = view.branchEntries || [];
       // 行区间：卡范围 [firstIndex, lastIndex)（扁平叶下标）映射到直接子项
       //（子项叶跨度与卡范围相交即入选——切分卡只出覆盖段；嵌套子组行显示
-      // 子组编号/标签）。步骤卡（下钻视图）不重复出行，Expend 时出一行
-      // 说明明细；组行在 Expend 时行下展开下一级明细行。
+      // 子组编号/标签）。步骤卡（下钻视图）不重复出行，Expand 时出一行
+      // 说明明细；组行在 Expand 时行下展开下一级明细行。
       const childRows = [];
       if (node.type === "step") {
         if (viewState.expanded) {
@@ -7011,23 +7011,44 @@ function renderAIPanel() {
   $("assistantInput").placeholder = "Ask anything...";
   $("assistantInput").value = item.chatDraft;
   $("assistantInput").disabled = false;
-  // Test 运行中 composer 发送键兼作 Stop（Run/Stop 工具栏已移除，对齐原型）。
+  // Test 运行中 composer 发送键兼作 Stop test；AI 请求进行中兼作 Stop generation
+  // （点击中止当前 Pi 请求）。两者共用 demo 同款静态圆+方块图标。
   const testRunning = testTab && !!recording?.testRunning;
+  const aiBusy = !testRunning && !!ensureAssistantData(item).busy;
   const sendButton = $("assistantSend");
-  sendButton.disabled = testRunning ? false : !item.chatDraft.trim();
+  sendButton.disabled = testRunning || aiBusy
+    ? false
+    : !item.chatDraft.trim();
   sendButton.onclick = testRunning
     ? () => {
         if (recording && window.stopFlowlinkTest)
           window.stopFlowlinkTest(recording);
       }
-    : submitAssistantMessage;
-  sendButton.setAttribute("aria-label", testRunning ? "Stop" : "发送");
-  sendButton.title = testRunning ? "Stop" : "发送";
-  setIconHidden(sendButton.querySelector("[data-send-icon]"), testRunning);
-  setIconHidden(sendButton.querySelector("[data-stop-icon]"), !testRunning);
+    : aiBusy
+      ? () => {
+          // 中止当前 Pi 请求：挂起 promise 以 cancelled 拒绝，
+          // invokeAIMerge 各 catch 按“已停止”呈现。
+          window.flowlink?.pi?.stop?.().catch(() => {});
+        }
+      : submitAssistantMessage;
+  const sendLabel = testRunning
+    ? "Stop"
+    : aiBusy
+      ? "Stop generation"
+      : "发送";
+  sendButton.setAttribute("aria-label", sendLabel);
+  sendButton.title = sendLabel;
+  setIconHidden(
+    sendButton.querySelector("[data-send-icon]"),
+    testRunning || aiBusy,
+  );
+  setIconHidden(
+    sendButton.querySelector("[data-stop-icon]"),
+    !(testRunning || aiBusy),
+  );
   $("assistantInput").oninput = (e) => {
     setAssistantDraft(item, e.target.value);
-    if (!testRunning) $("assistantSend").disabled = !item.chatDraft.trim();
+    if (!testRunning) $("assistantSend").disabled = aiBusy || !item.chatDraft.trim();
     updateMentionPicker(e.target);
   };
   $("assistantInput").onkeydown = (e) => {
@@ -7108,14 +7129,26 @@ async function aiMaterialContext(items) {
  * 调用方按 advice 呈现并追加兜底提示句。 */
 function parseAdviceIntent(rawText) {
   const lines = String(rawText || "").split(/\r?\n/);
+  // 兼容模型加 markdown 修饰/冒号/引号/句号的写法（**INTENT=refine**、INTENT: "advice".）
+  const INTENT_LINE = /^[\s>*_#~-]*INTENT\s*[:=]\s*["'`]*(refine|advice)["'`]*[\s.*]*$/i;
   for (let i = lines.length - 1; i >= 0; i--) {
-    const match = lines[i].trim().match(/^INTENT=(refine|advice)\s*$/i);
+    const match = lines[i].trim().match(INTENT_LINE);
     if (match) {
       lines.splice(i, 1);
       return { text: lines.join("\n").trim(), intent: match[1].toLowerCase() };
     }
   }
   return { text: String(rawText || "").trim(), intent: null };
+}
+
+/** AI 面板聊天诊断日志：经 ai:logChat IPC 写入应用日志（ai-chat 模块）。
+ * 只为诊断意图判定/生成链路，失败静默不影响聊天本身。 */
+function logAiChat(payload) {
+  try {
+    window.flowlink?.pi?.logChat?.(payload);
+  } catch {
+    /* 日志链路异常不干扰聊天 */
+  }
 }
 
 function appendAIMessage(item, role, text, extra = {}) {
@@ -7166,6 +7199,8 @@ async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext
     executionContext: Object.keys(extraContext).length ? `Execution context JSON:\n${JSON.stringify(extraContext).slice(0, 25000)}` : "",
   }).trim();
   const result = await bridge.prompt({ prompt, timeoutMs: 120000 });
+  // 诊断日志：advice 原始回复（含 INTENT 标注行，展示/存储前留存证据）。
+  logAiChat({ kind: "advice-raw", chars: result.text?.length || 0, raw: String(result.text || "").slice(0, 6000) });
   return parseAdviceIntent(result.text);
 }
 
@@ -7268,7 +7303,30 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   return refined;
 }
 
+/** Pi 请求被用户主动停止（pi:stop 的拒绝消息）判定：各 catch 据此呈现“已停止”。 */
+function isAiCancelError(error) {
+  return String(error instanceof Error ? error.message : error).includes(
+    "cancelled by user",
+  );
+}
+
+// 会话级忙碌标记：整个 AI 请求（advice + 后续生成）期间为真，
+// composer 发送键切换为旋转忙碌指示并禁用；finally 兜底清理，任何失败路径都能复位。
 async function invokeAIMerge(option, prompt, extra = {}) {
+  const item = currentAssistantContext();
+  const conversation = ensureAssistantData(item);
+  // 同一会话请求进行中：忽略新的触发（发送键已禁用，这里是快捷按钮/Enter 的兜底）。
+  if (conversation.busy) return;
+  conversation.busy = true;
+  try {
+    await invokeAIMergeRequest(option, prompt, extra);
+  } finally {
+    conversation.busy = false;
+    renderAIPanel();
+  }
+}
+
+async function invokeAIMergeRequest(option, prompt, extra = {}) {
   const state = recordingSession(),
     recording = currentAssistantItem(),
     item = currentAssistantContext();
@@ -7300,6 +7358,12 @@ async function invokeAIMerge(option, prompt, extra = {}) {
   });
   setAssistantDraft(item, "");
   renderAIPanel();
+  logAiChat({
+    kind: "user",
+    mode: extra.forceMaterial ? "refine-form" : "chat",
+    text: userText.slice(0, 1000),
+    attachments: attachmentItems.map((entry) => entry.name),
+  });
 
   // Refine 按钮/表单路径：必定生成，不经意图判定；来源 = 打开菜单时的勾选快照，
   // 快照缺失时回退 @ 附件 > 当前打开。
@@ -7316,15 +7380,26 @@ async function invokeAIMerge(option, prompt, extra = {}) {
     try {
       item.chat.push({ role: "assistant", text: "Pi is preparing a separate refined material. The original recording will not be overwritten…" });
       renderAIPanel();
+      logAiChat({ kind: "generate-start", via: "refine-form", sources: refineSources.length });
       await generateRefinedMaterial(refineSources, userText, recording || item);
+      logAiChat({ kind: "generate-ok", via: "refine-form" });
     } catch (error) {
-      // 完整错误文本（含阶段+原因）随 errorDetail 透出，面板可折叠查看。
+      // 完整错误文本（含阶段+原因）随 errorDetail 透出，面板可折叠查看；
+      // 用户主动停止只呈现“已停止”，不带错误详情。
       const full = error instanceof Error ? error.message : String(error);
+      logAiChat({
+        kind: "generate-error",
+        via: "refine-form",
+        cancel: isAiCancelError(error),
+        error: full.slice(0, 2000),
+      });
       appendAIMessage(
         item,
         "assistant",
-        "Could not create refined material — 展开查看完整错误详情。",
-        { errorDetail: full },
+        isAiCancelError(error)
+          ? "已停止生成。"
+          : "Could not create refined material — 展开查看完整错误详情。",
+        ...(isAiCancelError(error) ? [] : [{ errorDetail: full }]),
       );
     }
     return;
@@ -7361,6 +7436,7 @@ async function invokeAIMerge(option, prompt, extra = {}) {
       state.aiTaskMode || (recording?.resultTab === "Test" ? "replay-failure" : "material-refinement"),
       state.aiFailureContext || {},
     );
+    logAiChat({ kind: "advice-verdict", intent: intent || "(none)" });
     if (intent === "refine") {
       // 生成来源匹配：@ 引用 > 当前打开；两者皆无 → AI 列出候选录制名请用户 @ 回复。
       const refineTargets = attachmentItems.length
@@ -7381,14 +7457,24 @@ async function invokeAIMerge(option, prompt, extra = {}) {
       }
       replaceLast(`${answer}\n\n正在按上述意见生成新版本…`);
       try {
+        logAiChat({ kind: "generate-start", via: "chat-intent", sources: refineTargets.length });
         await generateRefinedMaterial(refineTargets, userText, recording || item);
+        logAiChat({ kind: "generate-ok", via: "chat-intent" });
       } catch (error) {
         const full = error instanceof Error ? error.message : String(error);
+        logAiChat({
+          kind: "generate-error",
+          via: "chat-intent",
+          cancel: isAiCancelError(error),
+          error: full.slice(0, 2000),
+        });
         appendAIMessage(
           item,
           "assistant",
-          "Could not create refined material — 展开查看完整错误详情。",
-          { errorDetail: full },
+          isAiCancelError(error)
+            ? "已停止生成。"
+            : "Could not create refined material — 展开查看完整错误详情。",
+          ...(isAiCancelError(error) ? [] : [{ errorDetail: full }]),
         );
       }
       return;
@@ -7400,8 +7486,11 @@ async function invokeAIMerge(option, prompt, extra = {}) {
         : `${answer}\n\n${ADVICE_INTENT_FALLBACK_HINT}`,
     );
   } catch (error) {
-    // 占位的 thinking 消息一并被替换，避免面板停留在 Thinking 动画。
-    replaceLast(`Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
+    // 占位的 thinking 消息一并被替换，避免面板停留在 Thinking 动画；
+    // 用户主动停止只呈现“已停止”。
+    replaceLast(isAiCancelError(error)
+      ? "已停止生成。"
+      : `Pi could not respond: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`);
   }
 }
 
@@ -7451,7 +7540,9 @@ async function startAIAdvice({ mode, items, reason, failureContext } = {}) {
     else item.chat.push({ role: "assistant", text: answer });
   } catch (error) {
     const last = item.chat[item.chat.length - 1];
-    const message = `Pi could not analyze this material: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`;
+    const message = isAiCancelError(error)
+      ? "已停止生成。"
+      : `Pi could not analyze this material: ${error instanceof Error ? error.message : String(error)}. Check Pi model/provider configuration and try again.`;
     if (last?.role === "assistant" && last.text.startsWith("Pi is analyzing")) last.text = message;
     else item.chat.push({ role: "assistant", text: message });
   }
@@ -7524,7 +7615,8 @@ function requestedStep(text) {
 
 function submitAssistantMessage() {
   const item = currentAssistantContext();
-  ensureAssistantData(item);
+  // 请求进行中不允许再发（Enter 可绕过禁用的发送键，这里兜底）。
+  if (ensureAssistantData(item).busy) return;
   const message = $("assistantInput").value.trim();
   if (!message) return;
   const state = recordingSession();
@@ -9333,10 +9425,11 @@ function bindProcessMap() {
     cx = canvas.clientWidth / 2,
     cy = canvas.clientHeight / 2,
   ) => {
-    // X6 zoom 以给定中心点保点缩放（内部公式与旧手写实现一致）。
-    x6graph.zoom(factor, {
-      minScale: 0.2,
-      maxScale: 2,
+    // X6 的 zoom(factor) 不带 absolute 时是「加法」（scale += factor），旧实现的
+    // 乘法语义必须显式换算成绝对目标值再传入，否则放大/缩小都会变大。
+    const target = Math.min(2, Math.max(0.2, x6graph.zoom() * factor));
+    x6graph.zoom(target, {
+      absolute: true,
       center: { x: cx, y: cy },
     });
   };
@@ -9345,7 +9438,7 @@ function bindProcessMap() {
   canvas.onclick = (e) => {
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
     if (!e.target.closest("#canvasGroupMenu")) hideGroupMenu();
-    // —— Process 工具栏：视图菜单 / Expend / 级别切换 / 下钻面包屑 ——
+    // —— Process 工具栏：视图菜单 / Expand / 级别切换 / 下钻面包屑 ——
     const menuButton = e.target.closest("[data-process-menu]");
     if (menuButton) {
       const menu = canvas.querySelector(".process-view-menu");

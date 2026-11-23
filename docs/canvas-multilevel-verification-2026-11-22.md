@@ -1,5 +1,16 @@
 # 画布重构三 Change 统一真机验证清单（2026-11-22）
 
+> **2026-11-23 修复记录（首轮验证反馈，主会话直接修复）**：
+> 1. **缩放只能放大不能缩小** — 根因：X6 的 `zoom(factor)` 默认是加法语义（scale += factor），A 迁移时按旧手写乘法语义调用导致两个方向都放大。已改为显式换算绝对目标值（app.js `scale()`）。
+> 2. **Expand 明细显示在右侧** — 根因：`.canvas-step` 是横向 flex，明细列表作为子项被排在同行。已加 `flex-wrap` + 明细 `flex-basis:100%` 换行到概述下方（app.css）。
+> 3. **minimap 覆盖缩放组件** — 已将 minimap 从 bottom:8 上移到 bottom:72 避开控件（保留未移除，大画布有用；如仍嫌碍眼可再议去除）。
+> 4. **Refine 不产出三级** — 非崩溃性 bug：refine 模板按在飞方法论「最小变更、指令未要求重分组时保留现有结构」运行，且 L2 判定措辞保守（「仅在明显跨屏时才加」）。已收紧两个模板的 L2 判定为「通常三级」默认（L1 组 >4 步或跨屏即拆 L2，每组约 2–5 步；仅很短的组直接放步骤）。**验证三级的路径**：对原始录制（未 REFINED）重新跑生成，或在 Refine 指令中明确要求「按业务阶段重新分组并在阶段内拆技术组」。
+> 5. 编号图例「01-01_Task 一直不变」— 该位置是级别切换器，段数=Flow 实际深度；当前数据只有「组+步骤」两级，故只有一段（悬停有「扁平数据」提示）。出现 L2 嵌套后会多出 01-01-01_Action 段。
+> **2026-11-23 第二轮修复（聊天意图 + 聊天诊断日志）**：
+> 6. **「重构这个工作流」被判 advice 不触发生成** — 日志证实该消息只走了 advice（text 模式），未触发 pi:generateFlow。两处修正：① advice 模板开场句「Do not generate … unless explicitly asked in a later request」与 INTENT=refine 机制自相矛盾（按字面读，当前消息永远不会触发生成），已改为「用户明确要求改动/重构/重新分组/生成新版本时，简短确认并标 INTENT=refine」，并给出中文示例词；② INTENT 行解析加固（兼容 `**INTENT=refine**`、`INTENT: "advice".` 等模型修饰写法）。
+> 7. **新增聊天诊断日志**：AI 面板全链路打点写入应用日志 `[ai-chat]` 模块（`userData/flowlink/flowlink/logs/flowlink-*.log`）——用户消息（chat/refine-form 两路）、advice 原始回复（**含 INTENT 标注行原文**，展示剥离前留证）、解析出的意图判定、生成开始/成功/失败（含错误详情截断）。下次意图不识别直接查该日志即可定位是「模型判错」还是「解析失败」。
+> 修复后验证：build ✓ tsc ✓ test 86-0 ✓。请重试「重构这个工作流」；若仍不触发，把当天日志发我。
+
 三个 OpenSpec change（A `refactor-process-canvas-x6`、B `add-multilevel-grouping`、C `add-swimlane-and-level-views`）已全部实现并通过主会话独立核查：`npm run build` ✓、`npx tsc --noEmit` ✓、`npm test` 86 过/0 败/1 跳过（1 跳过为 refine 套件既知）、`openspec validate` 三个 change 全部 valid。改动未提交（工作区 17 文件 +3298/-633 与 2 个新测试文件）。
 
 启动应用：`npm run dev`（或 `npm start`）。建议准备三类数据：①纯录制旧 Flow ②多源 AI 合并 Flow ③跨多业务阶段录制（用于 refine 生成多级）。
@@ -23,13 +34,13 @@
 
 ## 三、Change C：级别切换与泳道（任务 3.3）
 
-- [ ] **C1 工具栏**：Flow | Swimlane 视图菜单（radio）；Expend/Collapse 开关展开卡内明细；切换视图后缩放/fit 与开关状态保持；状态不落盘（重开任务后回默认）
+- [ ] **C1 工具栏**：Flow | Swimlane 视图菜单（radio）；Expand/Collapse 开关展开卡内明细；切换视图后缩放/fit 与开关状态保持；状态不落盘（重开任务后回默认）
 - [ ] **C2 级别切换器**：编号图例位置可点击，枚举 Flow 实际深度（嵌套数据出 01_Activity/01-01_Task/01-01-01_Action 段，扁平数据只出 01-01_Task）；切换后节点粒度与边聚合正确（L1/L2 视图边 = 下级聚合，保留实线/条件/回跳样式）
 - [ ] **C3 下钻/返回**：双击分组节点进入下一级 + 面包屑返回
 - [ ] **C4 扁平数据退化**：旧 Flow 默认 L2 视图（与现状等价）、级别切换器无 L1 段
 - [ ] **C5 泳道布局**：列 = targetSystem（出现序 + 「未标注」兜底列，缺标签不报错不隐藏）、行 = L1 阶段带；条件分支兄弟 L1 组合并为一条带（如 03–05）+ 分支标题；任务卡（L2 组卡/扁平步骤卡）落入对应系统列；执行顺序箭头、Start/End 端点
 - [ ] **C6 回放 overlay**：L1 视图任一子孙失败→L1 节点红、全跳过→灰；Swimlane 视图任务卡高亮、未走分支连线变暗
-- [ ] **C7 组合走查**：多级 Flow 上视图切换 × 级别切换 × 下钻 × Expend 组合操作，无状态错乱
+- [ ] **C7 组合走查**：多级 Flow 上视图切换 × 级别切换 × 下钻 × Expand 组合操作，无状态错乱
 
 ## 验证完成后
 

@@ -2165,6 +2165,8 @@ function registerIpc(): void {
 	/* ---------- Pi Coding Agent: AI bedrock ---------- */
 	ipcMain.handle('pi:status', async () => piStatus())
 	ipcMain.handle('pi:prewarm', () => prewarmPi())
+	/** 用户主动停止：拒绝所有挂起的 Pi 请求并终止 worker，下次请求自动重建。 */
+	ipcMain.handle('pi:stop', () => disposePiWorker('Pi request cancelled by user'))
 	ipcMain.handle('pi:prompt', async (_event, opts: { prompt: string; timeoutMs?: number }) => {
 		if (!opts || typeof opts.prompt !== 'string') throw new Error('Pi request is invalid')
 		// Keep the agent's workspace inside FlowLink's own workflow/artifact directory.
@@ -2176,6 +2178,16 @@ function registerIpc(): void {
 	})
 	/** 提示词模板下发：渲染层 AI 面板组装建议请求时使用（config/prompts.json）。 */
 	ipcMain.handle('pi:promptTemplates', () => getPromptTemplates())
+	/** AI 面板聊天诊断日志：渲染层送来的结构化事件（用户消息/advice 原文与意图判定/
+	 * 生成开始与结果）写入应用日志 ai-chat 模块；序列化失败不影响聊天。 */
+	ipcMain.handle('ai:logChat', (_event, payload: unknown) => {
+		try {
+			appLog('info', 'ai-chat', JSON.stringify(payload))
+		} catch {
+			/* 非可序列化负载只记类型 */
+			appLog('info', 'ai-chat', String((payload as { kind?: unknown })?.kind ?? 'unserializable'))
+		}
+	})
 
 	/* ---------- Flow 读取（分析页用） ---------- */
 	ipcMain.handle('flow:load', async (_e, flowFile: string) => {

@@ -6,7 +6,7 @@
 
 The Process tab SHALL lay the flow out as a directed graph whose nodes and edges follow execution semantics, with no serial-list fallback, and SHALL render nested group levels as hierarchical nodes.
 
-画布由 vendored 图引擎依赖承载（经 `dist/renderer-vendor.js` 全局变量进入，先于 app.js 加载；缺失时显示明确错误而非空白画布）。Process 工具栏提供 Flow | Swimlane 视图菜单（radio 语义）与 Expend/Collapse 动作详情开关（卡内展开下一级明细行）；两视图共享缩放/fit 控件，视图选择为 UI 状态不落盘。节点层级：L1 业务级分组、L2 技术级分组（现有 group）、L3 步骤详情；嵌套分组以层级节点呈现（内层组卡位于其外层组内）；未分组步骤仍以伪组呈现。既有交互保留：分支徽章、条件样式、点击选中、步骤右键、分组菜单（`getBoundingClientRect` 定位）；实线顺序边、标注是/否的条件边、虚线回跳边；组尾条件步骤抽出为菱形判定节点；卡片尺寸布局前实测、世界尺寸驱动 pan/zoom `fit()`。
+画布由 vendored 图引擎依赖承载（经 `dist/renderer-vendor.js` 全局变量进入，先于 app.js 加载；缺失时显示明确错误而非空白画布）。Process 工具栏提供 Flow | Swimlane 视图菜单（radio 语义）与 Expand/Collapse 动作详情开关（卡内展开下一级明细行）；两视图共享缩放/fit 控件，视图选择为 UI 状态不落盘。节点层级：L1 业务级分组、L2 技术级分组（现有 group）、L3 步骤详情；嵌套分组以层级节点呈现（内层组卡位于其外层组内）；未分组步骤仍以伪组呈现。既有交互保留：分支徽章、条件样式、点击选中、步骤右键、分组菜单（`getBoundingClientRect` 定位）；实线顺序边、标注是/否的条件边、虚线回跳边；组尾条件步骤抽出为菱形判定节点；卡片尺寸布局前实测、世界尺寸驱动 pan/zoom `fit()`。
 
 #### Scenario: vendor 缺失
 - **WHEN** dist/renderer-vendor.js 加载失败
@@ -18,7 +18,7 @@ The Process tab SHALL lay the flow out as a directed graph whose nodes and edges
 
 #### Scenario: 视图切换
 - **WHEN** 用户在工具栏从 Flow 切换到 Swimlane
-- **THEN** 画布切换为泳道布局，缩放/fit 与 Expend 开关状态保持
+- **THEN** 画布切换为泳道布局，缩放/fit 与 Expand 开关状态保持
 
 ### Requirement: Replay state SHALL overlay the graph live while blocking edits
 
@@ -62,7 +62,7 @@ The Process tab SHALL provide a level switcher enumerating the group depths pres
 
 The Swimlane view SHALL place task nodes on a matrix whose columns are target systems and whose rows are L1 business phases, connected by execution-order edges.
 
-列 = Flow 内 targetSystem 去重值（按出现序）加「未标注」兜底列，列头常显；行 = L1 业务阶段（左侧阶段带显示编号与名称）；条件分支的兄弟 L1 组合并为一条阶段带并标注分支标题；节点 = 下一级任务卡（嵌套数据为 L2 组卡、扁平数据为步骤卡），按其有效 targetSystem 落入对应列；箭头按执行顺序连接任务卡，Start/End 端点常显；Expend/Collapse 开关展开卡内明细。缺标签节点归入「未标注」列，不报错不隐藏。
+列 = Flow 内 targetSystem 去重值（按出现序）加「未标注」兜底列，列头常显；行 = L1 业务阶段（左侧阶段带显示编号与名称）；条件分支的兄弟 L1 组合并为一条阶段带并标注分支标题；节点 = 下一级任务卡（嵌套数据为 L2 组卡、扁平数据为步骤卡），按其有效 targetSystem 落入对应列；箭头按执行顺序连接任务卡，Start/End 端点常显；Expand/Collapse 开关展开卡内明细。缺标签节点归入「未标注」列，不报错不隐藏。
 
 #### Scenario: 泳道落位
 - **WHEN** 某流程的 L2 组分别标注了不同 targetSystem 且切换到 Swimlane 视图

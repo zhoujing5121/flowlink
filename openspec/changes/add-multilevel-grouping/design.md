@@ -14,7 +14,7 @@
 
 **Non-Goals:**
 
-- 级别切换器/泳道视图/Expend 工具栏（`add-swimlane-and-level-views`）。
+- 级别切换器/泳道视图/Expand 工具栏（`add-swimlane-and-level-views`）。
 - userRole（纵向 role 维度将来需要时另立 change，additive）。
 - 全局系统目录、标签一致性治理。
 - schemaVersion 升级与迁移（additive optional，旧数据天然合法）。

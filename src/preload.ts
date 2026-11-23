@@ -73,7 +73,11 @@ const api = {
 		status: () => ipcRenderer.invoke('pi:status'),
 		/** 空闲预热 Pi worker（SDK 导入 + 运行时缓存），不发起 provider 请求 */
 		prewarm: () => ipcRenderer.invoke('pi:prewarm'),
+		/** 停止当前进行中的 Pi 请求：挂起请求全部以 cancelled 拒绝，worker 下次请求时重建 */
+		stop: () => ipcRenderer.invoke('pi:stop'),
 		prompt: (opts: { prompt: string; timeoutMs?: number }) => ipcRenderer.invoke('pi:prompt', opts),
+		/** AI 面板聊天诊断日志：结构化事件写入应用日志（ai-chat 模块），不回传数据 */
+		logChat: (payload: { kind: string; [key: string]: unknown }) => ipcRenderer.invoke('ai:logChat', payload),
 		/** 提示词模板（config/prompts.json），渲染层 AI 面板组装建议请求用 */
 		promptTemplates: () => ipcRenderer.invoke('pi:promptTemplates'),
 		/** 从已保存录制生成细化的新 Flow：主进程负责投影、提示词、校验；返回已校验的提案（不落盘） */

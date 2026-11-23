@@ -436,10 +436,10 @@ export async function prewarmPi(): Promise<void> {
   }
 }
 
-export function disposePiWorker(): void {
+export function disposePiWorker(reason = "Pi worker stopped because FlowLink is closing"): void {
   const worker = piWorker;
   if (!worker) return;
-  rejectPiWorkerRequests(worker, new Error("Pi worker stopped because FlowLink is closing"));
+  rejectPiWorkerRequests(worker, new Error(reason));
   void worker.terminate();
 }
 

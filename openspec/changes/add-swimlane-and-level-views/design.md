@@ -2,13 +2,13 @@
 
 ## Context
 
-前置：`refactor-process-canvas-x6` 提供 X6 渲染基座（HTML 节点、容器、边 vertices、pan/zoom/fit）；`add-multilevel-grouping` 提供嵌套分组、`targetSystem` 标签、层级编号。目标交互以 `ui_prototype/FlowLink.11.20.html` 为准（泳道列=系统、行=阶段、任务卡+Expend、Flow/Swimlane 菜单、编号图例）。demo 的 lane 分配是硬编码示例，真实数据由 targetSystem 标签与祖先继承推导。
+前置：`refactor-process-canvas-x6` 提供 X6 渲染基座（HTML 节点、容器、边 vertices、pan/zoom/fit）；`add-multilevel-grouping` 提供嵌套分组、`targetSystem` 标签、层级编号。目标交互以 `ui_prototype/FlowLink.11.20.html` 为准（泳道列=系统、行=阶段、任务卡+Expand、Flow/Swimlane 菜单、编号图例）。demo 的 lane 分配是硬编码示例，真实数据由 targetSystem 标签与祖先继承推导。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Flow | Swimlane 双视图 + 级别切换 + Expend 开关，交互形态对齐 demo。
+- Flow | Swimlane 双视图 + 级别切换 + Expand 开关，交互形态对齐 demo。
 - 泳道与级别视图均为纯视图状态（不落盘、不改数据）。
 - 回放 overlay 在两视图、各级别下实时正确。
 
@@ -22,7 +22,7 @@
 
 ### D1 视图与级别状态机
 
-- Process 面板状态：`view: 'flow' | 'swimlane'`、`level: 1..maxDepth`（flow 视图有效）、`expanded: boolean`（Expend）。三者正交；存于 item 的 UI 状态（与 demo `item.processView` 同位），不进 Flow JSON。
+- Process 面板状态：`view: 'flow' | 'swimlane'`、`level: 1..maxDepth`（flow 视图有效）、`expanded: boolean`（Expand）。三者正交；存于 item 的 UI 状态（与 demo `item.processView` 同位），不进 Flow JSON。
 - 级别切换器 = 编号图例位置的可点击段（`01_Activity / 01-01_Task / 01-01-01_Action`），枚举实际深度；>3 级自然延伸第四段。
 
 ### D2 级别视图与边聚合
@@ -37,9 +37,9 @@
 - 坐标自算网格（不走 dagre）：列宽按列头文本与卡内容实测、行高按带内最大卡高；demo 的绝对定位算法可参考复刻。
 - X6 呈现：列头/阶段带 = 画布背景层或 HTML 覆层；任务卡 = HTML 节点；连线 = 顺序边（分支边带标签）。
 
-### D4 Expend/Collapse 与两视图
+### D4 Expand/Collapse 与两视图
 
-- 开关展开「卡片主体的下一级明细行」：L1 卡展开 L2 行、L2 卡展开步骤行、扁平步骤卡展开说明明细（demo 的 action 明细同款）；与级别切换正交（Expend 是卡内行，级别切换是节点粒度）。
+- 开关展开「卡片主体的下一级明细行」：L1 卡展开 L2 行、L2 卡展开步骤行、扁平步骤卡展开说明明细（demo 的 action 明细同款）；与级别切换正交（Expand 是卡内行，级别切换是节点粒度）。
 
 ### D5 overlay 适配
 
@@ -50,7 +50,7 @@
 - [级别切换 + 下钻 + 泳道的状态组合爆炸] → 状态机只有三个正交布尔/枚举；视图切换重置下钻焦点。
 - [边聚合后平行边/回跳判定语义模糊] → 聚合规则在 design 层固定（提升到最近祖先 + 平行边合并），永久 node:test 覆盖纯数据推导（buildGraph(level) 与 buildSwimlane 均为纯函数）。
 - [泳道未标注/单列流程观感差] → 未标注列兜底不隐藏；全无标签时泳道退化为单列纵向流（仍可用）。
-- [demo 与真实数据粒度差异（demo 三层实为两级+明细）] → 粒度映射已定（行=顶层组、节点=次级单元、Expend=明细），实现以真实嵌套数据为准。
+- [demo 与真实数据粒度差异（demo 三层实为两级+明细）] → 粒度映射已定（行=顶层组、节点=次级单元、Expand=明细），实现以真实嵌套数据为准。
 
 ## Migration Plan
 

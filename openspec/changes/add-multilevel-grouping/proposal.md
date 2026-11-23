@@ -44,7 +44,7 @@
 
 ## Out of Scope
 
-- 级别切换器、泳道双视图、Expend/Collapse 工具栏（`add-swimlane-and-level-views`）。
+- 级别切换器、泳道双视图、Expand/Collapse 工具栏（`add-swimlane-and-level-views`）。
 - userRole 字段与角色维度（纵向 role 泳道将来需要时另立 change）。
 - 全局系统目录（catalog）管理与跨 Flow 一致性治理。
 - schemaVersion 升级与数据迁移。
