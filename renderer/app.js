@@ -1703,8 +1703,10 @@ function resolveProcessViewState(item, flow) {
                   : `Level ${i + 1}`,
         }));
   const maxLevel = Math.max(1, depth);
+  // 默认级别 = L1 业务总览（嵌套数据先看 Activity 粒度，符合分级查看初衷）；
+  // 扁平数据 maxLevel=1，默认即步骤明细，与旧行为一致。
   const level = Math.min(
-    Math.max(Number.isFinite(item?.processLevel) ? item.processLevel : maxLevel, 1),
+    Math.max(Number.isFinite(item?.processLevel) ? item.processLevel : 1, 1),
     maxLevel,
   );
   let drill =
@@ -1774,6 +1776,8 @@ function fillProcessToolbar(canvas, item, state) {
         button.dataset.processLevel = String(segment.level);
         button.textContent = `${segment.code}_${segment.name}`;
         if (segment.flat) button.title = "扁平数据：当前即为步骤级明细视图";
+        else
+          button.title = `切换显示粒度：以 ${segment.code}_${segment.name} 层级为卡片主体（层级切换，非组序号）`;
         if (
           !swim &&
           !state.drill.length &&
@@ -2113,6 +2117,18 @@ function fillProcessPanel(panel, item) {
           })),
         }
       : null;
+  // 下钻视图的全局对位：drill 图的扁平下标/flattenedStepId 是子树相对值，
+  // 先在重打标注前捕获「步骤对象 → 全局前缀 id」映射与钻入组的全局起始叶
+  // 下标（start 修正后与 buildGraph 扁平序对齐），供明细/状态/行选择换算。
+  const globalFlatIdByStep = new Map();
+  if (flow && Array.isArray(flow.steps)) {
+    for (const entry of FlowGraph.flattenFlowSteps(flow.steps).entries)
+      globalFlatIdByStep.set(entry.step, entry.flattenedStepId);
+  }
+  const drillStart = viewState.drillTarget
+    ? (groups.byId?.get(viewState.drillTarget.id)?.start ?? 0)
+    : 0;
+  const drillBase = viewState.drillTarget ? drillStart : 0;
   let graph = null;
   if (viewState.view === "swimlane") {
     graph = null;
@@ -2129,6 +2145,17 @@ function fillProcessPanel(panel, item) {
           ? { level: viewState.level }
           : undefined,
       );
+    }
+  }
+  if (viewState.drillTarget && graph) {
+    // 子树相对扁平 id 重打为全局 id（entry 与步骤对象同步修复），
+    // 下游回放状态聚合/行结果/行选择的查找全部回到全局体系。
+    for (const entry of graph.entries) {
+      const globalId = globalFlatIdByStep.get(entry.step);
+      if (globalId) {
+        entry.flattenedStepId = globalId;
+        entry.step.flattenedStepId = globalId;
+      }
     }
   }
 
@@ -2217,7 +2244,7 @@ function fillProcessPanel(panel, item) {
       const childRows = [];
       if (node.type === "step") {
         if (viewState.expanded) {
-          const detailText = stepDetailText(item, node.firstIndex);
+          const detailText = stepDetailText(item, node.firstIndex + drillBase);
           if (detailText)
             childRows.push({
               child: node.step,
@@ -2227,7 +2254,9 @@ function fillProcessPanel(panel, item) {
             });
         }
       } else {
-        let leaf = view.start || 0;
+        // 下钻视图的 node 区间是子树相对下标：全局 view.start 折算回子树
+        // 原点再比（row.index/明细在 rows 映射里已 +drillBase 还原全局）。
+        let leaf = (view.start || 0) - drillBase;
         const flowSteps = view.flowSteps || [];
         for (let i = 0; i < flowSteps.length; i++) {
           const child = flowSteps[i];
@@ -2288,12 +2317,12 @@ function fillProcessPanel(panel, item) {
                   }));
                 if (lines.length) details = lines;
               } else {
-                const line = stepDetailText(item, childFirst);
+                const line = stepDetailText(item, childFirst + drillBase);
                 if (line) details = [{ code: "", text: line }];
               }
             }
             return {
-              index: childFirst,
+              index: childFirst + drillBase,
               code:
                 code ??
                 ((child && viewState.numbering?.get(child.id)) ||
@@ -7829,27 +7858,22 @@ function ensureProcessGroups(item) {
     const numbering = FlowGraph.numberingOf(item.processFlow);
     const byId = new Map();
     const topLevelGroups = item.processFlow.steps.filter((s) => s.kind === "group");
-    const countLeaves = (list) => {
-      let n = 0;
-      for (const step of list || []) {
-        if (step?.kind === "group") n += countLeaves(step.steps);
-        else n += 1;
-      }
-      return n;
-    };
     let leafCursor = 0;
     // 递归建组视图：start/count 对齐扁平叶序（Process 卡行区间/Instruction
     // 树渲染共用）；byId 覆盖全部层级（嵌套组卡查找），groups 挂子组视图。
+    // cursor 推进规则：子组递归自推、直接叶步骤 +1——组级不得再整体累加，
+    // 否则纯嵌套结构下后续顶层组的 start 会虚增「前面所有组的叶总数」，
+    // 与 buildGraph 的扁平下标错位（g3/g4 卡行全落空的根因）。
     const buildView = (group, index, containerId) => {
       const flowSteps = group.steps || [];
-      const leafCount = countLeaves(flowSteps);
+      const start = leafCursor;
       const view = {
         id: group.id,
         name: group.label,
         label: group.label,
         index,
-        start: leafCursor,
-        count: leafCount,
+        start,
+        count: 0,
         number: numbering.get(group.id) || String(index + 1).padStart(2, "0"),
         numbering,
         containerId: containerId || null,
@@ -7867,8 +7891,9 @@ function ensureProcessGroups(item) {
       let childIndex = 0;
       for (const step of flowSteps) {
         if (step?.kind === "group") view.groups.push(buildView(step, childIndex++, group.id));
+        else leafCursor += 1;
       }
-      leafCursor += leafCount;
+      view.count = leafCursor - start;
       return view;
     };
     const views = topLevelGroups.map((group, index) => buildView(group, index, null));

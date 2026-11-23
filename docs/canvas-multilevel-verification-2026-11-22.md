@@ -6,10 +6,22 @@
 > 3. **minimap 覆盖缩放组件** — 已将 minimap 从 bottom:8 上移到 bottom:72 避开控件（保留未移除，大画布有用；如仍嫌碍眼可再议去除）。
 > 4. **Refine 不产出三级** — 非崩溃性 bug：refine 模板按在飞方法论「最小变更、指令未要求重分组时保留现有结构」运行，且 L2 判定措辞保守（「仅在明显跨屏时才加」）。已收紧两个模板的 L2 判定为「通常三级」默认（L1 组 >4 步或跨屏即拆 L2，每组约 2–5 步；仅很短的组直接放步骤）。**验证三级的路径**：对原始录制（未 REFINED）重新跑生成，或在 Refine 指令中明确要求「按业务阶段重新分组并在阶段内拆技术组」。
 > 5. 编号图例「01-01_Task 一直不变」— 该位置是级别切换器，段数=Flow 实际深度；当前数据只有「组+步骤」两级，故只有一段（悬停有「扁平数据」提示）。出现 L2 嵌套后会多出 01-01-01_Action 段。
+
+> **2026-11-23 第四轮修复（Task 视图叠卡 + 下钻空行，主会话 CDP 真机复现后修复）**：
+> 11. **Task 视图只显示 04-03** — CDP 驱动真机复现：数据层行数全部正确，但**所有卡片渲染在同一坐标**（最后画的 04-03 盖顶）。根因：容器节点以 `width: undefined` 进入 dagre，NaN 污染全部节点 x 坐标（Node 直测 `left=NaN`）。修复：容器不参与 dagre（其边界本由子节点包围盒计算）；顺带发现并修复 C 重构时丢失的 dagre 侧世界尺寸初始化（`worldWidth` 从 undefined 起 Math.max → NaN，fit 隐性失效）。
+> 12. **双击 activity 下钻无步骤** — drill 图的 node 区间是子树相对下标，行过滤却用全局 view.start 比对 → 行全落空。修复：过滤起点折算回子树原点（`view.start - drillBase`），行号/明细保持全局。
+> 真机验证（复制的 userData + CDP 驱动 Electron）：Activity 视图 4 卡行数 1/1/2/2/3 ✓；Task 视图 13 卡坐标分散、行数 1/9/6/8/5/10/12/6/15 ✓；双击 03 → 面包屑 + 03-01(5 行)/03-02(10 行) ✓。build ✓ tsc ✓ test 86-0 ✓。
+
 > **2026-11-23 第二轮修复（聊天意图 + 聊天诊断日志）**：
 > 6. **「重构这个工作流」被判 advice 不触发生成** — 日志证实该消息只走了 advice（text 模式），未触发 pi:generateFlow。两处修正：① advice 模板开场句「Do not generate … unless explicitly asked in a later request」与 INTENT=refine 机制自相矛盾（按字面读，当前消息永远不会触发生成），已改为「用户明确要求改动/重构/重新分组/生成新版本时，简短确认并标 INTENT=refine」，并给出中文示例词；② INTENT 行解析加固（兼容 `**INTENT=refine**`、`INTENT: "advice".` 等模型修饰写法）。
 > 7. **新增聊天诊断日志**：AI 面板全链路打点写入应用日志 `[ai-chat]` 模块（`userData/flowlink/flowlink/logs/flowlink-*.log`）——用户消息（chat/refine-form 两路）、advice 原始回复（**含 INTENT 标注行原文**，展示剥离前留证）、解析出的意图判定、生成开始/成功/失败（含错误详情截断）。下次意图不识别直接查该日志即可定位是「模型判错」还是「解析失败」。
 > 修复后验证：build ✓ tsc ✓ test 86-0 ✓。请重试「重构这个工作流」；若仍不触发，把当天日志发我。
+
+> **2026-11-23 第三轮修复（多级画布渲染，主会话直接修复）**：
+> 8. **Activity 3/4 无步骤、下钻错乱、级别切换无感** — 根因：`ensureProcessGroups.buildView` 的 leafCursor 双重累加（递归推进后再整体 `+= leafCount`，直接叶步骤漏计 +1），纯嵌套结构下 g2/g3/g4 的 start 虚增 11/25/40，与 buildGraph 扁平下标错位 → 行区间过滤全落空。已改为「子组递归自推 + 直接叶 +1、count = 差值」（Instruction/Test 共用该视图同步恢复）。
+> 9. **下钻视图错乱** — drill 图的扁平下标/flattenedStepId 是子树相对值却被当全局用。已在 buildGraph 后按「步骤对象 → 全局 id」映射重打标注，明细/回放状态/行选择补全局偏移（drillBase）。
+> 10. **默认级别**改为 L1 业务总览（嵌套数据打开即 Activity 粒度卡片，扁平数据行为不变）；级别切换器加 title 提示「层级切换，非组序号」。
+> 修复后验证：build ✓ tsc ✓ test 86-0 ✓。请重测：嵌套 Flow 四个 activity 均有内容、级别切换（Activity↔Task）视觉可辨、双击 task 下钻明细/状态正确。
 
 三个 OpenSpec change（A `refactor-process-canvas-x6`、B `add-multilevel-grouping`、C `add-swimlane-and-level-views`）已全部实现并通过主会话独立核查：`npm run build` ✓、`npx tsc --noEmit` ✓、`npm test` 86 过/0 败/1 跳过（1 跳过为 refine 套件既知）、`openspec validate` 三个 change 全部 valid。改动未提交（工作区 17 文件 +3298/-633 与 2 个新测试文件）。
 

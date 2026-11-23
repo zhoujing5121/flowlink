@@ -1002,7 +1002,12 @@
       }
     }
 
-    const components = computeComponents(graph);
+    // 容器不参与 dagre：无边且尺寸由子节点包围盒决定；以 undefined 尺寸进
+    // dagre 会让全部节点的 x 坐标变 NaN（真机实测 Task 视图全卡叠同一点）。
+    const components = computeComponents({
+      nodes: graph.nodes.filter((node) => !node.container),
+      edges: graph.edges,
+    });
     const componentById = new Map();
     for (const component of components)
       for (const node of component) componentById.set(node.id, component);
@@ -1057,6 +1062,10 @@
       offsetX = maxX + COMPONENT_GAP_X;
       worldHeight = Math.max(worldHeight, maxY);
     }
+    // dagre 侧世界尺寸（容器包围盒在此之前必须先有基准值，否则
+    // Math.max(undefined, …) 产出 NaN，fit/平移随之失效）。
+    graph.worldWidth = Math.max(0, offsetX - COMPONENT_GAP_X);
+    graph.worldHeight = Math.max(0, worldHeight);
     // —— 容器边界（嵌套分组）：dagre 只排非容器节点；容器 = 其直接子节点
     // 包围盒 + 头部 + 内边距，自最深容器向上逐层包裹，并计入世界尺寸。
     const containers = graph.nodes.filter((node) => node.container);
