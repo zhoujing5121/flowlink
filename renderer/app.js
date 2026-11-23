@@ -1010,57 +1010,6 @@ function fillResultPanel(panel, active, item) {
   else if (active === "Record") fillRecordPanel(panel, item);
 }
 
-function canvasStepNode(group, text, index, refinedFlow, result) {
-  const step = rowTemplate("canvasStepTemplate").cloneNode(true);
-  step.dataset.canvasStepIndex = group.start + index;
-  step.querySelector("[data-step-code]").textContent =
-    group.number + "-" + String(index + 1).padStart(3, "0");
-  step.querySelector("[data-step-text]").textContent = text;
-  // 徽标表达步骤来源：REFINED 流程的步骤默认 Automation（AI 细化生成）；
-  // 原始录制的步骤默认 Manual（人工录制）；用户在编辑器新增的步骤（manual_ 前缀
-  // id）与显式标 execution: manual 的步骤始终 Manual。execution 字段的回放语义
-  // （暂停等人工确认）不受此展示逻辑影响。
-  const flowStep = group.flowSteps?.[index];
-  // 条件分支步骤：加 class 供样式区分（虚线边框），让分支决策点在串行组卡里可辨识。
-  if (flowStep?.kind === "condition") step.classList.add("condition-step");
-  const manual =
-    flowStep?.execution === "manual" ||
-    String(flowStep?.id || "").startsWith("manual_") ||
-    !refinedFlow;
-  const icon = step.querySelector(".execution-mode-icon");
-  icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
-  icon.title = manual ? "Manual" : "Automated";
-  setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
-  setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
-  // 回放态叠加：步骤行状态点 + 结果 chip + AI 徽标（运行时数据，允许 JS 生成）
-  if (result && result.status && result.status !== "pending") {
-    step.classList.add("status-" + result.status);
-    const dot = document.createElement("span");
-    dot.className = "canvas-step-dot";
-    step.prepend(dot);
-    const chip = document.createElement("span");
-    chip.className = "canvas-step-chip";
-    chip.dataset.chipStatus = result.status;
-    chip.textContent =
-      result.status === "pass"
-        ? "✓"
-        : result.status === "fail"
-          ? "✗"
-          : result.status === "running"
-            ? "…"
-            : "跳过";
-    step.append(chip);
-    if (result.ai) {
-      const ai = document.createElement("span");
-      ai.className = "canvas-step-ai";
-      ai.textContent = "AI";
-      ai.title = "AI takeover completed this step";
-      step.append(ai);
-    }
-  }
-  return step;
-}
-
 /** Process 图：来源配色（多来源时按 meta.sourceFlows 顺序取色） */
 const PROCESS_SOURCE_COLORS = [
   "#00884a",
@@ -1070,21 +1019,23 @@ const PROCESS_SOURCE_COLORS = [
   "#0f8a8a",
 ];
 
-/** 图节点 → 渲染视图：真实组走 ensureProcessGroups 视图（切分卡经 groupId 指回原组）；未分组伪组现做 */
+/** 图节点 → 渲染视图：真实组走 ensureProcessGroups 视图（切分卡经 groupId 指回原组）；
+ * 未分组伪组与下钻步骤卡现做（步骤卡的 heading 由调用方按编号映射补码）。 */
 function graphNodeView(node, entries, viewByGroupId) {
   if (node.type === "group") return viewByGroupId.get(node.groupId || node.id) || null;
-  if (node.type === "ungrouped") {
+  if (node.type === "ungrouped" || node.type === "step") {
     const flowSteps = [];
     for (let i = node.firstIndex; i < node.lastIndex; i++)
       flowSteps.push(entries[i]?.step);
     return {
       id: node.id,
-      name: "未分组步骤",
-      label: "未分组步骤",
+      name: node.label || "未分组步骤",
+      label: node.label || "未分组步骤",
       index: -1,
       start: node.firstIndex,
       count: flowSteps.length,
       number: "—",
+      numbering: null,
       tab: 1,
       url: "",
       flowSteps,
@@ -1132,44 +1083,385 @@ function graphNodeEntered(node, entries, resultByStepId) {
   return false;
 }
 
-/**
- * SVG 边层：dagre 坐标已写回节点后调用。走过的路径边高亮、未走的分支边
- * 淡化虚线（仅在有回放结果时叠加；分支标签附"已走/未走"）。
- */
-function drawProcessGraphEdges(svg, world, graph, overlay) {
-  const NS = "http://www.w3.org/2000/svg";
-  svg.setAttribute("width", String(Math.max(1, graph.worldWidth)));
-  svg.setAttribute("height", String(Math.max(1, graph.worldHeight)));
-  svg.setAttribute(
-    "viewBox",
-    `0 0 ${Math.max(1, graph.worldWidth)} ${Math.max(1, graph.worldHeight)}`,
-  );
-  svg.replaceChildren();
-  const defs = document.createElementNS(NS, "defs");
-  for (const [id, color] of [
-    ["edge-arrow", "#7d8a92"],
-    ["edge-arrow-taken", "#00884a"],
-    ["edge-arrow-dim", "#c3cbd1"],
-  ]) {
-    const marker = document.createElementNS(NS, "marker");
-    marker.setAttribute("id", id);
-    marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "9");
-    marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "7");
-    marker.setAttribute("markerHeight", "7");
-    marker.setAttribute("orient", "auto-start-reverse");
-    const path = document.createElementNS(NS, "path");
-    path.setAttribute("d", "M0,0 L10,5 L0,10 z");
-    path.setAttribute("fill", color);
-    marker.appendChild(path);
-    defs.appendChild(marker);
-  }
-  svg.appendChild(defs);
+/* ============================================================
+ * Process 画布 X6 引擎层（refactor-process-canvas-x6）
+ *
+ * X6 经 dist/renderer-vendor.js 以 window.__flowlinkX6 进入（与 dagre 同模式），
+ * 数据层 renderer/flow-graph.js（flattenFlowSteps/buildGraph/layoutGraph）不变，
+ * X6 只消费其节点/边/坐标产出。渲染映射：
+ * - 组卡/未分组伪组卡/Start/End 哨/菱形判定 = X6 HTML 节点（foreignObject
+ *   承载既有卡片 DOM/CSS；builder 是 data 的纯函数 → 主画布与小地图各自实例化）；
+ * - 卡片尺寸仍在布局前实测（隐藏量测宿主），layoutGraph(measure) 机制不变；
+ * - 边 = 显式端点 + dagre 折线 vertices + 自定义连接器（回跳/同层为右侧外弓
+ *   贝塞尔，与旧 SVG 边层同公式），不用 X6 自动路由；样式与是/否标签走 attrs；
+ * - pan/zoom/fit 由 X6 变换引擎承担（translate/zoomTo 矩阵替换手写 world
+ *   transform），事件接线保持既有手势（空白拖拽平移、滚轮光标缩放、按钮/键盘）。
+ * ============================================================ */
 
-  // —— 折线边（dagre 路由点）：起/终点锚定到节点边界，中间拐点原样连线 ——
-  // 判断节点取菱形顶点（出向一向下一向侧，贴近标准流程图画法），
-  // 矩形节点取中心连线与边框的交点；允许斜向与转弯线段。
+/** 边样式（实线；走过加粗高亮、未走淡化 —— 与旧 .process-edge* CSS 同色值） */
+const PROCESS_EDGE_STYLE = {
+  base: { stroke: "#7d8a92", width: 1.6, marker: "#7d8a92" },
+  taken: { stroke: "#00884a", width: 2.4, marker: "#00884a" },
+  dim: { stroke: "#c3cbd1", width: 1.2, marker: "#c3cbd1" },
+};
+
+let processX6Ready = false;
+function ensureProcessX6() {
+  if (processX6Ready) return true;
+  const X6 = window.__flowlinkX6;
+  if (!X6 || !X6.Graph || !(X6.Shape && X6.Shape.HTML)) return false;
+  X6.Shape.HTML.register({
+    shape: "flow-card",
+    html: (cell) => buildFlowCardElement(cell.getData()),
+  });
+  X6.Shape.HTML.register({
+    shape: "flow-card-container",
+    html: (cell) => buildFlowContainerElement(cell.getData()),
+  });
+  X6.Shape.HTML.register({
+    shape: "flow-sentinel",
+    html: (cell) => buildFlowSentinelElement(cell.getData()),
+  });
+  X6.Shape.HTML.register({
+    shape: "flow-decision",
+    html: (cell) => buildFlowDecisionElement(cell.getData()),
+  });
+  X6.Shape.HTML.register({
+    shape: "flow-lane-task",
+    html: (cell) => buildLaneTaskElement(cell.getData()),
+  });
+  X6.Shape.HTML.register({
+    shape: "flow-lane-label",
+    html: (cell) => buildLaneLabelElement(cell.getData()),
+  });
+  // 回跳/同层边：与旧 SVG 实现同公式的外弓贝塞尔（控制点向右偏 bow）。
+  X6.Graph.registerConnector(
+    "flow-bow",
+    (sourcePoint, targetPoint, routePoints, options) => {
+      const bow = options.bow || 72;
+      const x1 = sourcePoint.x,
+        y1 = sourcePoint.y,
+        x2 = targetPoint.x,
+        y2 = targetPoint.y;
+      return `M ${x1} ${y1} C ${x1 + bow} ${y1}, ${x2 + bow} ${y2}, ${x2} ${y2}`;
+    },
+    true,
+  );
+  // 无 dagre 路由点的前向边：底部中心 → 顶部中心的近似垂直贝塞尔。
+  X6.Graph.registerConnector(
+    "flow-curve",
+    (sourcePoint, targetPoint) => {
+      const sx = sourcePoint.x,
+        sy = sourcePoint.y,
+        tx = targetPoint.x,
+        ty = targetPoint.y;
+      const mid = Math.max(24, (ty - sy) * 0.45);
+      return `M ${sx} ${sy} C ${sx} ${sy + mid}, ${tx} ${ty - mid}, ${tx} ${ty}`;
+    },
+    true,
+  );
+  processX6Ready = true;
+  return true;
+}
+
+/** 每画布一个 X6 Graph（+ MiniMap）：画布 DOM 来自 recordingLayoutTemplate 克隆，
+ * 实例挂在 WeakMap 上，重渲染只重建 cells 不重建引擎。 */
+const processCanvasGraphs = new WeakMap();
+function ensureProcessCanvasGraph(canvas) {
+  const existing = processCanvasGraphs.get(canvas);
+  if (existing) return existing;
+  const X6 = window.__flowlinkX6;
+  const graph = new X6.Graph({
+    container: canvas.querySelector(".process-canvas-x6"),
+    autoResize: true,
+    interacting: false,
+    scaling: { min: 0.2, max: 2 },
+  });
+  const entry = { graph, minimap: null, world: null, viewHandler: null };
+  processCanvasGraphs.set(canvas, entry);
+  attachProcessMinimap(canvas, entry);
+  return entry;
+}
+
+/** MiniMap 挂载：对零尺寸宿主初始化会在 zoomToFit 里产出 NaN 矩阵（实测
+ * Electron 45），因此只在画布宿主已有尺寸时创建；首次有尺寸的填充时补建。 */
+function attachProcessMinimap(canvas, entry) {
+  if (entry.minimap) return entry.minimap;
+  const host = canvas.querySelector(".process-canvas-x6");
+  if (!host || !host.clientWidth || !host.clientHeight) return null;
+  const X6 = window.__flowlinkX6;
+  entry.minimap = new X6.MiniMap({
+    container: canvas.querySelector(".process-minimap"),
+    width: 176,
+    height: 110,
+    padding: 8,
+  });
+  entry.graph.use(entry.minimap);
+  return entry.minimap;
+}
+
+/** 隐藏量测宿主：卡片在布局前按真实渲染实测（offsetWidth/Height），
+ * 与旧实现「先渲染进 world 再量」同源同 CSS，只是量测场移出可视区。 */
+let canvasMeasureHost = null;
+function measureCanvasNodeElement(root) {
+  if (!canvasMeasureHost) {
+    canvasMeasureHost = document.createElement("div");
+    canvasMeasureHost.style.cssText =
+      "position:absolute;left:-100000px;top:0;width:0;height:0;overflow:visible;pointer-events:none;";
+    document.body.appendChild(canvasMeasureHost);
+  }
+  const inner = root.firstElementChild;
+  canvasMeasureHost.appendChild(root);
+  const size = inner
+    ? { width: inner.offsetWidth, height: inner.offsetHeight }
+    : { width: root.offsetWidth, height: root.offsetHeight };
+  root.remove();
+  return size;
+}
+
+/** 组卡 DOM：纯函数按 data 重建（模板克隆），复用既有 .canvas-group 结构/CSS。 */
+function buildFlowCardElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
+  section.dataset.canvasGroup = data.groupKey;
+  section.classList.toggle("selected", data.selected);
+  if (data.stepCard) section.classList.add("is-step-card");
+  const icon = section.querySelector(".canvas-group-icon");
+  icon.src = groupFaviconUrl(data.url);
+  icon.onerror = () => {
+    icon.src = genericGroupIcon;
+    icon.onerror = null;
+  };
+  const heading = section.querySelector(".canvas-group-heading");
+  heading.dataset.groupSelect = data.groupKey;
+  heading.setAttribute("aria-pressed", String(data.selected));
+  heading.textContent = data.heading;
+  // 分支徽标：该组是某个 condition 的 true/false 目标时说明"何时执行"。
+  const branchBadge = section.querySelector(".canvas-group-branch");
+  branchBadge.hidden = !data.branchText;
+  if (data.branchText) {
+    section.classList.add("branch-target");
+    branchBadge.textContent = data.branchText;
+  }
+  // 来源着色（单来源 = 录制原色不动；多来源 = 按来源上色 + 图例）
+  if (data.borderColor) {
+    section.classList.add("has-source");
+    section.style.borderColor = data.borderColor;
+  }
+  // targetSystem 标签（只读展示；编辑入口在 Instruction 组卡头）
+  if (data.targetSystem) {
+    const chip = document.createElement("span");
+    chip.className = "canvas-group-system";
+    chip.textContent = data.targetSystem;
+    chip.title = "Target system";
+    heading.insertAdjacentElement("afterend", chip);
+  }
+  // 回放态：组卡结果描边（全过=绿、有失败=红、全跳过=灰）
+  if (data.status) section.classList.add("result-" + data.status);
+  section.querySelector(".canvas-group-nodes").replaceChildren(
+    ...(data.rows.length
+      ? data.rows.map((row) => canvasStepNodeFromRow(row))
+      : data.stepCard
+        ? []
+        : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
+  );
+  root.appendChild(section);
+  return root;
+}
+
+/** 卡内步骤行：按行描述重建。徽标表达步骤来源：REFINED 流程的步骤默认
+ * Automation（AI 细化生成）、原始录制默认 Manual；manual_ 前缀 id 与显式
+ * execution: manual 始终 Manual（execution 的回放语义不受此展示逻辑影响）。
+ * 回放态叠加：状态点 + 结果 chip + AI 徽标（运行时数据，允许 JS 生成）。 */
+function canvasStepNodeFromRow(row) {
+  const step = rowTemplate("canvasStepTemplate").cloneNode(true);
+  step.dataset.canvasStepIndex = row.index;
+  step.querySelector("[data-step-code]").textContent = row.code;
+  step.querySelector("[data-step-text]").textContent = row.text;
+  if (row.condition) step.classList.add("condition-step");
+  const icon = step.querySelector(".execution-mode-icon");
+  icon.setAttribute("aria-label", row.manual ? "Manual" : "Automated");
+  icon.title = row.manual ? "Manual" : "Automated";
+  setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), row.manual);
+  setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !row.manual);
+  const result = row.result;
+  if (result && result.status && result.status !== "pending") {
+    step.classList.add("status-" + result.status);
+    const dot = document.createElement("span");
+    dot.className = "canvas-step-dot";
+    step.prepend(dot);
+    const chip = document.createElement("span");
+    chip.className = "canvas-step-chip";
+    chip.dataset.chipStatus = result.status;
+    chip.textContent =
+      result.status === "pass"
+        ? "✓"
+        : result.status === "fail"
+          ? "✗"
+          : result.status === "running"
+            ? "…"
+            : "跳过";
+    step.append(chip);
+    if (result.ai) {
+      const ai = document.createElement("span");
+      ai.className = "canvas-step-ai";
+      ai.textContent = "AI";
+      ai.title = "AI takeover completed this step";
+      step.append(ai);
+    }
+  }
+  // Expend 明细行（卡内下一级）：demo 的 canvas-action-list 同款。
+  if (row.details?.length) {
+    const list = document.createElement("div");
+    list.className = "canvas-action-list";
+    for (const detail of row.details) {
+      const actionRow = document.createElement("div");
+      actionRow.className = "canvas-action-row";
+      const code = document.createElement("span");
+      code.textContent = detail.code || "";
+      if (!detail.code) code.hidden = true;
+      const body = document.createElement("div");
+      body.className = "canvas-action-body";
+      body.textContent = detail.text;
+      actionRow.append(code, body);
+      list.appendChild(actionRow);
+    }
+    step.append(list);
+  }
+  return step;
+}
+
+/** 容器卡（外层组卡）DOM：头部 + 空内容区——内层组卡/步骤卡是独立 X6 cell，
+ * 布局后落在容器边界内（几何包含；本应用节点不可拖拽，无需 X6 embed）。 */
+function buildFlowContainerElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const section = rowTemplate("canvasGroupContainerTemplate").cloneNode(true);
+  section.dataset.canvasGroup = data.groupKey;
+  section.classList.toggle("selected", data.selected);
+  const icon = section.querySelector(".canvas-group-icon");
+  icon.src = groupFaviconUrl(data.url);
+  icon.onerror = () => {
+    icon.src = genericGroupIcon;
+    icon.onerror = null;
+  };
+  const heading = section.querySelector(".canvas-group-heading");
+  heading.dataset.groupSelect = data.groupKey;
+  heading.setAttribute("aria-pressed", String(data.selected));
+  heading.textContent = data.heading;
+  if (data.targetSystem) {
+    const chip = document.createElement("span");
+    chip.className = "canvas-group-system";
+    chip.textContent = data.targetSystem;
+    chip.title = "Target system";
+    heading.insertAdjacentElement("afterend", chip);
+  }
+  const branchBadge = section.querySelector(".canvas-group-branch");
+  branchBadge.hidden = !data.branchText;
+  if (data.branchText) {
+    section.classList.add("branch-target");
+    branchBadge.textContent = data.branchText;
+  }
+  if (data.status) section.classList.add("result-" + data.status);
+  root.appendChild(section);
+  return root;
+}
+
+/** Start/End 哨节点 DOM（.process-sentinel 药丸样式不变）。 */
+function buildFlowSentinelElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const sentinel = document.createElement("div");
+  sentinel.className = "process-sentinel" + (data.end ? " end" : "");
+  sentinel.dataset.sentinelNode = data.id;
+  sentinel.textContent = data.label;
+  root.appendChild(sentinel);
+  return root;
+}
+
+/** 菱形判定节点 DOM（.process-decision clip-path 菱形样式不变）。 */
+function buildFlowDecisionElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const decision = document.createElement("div");
+  decision.className = "process-decision";
+  decision.dataset.decisionNode = data.id;
+  decision.title = data.label;
+  const text = document.createElement("span");
+  text.textContent = data.label;
+  decision.appendChild(text);
+  if (data.status) decision.classList.add("result-" + data.status);
+  root.appendChild(decision);
+  return root;
+}
+
+/** 泳道任务卡 DOM：heading（编号+名称+执行方式）+ Expend 明细行（模板克隆）。 */
+function buildLaneTaskElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const section = rowTemplate("swimlaneTaskTemplate").cloneNode(true);
+  if (data.groupKey) section.dataset.canvasGroup = data.groupKey;
+  section.classList.toggle("selected", Boolean(data.selected));
+  if (data.manual) section.classList.add("is-manual");
+  if (data.status) section.classList.add("result-" + data.status);
+  section.querySelector("[data-task-code]").textContent = data.code;
+  section.querySelector("[data-task-text]").textContent = data.label;
+  section.title = data.label;
+  const icon = section.querySelector(".execution-mode-icon");
+  icon.setAttribute("aria-label", data.manual ? "Manual" : "Automated");
+  icon.title = data.manual ? "Manual" : "Automated";
+  setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), data.manual);
+  setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !data.manual);
+  const body = section.querySelector("[data-task-body]");
+  if (data.details?.length) {
+    body.hidden = false;
+    for (const detail of data.details) {
+      const row = rowTemplate("swimlaneDetailTemplate").cloneNode(true);
+      const rowEl = row.firstElementChild;
+      const codeEl = rowEl.querySelector("[data-detail-code]");
+      if (detail.code) {
+        codeEl.hidden = false;
+        codeEl.textContent = detail.code;
+      }
+      rowEl.querySelector("[data-detail-text]").textContent = detail.text;
+      body.appendChild(rowEl);
+    }
+  }
+  root.appendChild(section);
+  return root;
+}
+
+/** 泳道标签 DOM：列头（lane）与阶段带（band）两种形态。 */
+function buildLaneLabelElement(data) {
+  const root = document.createElement("div");
+  root.className = "flow-node-body";
+  const label = rowTemplate(
+    data.band ? "swimlaneBandTemplate" : "swimlaneLaneTemplate",
+  ).cloneNode(true);
+  if (data.band) {
+    label.querySelector("[data-band-title]").textContent = data.title;
+    label.querySelector("[data-band-name]").textContent = data.name;
+    label.title = data.branchLabel
+      ? `分支 · ${data.branchLabel}`
+      : `${data.title} ${data.name}`.trim();
+  } else {
+    label.querySelector("[data-lane-name]").textContent = data.name;
+    label.title = data.name;
+  }
+  root.appendChild(label);
+  return root;
+}
+
+/**
+ * X6 边构造（替代旧 SVG 边层 drawProcessGraphEdges）：dagre 坐标已写回节点后
+ * 调用，产出 X6 edge 元数据。几何与旧实现逐项对等：
+ * - 前向边：起/终点锚定到节点边界（矩形取中心连线交点、判定取菱形顶点），
+ *   中间吃 dagre 路由点画折线；标签放在首段中点；
+ * - 回跳/同层：从源右缘绕到目标右缘的外弓贝塞尔（自定义连接器）；
+ * - 走过的边高亮、未走的边淡化（仅在有回放结果时叠加；标签附"已走/未走"）。
+ */
+function buildProcessEdgeCells(graph, overlay) {
   const rectBoundary = (node, toward) => {
     const dx = toward.x - node.cx;
     const dy = toward.y - node.cy;
@@ -1199,7 +1491,7 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
     edge.kind !== "back" &&
     to.cy > from.cy;
   // 判断节点两个前向分支的出向分配：横向偏移更大的走侧顶点（右/左），
-  // 更垂直的走底顶点；持平则“是”向下、“否”向右。
+  // 更垂直的走底顶点；持平则"是"向下、"否"向右。
   const decisionExit = new Map();
   for (const node of graph.nodes) {
     if (node.type !== "decision") continue;
@@ -1229,13 +1521,36 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
     }
   }
 
-  const labels = [];
+  const cells = [];
   for (const edge of graph.edges) {
     const from = graph.nodeById.get(edge.from);
     const to = graph.nodeById.get(edge.to);
     if (!from || !to || from.cx === undefined || to.cx === undefined) continue;
-    let d;
-    let labelAt;
+
+    // 回放态：目标被进入 → 高亮；运行结束仍未走 → 淡化
+    let styleKey = "base";
+    let suffix = "";
+    if (overlay.hasResults) {
+      const entered =
+        to.type === "end"
+          ? overlay.runFinished &&
+            graphNodeEntered(from, graph.entries, overlay.resultByStepId)
+          : graphNodeEntered(to, graph.entries, overlay.resultByStepId);
+      if (entered) {
+        styleKey = "taken";
+        suffix = " · 已走";
+      } else if (overlay.runFinished || to.type !== "end") {
+        styleKey = "dim";
+        suffix = " · 未走";
+      }
+    }
+    const style = PROCESS_EDGE_STYLE[styleKey];
+
+    let connector = { name: "normal" };
+    let source;
+    let target;
+    let vertices = [];
+    let labelDistance = 0.5;
     if (forwardEdge(edge, from, to)) {
       const inner = edge.points.slice(1, -1);
       const firstToward = inner[0] || edge.points[edge.points.length - 1];
@@ -1256,95 +1571,514 @@ function drawProcessGraphEdges(svg, world, graph, overlay) {
         to.type === "decision"
           ? decisionVertex(to, lastToward)
           : rectBoundary(to, lastToward);
-      const pts = [src, ...inner, dst];
-      d =
-        `M ${pts[0].x} ${pts[0].y} ` +
-        pts
-          .slice(1)
-          .map((p) => `L ${p.x} ${p.y}`)
-          .join(" ");
+      source = src;
+      target = dst;
+      vertices = inner;
       const after = inner[0] || dst;
-      labelAt = { x: (src.x + after.x) / 2, y: (src.y + after.y) / 2 };
+      labelDistance = Math.hypot(after.x - src.x, after.y - src.y) / 2;
     } else if (edge.kind === "back" || to.cy <= from.cy) {
-      // 回跳/同层：从源右缘绕到目标右缘的外弓虚线
+      // 回跳/同层：从源右缘绕到目标右缘的外弓虚线（现约定为实线，颜色区分待后续）
       const x1 = from.cx + from.width / 2;
       const y1 = from.cy;
       const x2 = to.cx + to.width / 2;
       const y2 = to.cy;
       const bow = 72 + Math.abs(x1 - x2) * 0.25;
-      d = `M ${x1} ${y1} C ${x1 + bow} ${y1}, ${x2 + bow} ${y2}, ${x2} ${y2}`;
-      labelAt = { x: Math.max(x1, x2) + bow * 0.55, y: (y1 + y2) / 2 };
+      source = { x: x1, y: y1 };
+      target = { x: x2, y: y2 };
+      connector = { name: "flow-bow", args: { bow } };
     } else {
-      const sx = from.cx;
-      const sy = from.cy + from.height / 2;
-      const tx = to.cx;
-      const ty = to.cy - to.height / 2;
-      const mid = Math.max(24, (ty - sy) * 0.45);
-      d = `M ${sx} ${sy} C ${sx} ${sy + mid}, ${tx} ${ty - mid}, ${tx} ${ty}`;
-      labelAt = { x: (sx + tx) / 2, y: (sy + ty) / 2 };
+      source = { x: from.cx, y: from.cy + from.height / 2 };
+      target = { x: to.cx, y: to.cy - to.height / 2 };
+      connector = { name: "flow-curve" };
     }
 
-    // 回放态：目标被进入 → 高亮；运行结束仍未走 → 淡化虚线
-    let stateClass = "";
-    let suffix = "";
-    if (overlay.hasResults) {
-      const entered =
-        to.type === "end"
-          ? overlay.runFinished && graphNodeEntered(from, graph.entries, overlay.resultByStepId)
-          : graphNodeEntered(to, graph.entries, overlay.resultByStepId);
-      if (entered) {
-        stateClass = " taken";
-        suffix = " · 已走";
-      } else if (overlay.runFinished || to.type !== "end") {
-        stateClass = " dim";
-        suffix = " · 未走";
-      }
-    }
-
-    const path = document.createElementNS(NS, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("class", `process-edge${edge.kind === "back" ? " back" : ""}${stateClass}`);
-    path.setAttribute(
-      "marker-end",
-      `url(#edge-arrow${stateClass === " taken" ? "-taken" : stateClass === " dim" ? "-dim" : ""})`,
-    );
-    svg.appendChild(path);
-
+    const cell = {
+      shape: "edge",
+      zIndex: 0,
+      source,
+      target,
+      vertices,
+      connector,
+      attrs: {
+        line: {
+          stroke: style.stroke,
+          strokeWidth: style.width,
+          fill: "none",
+          targetMarker: {
+            name: "block",
+            size: 7,
+            fill: style.marker,
+            stroke: style.marker,
+          },
+        },
+      },
+    };
     if (edge.label) {
-      const label = document.createElement("div");
-      label.className =
-        "process-edge-label" +
-        (edge.branch === "false" ? " no" : "") +
-        (stateClass === " dim" ? " dim" : "");
-      label.textContent = edge.label + (overlay.hasResults ? suffix : "");
-      label.style.left = labelAt.x + "px";
-      label.style.top = labelAt.y + "px";
-      labels.push(label);
+      const no = edge.branch === "false";
+      const dim = styleKey === "dim";
+      cell.labels = [
+        {
+          position: { distance: labelDistance },
+          attrs: {
+            label: {
+              text: edge.label + (overlay.hasResults ? suffix : ""),
+              fill: dim ? "#98a2a9" : no ? "#8a4b00" : "#005c33",
+              fontSize: 11,
+              fontWeight: "700",
+              textAnchor: "middle",
+              textVerticalAnchor: "middle",
+              pointerEvents: "none",
+            },
+            body: {
+              fill: "#fff",
+              stroke: dim ? "#c3cbd1" : no ? "#c77c1e" : "#00884a",
+              strokeWidth: 1,
+              rx: 8,
+              ry: 8,
+              ref: "label",
+              refWidth: 1,
+              refHeight: 1,
+            },
+          },
+        },
+      ];
+    }
+    cells.push(cell);
+  }
+  return cells;
+}
+
+/* ============================================================
+ * Process 双视图（add-swimlane-and-level-views）：
+ * view = flow | swimlane、level = 1..最深组级、expanded = Expend 开关、
+ * drill = 下钻组链 —— 四者均为 UI 状态（挂 item，不落盘、不进 Flow JSON）。
+ * 级别切换器 = 编号图例位置的可点击段（枚举 Flow 实际深度；扁平数据隐藏
+ * L1、默认「下一级」）；双击分组卡下钻一级，面包屑返回；视图切换重置下钻。
+ * ============================================================ */
+
+/** 递归数叶步骤（组的扁平跨度；与 flow-graph.js countExecutable 同义）。 */
+function countFlowLeaves(list) {
+  let n = 0;
+  for (const step of list || []) {
+    if (step && step.kind === "group") n += countFlowLeaves(step.steps);
+    else n += 1;
+  }
+  return n;
+}
+
+/** 步骤「说明明细」一行（Expend 卡内明细；demo 的 action 明细同款）。 */
+function stepDetailText(item, index) {
+  const detail = item?.stepDetails?.[index];
+  if (!detail) return "";
+  const parts = [];
+  const kindText = STEP_KIND_TEXT[detail.type] || detail.type || "";
+  if (kindText) parts.push(kindText);
+  if (detail.target) parts.push(detail.target);
+  if (detail.value) parts.push(`值 · ${detail.value}`);
+  if (detail.url) parts.push(String(detail.url).replace(/^https?:\/\//, ""));
+  return parts.join(" · ");
+}
+
+/** Process 视图状态解析（含下钻链守卫：任一 hop 失效即重置）。 */
+function resolveProcessViewState(item, flow) {
+  const view = item?.processView === "swimlane" ? "swimlane" : "flow";
+  const expanded = Boolean(item?.processExpanded);
+  const steps = Array.isArray(flow?.steps) ? flow.steps : null;
+  const depth = steps ? FlowGraph.groupDepthOf(steps) : 0;
+  // 级别段：枚举实际组级深度；扁平数据（depth ≤ 1）隐藏 L1、默认「下一级」
+  //（与全量视图等价），段标注 01-01_Task。
+  const segments =
+    depth <= 1
+      ? [{ level: 1, code: "01-01", name: "Task", flat: true }]
+      : Array.from({ length: depth }, (_, i) => ({
+          level: i + 1,
+          code: "01" + "-01".repeat(i),
+          name:
+            i === 0
+              ? "Activity"
+              : i === 1
+                ? "Task"
+                : i === 2
+                  ? "Action"
+                  : `Level ${i + 1}`,
+        }));
+  const maxLevel = Math.max(1, depth);
+  const level = Math.min(
+    Math.max(Number.isFinite(item?.processLevel) ? item.processLevel : maxLevel, 1),
+    maxLevel,
+  );
+  let drill =
+    view === "flow" && Array.isArray(item?.processDrill) ? [...item.processDrill] : [];
+  const hops = [];
+  let node = steps;
+  for (const groupId of drill) {
+    const found =
+      Array.isArray(node) &&
+      node.find((step) => step && step.kind === "group" && step.id === groupId);
+    if (!found) break;
+    hops.push(found);
+    node = found.steps;
+  }
+  if (hops.length !== drill.length) drill = drill.slice(0, hops.length);
+  if (item) item.processDrill = drill;
+  const numbering = flow ? FlowGraph.numberingOf(flow) : null;
+  return {
+    view,
+    expanded,
+    level,
+    maxLevel,
+    segments,
+    drill,
+    drillHops: hops,
+    drillTarget: hops.length ? hops[hops.length - 1] : null,
+    numbering,
+  };
+}
+
+/** 工具栏填充：视图菜单 radio 态、Expend 开关、级别切换器段、下钻面包屑。 */
+function fillProcessToolbar(canvas, item, state) {
+  const swim = state.view === "swimlane";
+  const viewLabel = canvas.querySelector("[data-process-view-label]");
+  if (viewLabel) viewLabel.textContent = swim ? "Swimlane" : "Flow";
+  const menu = canvas.querySelector(".process-view-menu");
+  if (menu) {
+    menu.hidden = true;
+    menu.querySelectorAll("[data-process-view]").forEach((button) => {
+      button.setAttribute(
+        "aria-checked",
+        String(button.dataset.processView === state.view),
+      );
+    });
+    canvas
+      .querySelector("[data-process-menu]")
+      ?.setAttribute("aria-expanded", "false");
+  }
+  const expandBtn = canvas.querySelector("[data-process-expand]");
+  if (expandBtn) {
+    expandBtn.setAttribute("aria-expanded", String(state.expanded));
+    expandBtn.title = state.expanded ? "Collapse action" : "Expend action";
+    const label = expandBtn.querySelector("[data-process-expand-label]");
+    if (label) label.textContent = state.expanded ? "Collapse" : "Expend";
+    expandBtn
+      .querySelector(".process-chevron")
+      ?.classList.toggle("is-expanded", state.expanded);
+  }
+  const hierarchy = canvas.querySelector(".process-hierarchy");
+  if (hierarchy) {
+    hierarchy.hidden = !item?.processFlow;
+    hierarchy.classList.toggle("is-legend", swim);
+    hierarchy.replaceChildren(
+      ...state.segments.map((segment) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.processLevel = String(segment.level);
+        button.textContent = `${segment.code}_${segment.name}`;
+        if (segment.flat) button.title = "扁平数据：当前即为步骤级明细视图";
+        if (
+          !swim &&
+          !state.drill.length &&
+          state.level === segment.level
+        )
+          button.setAttribute("aria-current", "true");
+        return button;
+      }),
+    );
+  }
+  const breadcrumb = canvas.querySelector("[data-process-breadcrumb]");
+  if (breadcrumb) {
+    if (state.drill.length) {
+      breadcrumb.hidden = false;
+      breadcrumb.replaceChildren();
+      const rootBtn = document.createElement("button");
+      rootBtn.type = "button";
+      rootBtn.dataset.drillCrumb = "0";
+      rootBtn.textContent = "Flow";
+      breadcrumb.appendChild(rootBtn);
+      state.drillHops.forEach((group, index) => {
+        const sep = document.createElement("span");
+        sep.className = "process-breadcrumb-sep";
+        sep.textContent = "›";
+        breadcrumb.appendChild(sep);
+        const code = state.numbering?.get(group.id) || group.id;
+        const text = `${code} ${group.label || group.id}`;
+        if (index === state.drillHops.length - 1) {
+          const current = document.createElement("span");
+          current.className = "process-breadcrumb-current";
+          current.textContent = text;
+          breadcrumb.appendChild(current);
+        } else {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.dataset.drillCrumb = String(index + 1);
+          btn.textContent = text;
+          breadcrumb.appendChild(btn);
+        }
+      });
+    } else {
+      breadcrumb.hidden = true;
+      breadcrumb.replaceChildren();
     }
   }
-  // 标签挂在 world 下（随平移缩放走），在卡片之下由 z-order 保证
-  for (const label of labels) world.appendChild(label);
+}
+
+/** 泳道任务卡渲染数据（测量与正式填充共用）。 */
+function swimlaneTaskData(task, item, laneEntries, resultByStepId, expanded) {
+  const manual =
+    task.type === "step" &&
+    (task.step?.execution === "manual" ||
+      String(task.step?.id || "").startsWith("manual_") ||
+      item?.summary !== true);
+  let details = null;
+  if (expanded) {
+    if (task.type === "group" && task.children?.length) {
+      details = task.children.map((child) => ({
+        code: child.code,
+        text: child.label,
+      }));
+    } else if (task.type === "step") {
+      const text = stepDetailText(item, task.firstIndex);
+      if (text) details = [{ code: "", text }];
+    }
+  }
+  return {
+    groupKey: task.groupKey || "",
+    selected: Boolean(task.groupKey && item?.selectedGroup === task.groupKey),
+    code: task.code,
+    label: task.label,
+    manual,
+    status: graphNodeResultStatus(task, laneEntries, resultByStepId),
+    details,
+  };
+}
+
+/** 泳道 X6 cells：背景列条 + 列头/阶段带标签 + 任务卡 + Start/End + 顺序/分支边。 */
+function buildSwimlaneCells(lane, overlay, item, state) {
+  const cells = [];
+  const colX = (index) => lane.laneLeft + index * lane.columnWidth;
+  const taskById = new Map(lane.tasks.map((task) => [task.id, task]));
+
+  lane.columns.forEach((column, index) => {
+    cells.push({
+      shape: "rect",
+      zIndex: 0,
+      x: colX(index),
+      y: lane.headerHeight,
+      width: lane.columnWidth,
+      height: Math.max(0, lane.worldHeight - lane.headerHeight),
+      attrs: {
+        body: {
+          fill: index % 2 ? "#ffffff" : "#f8fbfa",
+          stroke: "#e0e7e4",
+          strokeWidth: 1,
+        },
+      },
+    });
+    cells.push({
+      shape: "flow-lane-label",
+      zIndex: 2,
+      x: colX(index),
+      y: 0,
+      width: lane.columnWidth,
+      height: lane.headerHeight,
+      data: { name: column.name },
+    });
+  });
+  for (const band of lane.bands) {
+    cells.push({
+      shape: "flow-lane-label",
+      zIndex: 2,
+      x: 8,
+      y: band.top,
+      width: lane.laneLeft - 16,
+      height: Math.max(24, band.bottom - band.top),
+      data: {
+        band: true,
+        title: band.title,
+        name: band.name,
+        branchLabel: band.branchLabel,
+      },
+    });
+  }
+  for (const task of lane.tasks) {
+    cells.push({
+      shape: "flow-lane-task",
+      zIndex: 2,
+      x: task.x,
+      y: task.y,
+      width: task.width,
+      height: task.height,
+      data: swimlaneTaskData(
+        task,
+        item,
+        lane.entries,
+        overlay.resultByStepId,
+        state.expanded,
+      ),
+    });
+  }
+
+  const edgeStyleOf = (toTask) => {
+    if (!overlay.hasResults) return PROCESS_EDGE_STYLE.base;
+    const entered = graphNodeEntered(toTask, lane.entries, overlay.resultByStepId);
+    return entered ? PROCESS_EDGE_STYLE.taken : PROCESS_EDGE_STYLE.dim;
+  };
+  const pushLaneEdge = (source, target, label, branch, style, vertices, connector) => {
+    const cell = {
+      shape: "edge",
+      zIndex: 1,
+      source,
+      target,
+      vertices: vertices || [],
+      connector: connector || { name: "normal" },
+      attrs: {
+        line: {
+          stroke: style.stroke,
+          strokeWidth: style.width,
+          fill: "none",
+          targetMarker: {
+            name: "block",
+            size: 7,
+            fill: style.marker,
+            stroke: style.marker,
+          },
+        },
+      },
+    };
+    if (label) {
+      const no = branch === "false";
+      const dim = style === PROCESS_EDGE_STYLE.dim;
+      cell.labels = [
+        {
+          attrs: {
+            label: {
+              text: label,
+              fill: dim ? "#98a2a9" : no ? "#8a4b00" : "#005c33",
+              fontSize: 11,
+              fontWeight: "700",
+              textAnchor: "middle",
+              textVerticalAnchor: "middle",
+              pointerEvents: "none",
+            },
+            body: {
+              fill: "#fff",
+              stroke: dim ? "#c3cbd1" : no ? "#c77c1e" : "#00884a",
+              strokeWidth: 1,
+              rx: 8,
+              ry: 8,
+              ref: "label",
+              refWidth: 1,
+              refHeight: 1,
+            },
+          },
+        },
+      ];
+    }
+    cells.push(cell);
+  };
+  const laneEdge = (from, to, label, branch) => {
+    const style = edgeStyleOf(to);
+    const bottomOf = (task) => ({ x: task.x + task.width / 2, y: task.y + task.height });
+    const topOf = (task) => ({ x: task.x + task.width / 2, y: task.y });
+    const source = bottomOf(from);
+    const target = topOf(to);
+    if (target.y > source.y) {
+      const mid = source.y + Math.max(20, (target.y - source.y) / 2);
+      pushLaneEdge(source, target, label, branch, style, [
+        { x: source.x, y: mid },
+        { x: target.x, y: mid },
+      ]);
+    } else {
+      // 回跳：从源右缘绕到目标右缘的外弓（与 Flow 视图回跳边同形态）
+      const bow = 72 + Math.abs(source.x - target.x) * 0.25;
+      pushLaneEdge(
+        { x: from.x + from.width, y: from.y + from.height / 2 },
+        { x: to.x + to.width, y: to.y + to.height / 2 },
+        label,
+        branch,
+        style,
+        null,
+        { name: "flow-bow", args: { bow } },
+      );
+    }
+  };
+  for (const edge of lane.edges) {
+    const from = taskById.get(edge.from);
+    const to = taskById.get(edge.to);
+    if (from && to) laneEdge(from, to, edge.label, edge.branch);
+  }
+  const ordered = [...lane.tasks].sort((a, b) => a.firstIndex - b.firstIndex);
+  if (ordered.length) {
+    const first = ordered[0];
+    const last = ordered[ordered.length - 1];
+    const startStyle = overlay.hasResults
+      ? graphNodeEntered(first, lane.entries, overlay.resultByStepId)
+        ? PROCESS_EDGE_STYLE.taken
+        : PROCESS_EDGE_STYLE.dim
+      : PROCESS_EDGE_STYLE.base;
+    pushLaneEdge(
+      { x: lane.start.x, y: lane.start.y + 17 },
+      { x: first.x + first.width / 2, y: first.y },
+      null,
+      null,
+      startStyle,
+      [{ x: lane.start.x, y: first.y - 24 }],
+    );
+    const endEntered =
+      overlay.hasResults &&
+      overlay.runFinished &&
+      graphNodeEntered(last, lane.entries, overlay.resultByStepId);
+    pushLaneEdge(
+      { x: last.x + last.width / 2, y: last.y + last.height },
+      { x: lane.end.x, y: lane.end.y - 17 },
+      null,
+      null,
+      endEntered ? PROCESS_EDGE_STYLE.taken : PROCESS_EDGE_STYLE.base,
+      [{ x: lane.end.x, y: last.y + last.height + 24 }],
+    );
+  }
+  cells.push({
+    shape: "flow-sentinel",
+    zIndex: 2,
+    x: lane.start.x - 44,
+    y: lane.start.y - 17,
+    width: 88,
+    height: 34,
+    data: { id: "__swim_start", end: false, label: "START" },
+  });
+  cells.push({
+    shape: "flow-sentinel",
+    zIndex: 2,
+    x: lane.end.x - 44,
+    y: lane.end.y - 17,
+    width: 88,
+    height: 34,
+    data: { id: "__swim_end", end: true, label: "END" },
+  });
+  return cells;
 }
 
 function fillProcessPanel(panel, item) {
   const canvas = panel.querySelector(".process-canvas");
-  canvas.querySelector(".process-canvas-world").hidden = false;
   canvas.querySelector(".canvas-view-controls").hidden = false;
   canvas.querySelector(".process-status:not(.error)").hidden =
     !item?.processFlowLoading;
   const error = canvas.querySelector(".process-status.error");
   error.hidden = !item?.processFlowError;
   if (item?.processFlowError) error.textContent = item.processFlowError;
-  const world = canvas.querySelector(".process-canvas-world");
   const groups = item ? ensureProcessGroups(item) : [];
   const flow = item?.processFlow;
 
-  // 图模式依赖 dagre（vendor 脚本）：缺失时显示明确错误而非白屏；不提供串行回退。
-  if ((flow || groups.length) && !window.__flowlinkDagre) {
+  // 图模式依赖 dagre + X6（vendor 脚本）：缺失时显示明确错误而非白屏；不提供串行回退。
+  const engineReady = Boolean(window.__flowlinkDagre) && ensureProcessX6();
+  if ((flow || groups.length) && !engineReady) {
     error.hidden = false;
     error.textContent =
-      "Process 流程图布局引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
+      "Process 流程图引擎未加载（dist/renderer-vendor.js 缺失或未构建）。请先运行 npm run build，再重启应用。";
   }
+
+  // —— 视图状态（flow|swimlane × level × Expend × 下钻链；UI 状态不落盘）——
+  const viewState = resolveProcessViewState(item, flow);
+  fillProcessToolbar(canvas, item, viewState);
 
   // 回放态数据源：testResults 与 testFlowSteps 按下标对齐，再按 stepId 建映射
   const resultByStepId = new Map();
@@ -1360,34 +2094,50 @@ function fillProcessPanel(panel, item) {
   }
 
   // —— 图模型（真实 Flow；演示数据合成为同构模型走同一渲染管线） ——
+  // Flow 视图：下钻时以钻入组的子项为顶层数据（步骤卡 + 判定节点）；
+  // 级别视图仅在 level < 最深组级时裁剪（buildGraph 内部裁定，≥ 时与
+  // 全量视图等价）。Swimlane 视图不走 dagre 图（见下方泳道分支）。
+  const demoFlow =
+    !flow && groups.length
+      ? {
+          steps: groups.map((group) => ({
+            kind: "group",
+            id: group.id,
+            label: group.name,
+            steps: group.flowSteps?.length
+              ? group.flowSteps
+              : Array.from({ length: group.count || 0 }, (_, i) => ({
+                  kind: "demo",
+                  id: `${group.id}-demo-${i}`,
+                })),
+          })),
+        }
+      : null;
   let graph = null;
-  if (flow) {
-    graph = FlowGraph.buildGraph(flow);
-  } else if (groups.length) {
-    graph = FlowGraph.buildGraph({
-      steps: groups.map((group) => ({
-        kind: "group",
-        id: group.id,
-        label: group.name,
-        steps: group.flowSteps?.length
-          ? group.flowSteps
-          : Array.from({ length: group.count || 0 }, (_, i) => ({
-              kind: "demo",
-              id: `${group.id}-demo-${i}`,
-            })),
-      })),
-    });
+  if (viewState.view === "swimlane") {
+    graph = null;
+  } else if (flow || demoFlow) {
+    if (viewState.drillTarget) {
+      graph = FlowGraph.buildGraph(
+        { ...flow, steps: viewState.drillTarget.steps },
+        { level: 1, stepUnits: true },
+      );
+    } else {
+      graph = FlowGraph.buildGraph(
+        flow || demoFlow,
+        viewState.level < viewState.maxLevel
+          ? { level: viewState.level }
+          : undefined,
+      );
+    }
   }
 
-  // —— 1. 先渲染卡片（组卡 DOM 复用：徽标/条件样式/点击/右键全保留） ——
-  const viewByGroupId = new Map(groups.map((group) => [group.id, group]));
-  const elements = new Map(); // node.id → DOM（卡片或哨节点）
-  const children = [];
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  // SVGElement.className 只有 getter，必须用 setAttribute（赋值会抛 TypeError
-  // 并把 renderSummaryWorkspace 从 fillProcessPanel 中间打断：AI 面板不再刷新、Process 空白）。
-  svg.setAttribute("class", "process-graph-edges");
-  children.push(svg);
+  // —— 1. 备节点数据（组卡/容器卡/哨/菱形 → X6 HTML 节点 data；卡片 DOM 复用既有模板） ——
+  // viewByGroupId 覆盖全部层级：顶层 + 嵌套组（byId 由 ensureProcessGroups 递归构建）。
+  const viewByGroupId = new Map([
+    ...groups.map((group) => [group.id, group]),
+    ...(groups.byId ? [...groups.byId.entries()] : []),
+  ]);
 
   // 来源着色：多来源时按 sourceFlowId 分配色板下标
   const sourceOrder = [];
@@ -1405,144 +2155,279 @@ function fillProcessPanel(panel, item) {
     (flow?.meta?.sourceFlows || []).map((source) => [source.flowId, source]),
   );
 
+  const prepared = new Map(); // node.id → { shape, data, size? }
   if (graph) {
     for (const node of graph.nodes) {
       if (node.type === "start" || node.type === "end") {
-        const sentinel = document.createElement("div");
-        sentinel.className =
-          "process-sentinel" + (node.type === "end" ? " end" : "");
-        sentinel.dataset.sentinelNode = node.id;
-        sentinel.textContent = node.label;
-        children.push(sentinel);
-        elements.set(node.id, sentinel);
+        prepared.set(node.id, {
+          shape: "flow-sentinel",
+          data: { id: node.id, end: node.type === "end", label: node.label },
+        });
+        continue;
+      }
+      if (node.container) {
+        // 容器卡（外层组卡）：只承载头部（编号/名称/URL/targetSystem/分支徽标）；
+        // 内层组卡与直接步骤卡是独立 cell，布局后几何上落在容器边界内。
+        const view = graphNodeView(node, graph.entries, viewByGroupId);
+        if (!view) continue;
+        const branchEntries = view.branchEntries || [];
+        prepared.set(node.id, {
+          shape: "flow-card-container",
+          data: {
+            groupKey: node.id,
+            selected: item.selectedGroup === node.id,
+            heading: view.number + " · " + view.name,
+            url: view.url,
+            targetSystem: node.targetSystem,
+            branchText: branchEntries.length
+              ? "分支 · " +
+                branchEntries
+                  .map(
+                    (entry) =>
+                      `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+                  )
+                  .join("；")
+              : "",
+            status: graphNodeResultStatus(node, graph.entries, resultByStepId),
+          },
+        });
         continue;
       }
       if (node.type === "decision") {
         // 判断节点（菱形）：契约形态的组尾 condition 提取为独立节点，
         // 连接两个出向组；组卡不再重复显示该步骤行。
-        const decision = document.createElement("div");
-        decision.className = "process-decision";
-        decision.dataset.decisionNode = node.id;
-        decision.title = node.label;
-        const text = document.createElement("span");
-        text.textContent = node.label;
-        decision.appendChild(text);
-        const decisionStatus = graphNodeResultStatus(
-          node,
-          graph.entries,
-          resultByStepId,
-        );
-        if (decisionStatus) decision.classList.add("result-" + decisionStatus);
-        children.push(decision);
-        elements.set(node.id, decision);
+        prepared.set(node.id, {
+          shape: "flow-decision",
+          data: {
+            id: node.id,
+            label: node.label,
+            status: graphNodeResultStatus(node, graph.entries, resultByStepId),
+          },
+        });
         continue;
       }
       const view = graphNodeView(node, graph.entries, viewByGroupId);
       if (!view) continue;
-      const section = rowTemplate("canvasGroupCardTemplate").cloneNode(true);
       const groupKey = node.groupId || node.id;
-      const selected = item.selectedGroup === groupKey;
-      section.dataset.canvasGroup = groupKey;
-      section.classList.toggle("selected", selected);
-      const icon = section.querySelector(".canvas-group-icon");
-      icon.src = groupFaviconUrl(view.url);
-      icon.onerror = () => {
-        icon.src = genericGroupIcon;
-        icon.onerror = null;
-      };
-      const heading = section.querySelector(".canvas-group-heading");
-      heading.dataset.groupSelect = groupKey;
-      heading.setAttribute("aria-pressed", String(selected));
-      heading.textContent = view.number + " · " + view.name;
-      // 分支徽标：该组是某个 condition 的 true/false 目标时说明"何时执行"。
       const branchEntries = view.branchEntries || [];
-      const branchBadge = section.querySelector(".canvas-group-branch");
-      branchBadge.hidden = branchEntries.length === 0;
-      if (branchEntries.length) {
-        section.classList.add("branch-target");
-        branchBadge.textContent =
-          "分支 · " +
-          branchEntries
-            .map(
-              (entry) =>
-                `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
-            )
-            .join("；");
-      }
-      // 来源着色（单来源 = 录制原色不动；多来源 = 按来源上色 + 图例）
-      if (sourceOrder.length > 1 && node.sourceFlowId) {
-        const colorIndex = sourceOrder.indexOf(node.sourceFlowId);
-        if (colorIndex >= 0) {
-          section.classList.add("has-source");
-          section.style.borderColor =
-            PROCESS_SOURCE_COLORS[colorIndex % PROCESS_SOURCE_COLORS.length];
+      // 行区间：卡范围 [firstIndex, lastIndex)（扁平叶下标）映射到直接子项
+      //（子项叶跨度与卡范围相交即入选——切分卡只出覆盖段；嵌套子组行显示
+      // 子组编号/标签）。步骤卡（下钻视图）不重复出行，Expend 时出一行
+      // 说明明细；组行在 Expend 时行下展开下一级明细行。
+      const childRows = [];
+      if (node.type === "step") {
+        if (viewState.expanded) {
+          const detailText = stepDetailText(item, node.firstIndex);
+          if (detailText)
+            childRows.push({
+              child: node.step,
+              childFirst: node.firstIndex,
+              text: detailText,
+              code: "",
+            });
+        }
+      } else {
+        let leaf = view.start || 0;
+        const flowSteps = view.flowSteps || [];
+        for (let i = 0; i < flowSteps.length; i++) {
+          const child = flowSteps[i];
+          if (!child || typeof child !== "object") continue;
+          const span =
+            child.kind === "group" ? countFlowLeaves(child.steps) : 1;
+          const childFirst = leaf;
+          const childLast = leaf + span;
+          leaf = childLast;
+          if (childLast <= node.firstIndex || childFirst >= node.lastIndex)
+            continue;
+          childRows.push({ child, childFirst, offset: i });
         }
       }
-      // 回放态：组卡结果描边（全过=绿、有失败=红、全跳过=灰）
-      const nodeStatus = graphNodeResultStatus(node, graph.entries, resultByStepId);
-      if (nodeStatus) section.classList.add("result-" + nodeStatus);
-      // 组卡行区间对齐：切分卡只显示 [firstIndex, lastIndex) 覆盖的行
-      //（view.start 为组首行绝对下标；嵌套组行按旧近似处理）。
-      const rowOffset = Math.max(0, node.firstIndex - (view.start || 0));
-      section.querySelector(".canvas-group-nodes").replaceChildren(
-        ...(view.steps.length
-          ? view.steps
-              .slice(
-                Math.min(rowOffset, view.steps.length),
-                Math.min(
-                  rowOffset + Math.max(0, node.lastIndex - node.firstIndex),
-                  view.steps.length,
-                ),
-              )
-              .map((text, index) =>
-                // 步骤行状态：flowStep 与 graph.entries 中的是同一对象引用，
-                // 展平时已标注 flattenedStepId（嵌套 group 行无标注，跳过状态叠加）
-                canvasStepNode(
-                  view,
-                  text,
-                  rowOffset + index,
-                  item.summary === true,
-                  resultByStepId.get(
-                    view.flowSteps?.[rowOffset + index]?.flattenedStepId,
-                  ),
-                ),
-              )
-          : [rowTemplate("canvasEmptyStepTemplate").cloneNode(true)]),
-      );
-      children.push(section);
-      elements.set(node.id, section);
+      const colorIndex =
+        sourceOrder.length > 1 && node.sourceFlowId
+          ? sourceOrder.indexOf(node.sourceFlowId)
+          : -1;
+      prepared.set(node.id, {
+        shape: "flow-card",
+        data: {
+          groupKey,
+          selected: item.selectedGroup === groupKey,
+          heading:
+            node.type === "step"
+              ? (viewState.numbering?.get(node.step?.id) || "—") +
+                " · " +
+                (node.label || view.name)
+              : view.number + " · " + view.name,
+          stepCard: node.type === "step",
+          url: view.url,
+          targetSystem: view.targetSystem || "",
+          branchText: branchEntries.length
+            ? "分支 · " +
+              branchEntries
+                .map(
+                  (entry) =>
+                    `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+                )
+                .join("；")
+            : "",
+          borderColor:
+            colorIndex >= 0
+              ? PROCESS_SOURCE_COLORS[
+                  colorIndex % PROCESS_SOURCE_COLORS.length
+                ]
+              : "",
+          status: graphNodeResultStatus(node, graph.entries, resultByStepId),
+          rows: childRows.map(({ child, childFirst, offset, text, code }) => {
+            let details = null;
+            if (viewState.expanded && child && child.kind !== "condition") {
+              if (child.kind === "group") {
+                const lines = (child.steps || [])
+                  .filter((entry) => entry && typeof entry === "object")
+                  .map((entry) => ({
+                    code: viewState.numbering?.get(entry.id) || "",
+                    text: entry.label?.trim() || entry.id,
+                  }));
+                if (lines.length) details = lines;
+              } else {
+                const line = stepDetailText(item, childFirst);
+                if (line) details = [{ code: "", text: line }];
+              }
+            }
+            return {
+              index: childFirst,
+              code:
+                code ??
+                ((child && viewState.numbering?.get(child.id)) ||
+                  view.number +
+                    "-" +
+                    String((offset ?? 0) + 1).padStart(2, "0")),
+              text:
+                text ??
+                (typeof offset === "number" ? view.steps[offset] : child?.label) ??
+                "",
+              manual:
+                child?.execution === "manual" ||
+                String(child?.id || "").startsWith("manual_") ||
+                item.summary !== true,
+              condition: child?.kind === "condition",
+              result: resultByStepId.get(child?.flattenedStepId),
+              details,
+            };
+          }),
+        },
+      });
     }
   }
-  world.replaceChildren(...children);
 
-  // —— 2/3. dagre 布局（先量卡片尺寸）→ 绝对定位 ——
-  if (graph && graph.nodes.length) {
-    const laid = FlowGraph.layoutGraph(graph, (node) => {
-      const el = elements.get(node.id);
-      return el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined;
-    });
-    if (laid) {
-      for (const node of graph.nodes) {
-        const el = elements.get(node.id);
-        if (!el || node.left === undefined) continue;
-        el.style.left = node.left + "px";
-        el.style.top = node.top + "px";
+  // —— 2/3. 布局与填充：Swimlane 视图走自算网格（buildSwimlane 实测卡高）；
+  // Flow 视图走 dagre（隐藏宿主实测卡片尺寸）→ X6 节点/边填充 ——
+  const minimapHost = canvas.querySelector(".process-minimap");
+  const engine = engineReady ? ensureProcessCanvasGraph(canvas) : null;
+  if (engine) {
+    if (viewState.view === "swimlane") {
+      const laneSource = flow || demoFlow;
+      const lane =
+        laneSource && laneSource.steps?.length
+          ? FlowGraph.buildSwimlane(laneSource, (task) =>
+              measureCanvasNodeElement(
+                buildLaneTaskElement(
+                  swimlaneTaskData(
+                    task,
+                    item,
+                    [],
+                    new Map(),
+                    viewState.expanded,
+                  ),
+                ),
+              ),
+            )
+          : null;
+      if (lane && lane.tasks.length) {
+        minimapHost.hidden = false;
+        attachProcessMinimap(canvas, engine);
+        engine.graph.fromJSON({
+          cells: buildSwimlaneCells(
+            lane,
+            {
+              resultByStepId,
+              hasResults,
+              runFinished: hasResults && !item?.testRunning,
+            },
+            item,
+            viewState,
+          ),
+        });
+        engine.world = {
+          width: Math.max(1, lane.worldWidth),
+          height: Math.max(1, lane.worldHeight),
+        };
+      } else {
+        engine.graph.fromJSON({ cells: [] });
+        engine.world = null;
+        minimapHost.hidden = true;
       }
-      world.style.width = Math.max(1, graph.worldWidth) + "px";
-      world.style.height = Math.max(1, graph.worldHeight) + "px";
-      // —— 4. 画边层（含回放态叠加） ——
-      drawProcessGraphEdges(svg, world, graph, {
-        resultByStepId,
-        hasResults,
-        runFinished: hasResults && !item?.testRunning,
+    } else if (graph && graph.nodes.length) {
+      const laid = FlowGraph.layoutGraph(graph, (node) => {
+        const entry = prepared.get(node.id);
+        if (!entry) return undefined;
+        if (!entry.size) {
+          const builder =
+            entry.shape === "flow-card"
+              ? buildFlowCardElement
+              : entry.shape === "flow-decision"
+                ? buildFlowDecisionElement
+                : buildFlowSentinelElement;
+          entry.size = measureCanvasNodeElement(builder(entry.data));
+        }
+        return entry.size;
       });
+      if (laid) {
+        const cells = [];
+        for (const node of graph.nodes) {
+          const entry = prepared.get(node.id);
+          // 尺寸取布局后的 node.width/height（layoutGraph 对全部节点写尺寸：
+          // 组卡/菱形来自实测，哨节点来自 SENTINEL_SIZE——measure 回调只覆盖
+          // 组卡/菱形，哨节点 entry 没有 size）。
+          if (!entry || node.left === undefined || node.width === undefined)
+            continue;
+          cells.push({
+            shape: entry.shape,
+            id: node.id,
+            // 容器垫底（0）：边与其同层但后插入画在其上，卡/哨/菱形在最上层。
+            zIndex: node.container ? 0 : 1,
+            x: node.left,
+            y: node.top,
+            width: node.width,
+            height: node.height,
+            data: entry.data,
+          });
+        }
+        // —— 4. 边（含回放态叠加）—— 先亮出小地图容器并确保 MiniMap 已挂载
+        //（需宿主有尺寸，NaN 防护见 attachProcessMinimap）再填充 cells。
+        cells.push(
+          ...buildProcessEdgeCells(graph, {
+            resultByStepId,
+            hasResults,
+            runFinished: hasResults && !item?.testRunning,
+          }),
+        );
+        minimapHost.hidden = false;
+        attachProcessMinimap(canvas, engine);
+        engine.graph.fromJSON({ cells });
+        // 内容尺寸交给 bindProcessMap 的 fit()（与旧 world offset 尺寸同源）
+        engine.world = {
+          width: Math.max(1, graph.worldWidth),
+          height: Math.max(1, graph.worldHeight),
+        };
+      } else {
+        engine.graph.fromJSON({ cells: [] });
+        engine.world = null;
+        minimapHost.hidden = true;
+      }
     } else {
-      world.style.width = "";
-      world.style.height = "";
+      engine.graph.fromJSON({ cells: [] });
+      engine.world = null;
+      minimapHost.hidden = true;
     }
-  } else {
-    world.style.width = "";
-    world.style.height = "";
   }
 
   // 来源图例（画布层固定悬浮，不随平移缩放）
@@ -1717,6 +2602,116 @@ async function flushInstructionEdits(item) {
     void rebuildItemTestFlow(item);
     restoreInstructionRows(item, state, message);
     showFlowlinkNotice("保存步骤修改失败：" + message, "warn");
+  }
+}
+
+/** 组卡头 targetSystem 标签编辑：chip → 行内输入 → Enter/失焦提交（Esc 取消）。
+ * 提交走 saveGroupTargetSystem（flow:updateSteps 校验落盘，失败原地回滚）。 */
+function beginGroupSystemEdit(chip, item, groupId) {
+  if (!groupId || chip.querySelector("input")) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "instruction-group-system-input";
+  input.value = item.processFlow ? findGroupDeep(item.processFlow.steps, groupId)?.targetSystem || "" : "";
+  input.placeholder = "目标系统（留空清除）";
+  chip.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (apply) => {
+    if (done) return;
+    done = true;
+    const value = input.value;
+    restoreChipText(chip, value, apply === false);
+    if (apply === false) return;
+    void saveGroupTargetSystem(item, groupId, value, chip);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+}
+
+function restoreChipText(chip, value, cancelled) {
+  const previous = chip.dataset.systemValue || "";
+  const next = cancelled ? previous : value.trim();
+  chip.dataset.systemValue = next;
+  chip.textContent = next || "＋ 系统";
+  chip.classList.toggle("empty", !next);
+  chip.title = next ? "目标系统（点击编辑）" : "设置目标系统标签（可选）";
+}
+
+/** 深度查找分组（嵌套任意层级）。 */
+function findGroupDeep(steps, groupId) {
+  for (const step of steps || []) {
+    if (step?.kind !== "group") continue;
+    if (step.id === groupId) return step;
+    const found = findGroupDeep(step.steps, groupId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 定位分组在其父列表中的位置（嵌套任意层级）：
+ * 返回 { group, list, index, parent }（parent = 直接外层组，顶层为 null）。 */
+function locateGroup(steps, groupId) {
+  const walk = (list, parent) => {
+    for (let i = 0; i < (list || []).length; i++) {
+      const step = list[i];
+      if (step?.kind !== "group") continue;
+      if (step.id === groupId) return { group: step, list, index: i, parent };
+      const found = walk(step.steps, step);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(steps, null);
+}
+
+/** flattenedStepId（l1/l2/step）→ 直接父列表与祖先组链（内层在前、顶层在后）。
+ * 返回 { list, chain }；找不到返回 null。 */
+function parentListForFlatId(steps, flattenedStepId) {
+  const segments = String(flattenedStepId || "").split("/");
+  segments.pop();
+  let list = steps;
+  const chain = [];
+  for (const groupId of segments) {
+    const next = list.find((s) => s?.kind === "group" && s.id === groupId);
+    if (!next) return null;
+    chain.push(next);
+    list = next.steps;
+  }
+  return { list, chain };
+}
+
+/** targetSystem 落盘：改组对象 → persistProcessFlow（strict 契约校验）；
+ * 失败回滚原值并提示。空串 = 清除标签。 */
+async function saveGroupTargetSystem(item, groupId, value, chip) {
+  const group = findGroupDeep(item.processFlow?.steps || [], groupId);
+  if (!group) return;
+  const trimmed = value.trim();
+  const before = group.targetSystem;
+  if (trimmed) group.targetSystem = trimmed;
+  else delete group.targetSystem;
+  try {
+    await flushInstructionEdits(item);
+    await persistProcessFlow(item);
+    chip.dataset.systemValue = trimmed;
+    showFlowlinkNotice(trimmed ? `目标系统标签已保存：${trimmed}` : "目标系统标签已清除");
+  } catch (error) {
+    if (before === undefined) delete group.targetSystem;
+    else group.targetSystem = before;
+    restoreChipText(chip, String(before ?? ""), false);
+    showFlowlinkNotice(
+      "保存目标系统标签失败：" + (error instanceof Error ? error.message : String(error)),
+      "warn",
+    );
   }
 }
 
@@ -2120,73 +3115,97 @@ function fillInstructionPanel(panel, item) {
       "存在待确认的 AI 流程更新：此处的编辑基于当前版本直接生效；编辑生效后待确认版本将无法确认（需重新生成）。请先在 AI 面板 Confirm 或 Discard。";
     status.hidden = false;
   }
+  // 递归组卡渲染：组卡按层级嵌套（内层组卡位于外层组卡内，默认折叠），
+  // 直接叶子步骤行挂在所属组的卡内；编号来自 numberingOf（01/01-01/…）。
+  const entryByStep = new Map(flat.entries.map((entry) => [entry.step, entry]));
+  const buildStepRow = (entry, group) => {
+    const step = entry.step;
+    const el = rowTemplate("instructionStepTemplate").cloneNode(true);
+    el.dataset.stepIndex = entry.index;
+    el.querySelector(".step-row-number").textContent =
+      group.numbering?.get(step.id) ||
+      group.number + "-" + String(entry.index - group.start + 1).padStart(2, "0");
+    el.querySelector(".step-row-text").textContent = processStepLabel(
+      step,
+      entry.index,
+      groups,
+    );
+    // 徽标规则与 Process 图一致：原始录制 = Manual 来源；REFINED/AI 细化
+    // = Automation；显式 execution: manual 或手动新增步骤始终 Manual。
+    const manual =
+      step.execution === "manual" ||
+      String(step.id || "").startsWith("manual_") ||
+      item.summary !== true;
+    const icon = el.querySelector(".execution-mode-icon");
+    icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
+    icon.title = manual ? "Manual" : "Automated";
+    setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
+    setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
+    const badges = el.querySelector(".step-badges");
+    if (step.isOptional) badges.appendChild(instructionChip("可跳过"));
+    if (step.execution === "manual")
+      badges.appendChild(instructionChip("人工执行"));
+    if (step.kind === "condition") el.classList.add("condition-step");
+    const fields = el.querySelector(".step-detail-fields");
+    const open = item.instructionStepOpen.includes(entry.flattenedStepId);
+    fields.hidden = !(item.instructionExpanded.includes(group.id) || open);
+    if (!fields.hidden) renderInstructionDrawer(fields, item, entry, flat);
+    el.querySelector(".instruction-step-menu").disabled = !editable;
+    return el;
+  };
+  const buildSection = (group, depth) => {
+    const expanded = item.instructionExpanded.includes(group.id);
+    const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
+    section.dataset.instructionGroup = group.id;
+    section.dataset.instructionDepth = String(depth);
+    section.classList.toggle("nested-group", depth > 0);
+    // 内层组默认折叠（只留组卡头）；顶层保持现状（行常显，Expand 只管技术抽屉）。
+    section.classList.toggle("is-collapsed", depth > 0 && !expanded);
+    section.querySelector("h3").textContent = group.number + " " + group.name;
+    section.querySelector(".instruction-group-tab").textContent = group.url
+      ? urlBadgeText(group.url, group.tab)
+      : `Tab ${group.tab}`;
+    const branchEntries = group.branchEntries || [];
+    const branch = section.querySelector(".instruction-group-branch");
+    branch.hidden = !branchEntries.length;
+    if (branchEntries.length)
+      branch.textContent =
+        "分支 · " +
+        branchEntries
+          .map(
+            (entry) =>
+              `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
+          )
+          .join("；");
+    // targetSystem 标签：展示 + 编辑入口（自由文本，经 flow:updateSteps 校验落盘）
+    const systemChip = document.createElement("button");
+    systemChip.type = "button";
+    systemChip.className =
+      "instruction-group-system" + (group.targetSystem ? "" : " empty");
+    systemChip.dataset.instructionSystem = group.id;
+    systemChip.textContent = group.targetSystem || "＋ 系统";
+    systemChip.title = group.targetSystem
+      ? "目标系统（点击编辑）"
+      : "设置目标系统标签（可选）";
+    systemChip.disabled = !editable;
+    section.querySelector(".instruction-group-meta").appendChild(systemChip);
+    const expand = section.querySelector(".instruction-expand");
+    expand.dataset.instructionExpand = group.id;
+    expand.setAttribute("aria-expanded", String(expanded));
+    expand.querySelector("span").textContent = expanded
+      ? "Collapse"
+      : "Expand";
+    for (const step of group.flowSteps || []) {
+      if (step?.kind === "group") continue;
+      const entry = entryByStep.get(step);
+      if (entry) section.appendChild(buildStepRow(entry, group));
+    }
+    for (const child of group.groups || [])
+      section.appendChild(buildSection(child, depth + 1));
+    return section;
+  };
   container.replaceChildren(
-    ...groups.map((group) => {
-      const expanded = item.instructionExpanded.includes(group.id);
-      const section = rowTemplate("instructionGroupTemplate").cloneNode(true);
-      section.dataset.instructionGroup = group.id;
-      section.querySelector("h3").textContent = group.number + " " + group.name;
-      section.querySelector(".instruction-group-tab").textContent = group.url
-        ? urlBadgeText(group.url, group.tab)
-        : `Tab ${group.tab}`;
-      const branchEntries = group.branchEntries || [];
-      const branch = section.querySelector(".instruction-group-branch");
-      branch.hidden = !branchEntries.length;
-      if (branchEntries.length)
-        branch.textContent =
-          "分支 · " +
-          branchEntries
-            .map(
-              (entry) =>
-                `当「${entry.conditionLabel}」为 ${entry.whenTrue ? "是" : "否"} 时执行`,
-            )
-            .join("；");
-      const expand = section.querySelector(".instruction-expand");
-      expand.dataset.instructionExpand = group.id;
-      expand.setAttribute("aria-expanded", String(expanded));
-      expand.querySelector("span").textContent = expanded
-        ? "Collapse"
-        : "Expand";
-      flat.entries
-        .slice(group.start, group.start + group.count)
-        .forEach((entry, offset) => {
-          const step = entry.step;
-          const el = rowTemplate("instructionStepTemplate").cloneNode(true);
-          el.dataset.stepIndex = entry.index;
-          el.querySelector(".step-row-number").textContent =
-            group.number + "-" + String(offset + 1).padStart(3, "0");
-          el.querySelector(".step-row-text").textContent = processStepLabel(
-            step,
-            entry.index,
-            groups,
-          );
-          // 徽标规则与 Process 图一致：原始录制 = Manual 来源；REFINED/AI 细化
-          // = Automation；显式 execution: manual 或手动新增步骤始终 Manual。
-          const manual =
-            step.execution === "manual" ||
-            String(step.id || "").startsWith("manual_") ||
-            item.summary !== true;
-          const icon = el.querySelector(".execution-mode-icon");
-          icon.setAttribute("aria-label", manual ? "Manual" : "Automated");
-          icon.title = manual ? "Manual" : "Automated";
-          setIconHidden(icon.querySelector('[data-mode-icon="automated"]'), manual);
-          setIconHidden(icon.querySelector('[data-mode-icon="manual"]'), !manual);
-          const badges = el.querySelector(".step-badges");
-          if (step.isOptional) badges.appendChild(instructionChip("可跳过"));
-          if (step.execution === "manual")
-            badges.appendChild(instructionChip("人工执行"));
-          if (step.kind === "condition") el.classList.add("condition-step");
-          const fields = el.querySelector(".step-detail-fields");
-          const open = item.instructionStepOpen.includes(
-            entry.flattenedStepId,
-          );
-          fields.hidden = !(expanded || open);
-          if (!fields.hidden) renderInstructionDrawer(fields, item, entry, flat);
-          el.querySelector(".instruction-step-menu").disabled = !editable;
-          section.appendChild(el);
-        });
-      return section;
-    }),
+    ...groups.map((group) => buildSection(group, 0)),
   );
 }
 
@@ -2225,7 +3244,7 @@ function renderInstructionReadonly(container, item) {
         const el = rowTemplate("instructionStepTemplate").cloneNode(true);
         el.dataset.stepIndex = group.start + offset;
         el.querySelector(".step-row-number").textContent =
-          group.number + "-" + String(offset + 1).padStart(3, "0");
+          group.number + "-" + String(offset + 1).padStart(2, "0");
         el.querySelector(".step-row-text").textContent = text;
         el.querySelector(".instruction-step-menu").hidden = true;
         el.querySelector(".step-detail-fields")?.remove();
@@ -2914,15 +3933,36 @@ function openInstructionStepMenu(button) {
       case "down":
         void moveInstructionStep(item, entry.index, 1);
         break;
-      case "insert":
-        showManualStepEditor(item, entry.groupId, index + 1);
+      case "insert": {
+        // 插入目标 = 该步骤的直接父组与组内位置（嵌套任意层级）。
+        const located = parentListForFlatId(
+          item.processFlow.steps,
+          entry.flattenedStepId,
+        );
+        if (located)
+          showManualStepEditor(
+            item,
+            located.chain.at(-1)?.id || entry.groupId,
+            located.list.indexOf(entry.step) + 1,
+          );
         break;
+      }
       case "delete":
         void deleteInstructionStep(item, entry.index);
         break;
-      case "rerecord":
-        void beginGroupRecording(item, entry.groupId, "replace");
+      case "rerecord": {
+        // 重录目标 = 该步骤的直接父组（嵌套任意层级）。
+        const located = parentListForFlatId(
+          item.processFlow.steps,
+          entry.flattenedStepId,
+        );
+        void beginGroupRecording(
+          item,
+          located?.chain.at(-1)?.id || entry.groupId,
+          "replace",
+        );
         break;
+      }
     }
   };
 }
@@ -2948,22 +3988,25 @@ async function moveInstructionStep(item, flatIndex, delta) {
   if (!found) return;
   await flushInstructionEdits(item); // 先落盘防抖中的编辑，避免结构变更与回滚快照交叉
   const { entry } = found;
-  const group = item.processFlow.steps.find(
-    (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
+  // 组内上移/下移：在直接父列表内换位（嵌套任意层级；condition 始终保持组尾）。
+  const located = parentListForFlatId(
+    item.processFlow.steps,
+    entry.flattenedStepId,
   );
-  if (!group) return;
-  const index = group.steps.indexOf(entry.step);
+  if (!located) return;
+  const list = located.list;
+  const index = list.indexOf(entry.step);
   const target = index + delta;
   if (
     target < 0 ||
-    target >= group.steps.length ||
+    target >= list.length ||
     entry.step.kind === "condition" ||
-    group.steps[target]?.kind === "condition"
+    list[target]?.kind === "condition"
   )
     return;
   const snapshot = structuredClone(item.processFlow.steps);
-  const [moved] = group.steps.splice(index, 1);
-  group.steps.splice(target, 0, moved);
+  const [moved] = list.splice(index, 1);
+  list.splice(target, 0, moved);
   try {
     await persistProcessFlow(item);
     renderSummaryWorkspace();
@@ -3022,28 +4065,35 @@ async function deleteInstructionStep(item, flatIndex) {
   if (!found) return;
   const { entry } = found;
   const steps = item.processFlow.steps;
-  const group = steps.find(
-    (candidate) => candidate.kind === "group" && candidate.id === entry.groupId,
-  );
-  if (!group) return;
-  const groups = steps.filter((candidate) => candidate.kind === "group");
-  if (groups.length <= 1 && group.steps.length <= 1) {
+  const located = parentListForFlatId(steps, entry.flattenedStepId);
+  if (!located) return;
+  const { list: parentList, chain } = located;
+  // 契约：Flow 必须至少保留一个可执行步骤（嵌套下按全量叶数判断）。
+  if (executableFlowSteps(steps).length <= 1) {
     showFlowlinkNotice("流程至少需要保留一个步骤，无法删除。", "warn");
     return;
   }
   const groupView = ensureProcessGroups(item).find((g) => g.id === entry.groupId);
-  const numberLabel = groupView
-    ? groupView.number + "-" + String(entry.index - groupView.start + 1).padStart(3, "0")
-    : "步骤";
+  const numberLabel =
+    groupView?.numbering?.get(entry.step.id) ||
+    (groupView
+      ? groupView.number + "-" + String(entry.index - groupView.start + 1).padStart(2, "0")
+      : "步骤");
   const snapshot = structuredClone(steps);
   const removedIds = new Set(entry.step.id ? [entry.step.id] : []);
-  const groupStepIds = stepIdsOf(group);
-  group.steps.splice(group.steps.indexOf(entry.step), 1);
-  let removedGroup = false;
-  if (!group.steps.length) {
-    steps.splice(steps.indexOf(group), 1);
-    removedGroup = true;
-    for (const id of groupStepIds) removedIds.add(id);
+  parentList.splice(parentList.indexOf(entry.step), 1);
+  // 删空组连带：自直接父组向上移除因此变空的祖先组（收集其内步骤 id 已含于上）。
+  let removedGroupName = "";
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const ancestor = chain[i];
+    if ((ancestor.steps || []).length) break;
+    const holder = i === 0 ? steps : chain[i - 1].steps;
+    const at = holder.indexOf(ancestor);
+    if (at >= 0) {
+      holder.splice(at, 1);
+      removedIds.add(ancestor.id);
+      if (!removedGroupName) removedGroupName = ancestor.label || ancestor.id;
+    }
   }
   clearDanglingBranchRefs(steps, removedIds);
   item.instructionStepOpen = item.instructionStepOpen.filter(
@@ -3052,7 +4102,7 @@ async function deleteInstructionStep(item, flatIndex) {
   try {
     await persistProcessFlow(item);
     showFlowlinkNotice(
-      removedGroup
+      removedGroupName
         ? "已删除步骤 " + numberLabel + "，所在空组已一并删除。"
         : "已删除步骤 " + numberLabel + "。",
     );
@@ -6657,57 +7707,81 @@ function ensureProcessGroups(item) {
       }
     };
     collectConditions(item.processFlow.steps);
-    // 步骤 id → 所属顶层组 id（分支目标解析到组，用于组卡徽标）。
-    const groupByStepId = new Map();
-    for (const group of item.processFlow.steps) {
-      if (group?.kind !== "group") continue;
-      const walk = (list) => {
-        for (const step of list || []) {
-          if (step?.kind === "group") walk(step.steps);
-          else if (step?.id) groupByStepId.set(step.id, group.id);
-        }
-      };
-      walk(group.steps);
-    }
+    // 步骤 id → 祖先组 id 链（直接父组 → … → 顶层组）：分支徽标按各级组卡
+    // 显示「该组何时被执行」，嵌套下内层组卡同样能挂徽标。
+    const groupChainByStepId = new Map();
+    const walkChain = (list, chain) => {
+      for (const step of list || []) {
+        if (step?.kind === "group") walkChain(step.steps, [...chain, step.id]);
+        else if (step?.id) groupChainByStepId.set(step.id, chain);
+      }
+    };
+    walkChain(item.processFlow.steps, []);
     const branchEntriesOf = (groupId) =>
       conditionSteps
         .filter((step) => {
-          const trueGroup = step.trueStepId
-            ? groupByStepId.get(step.trueStepId)
-            : undefined;
-          const falseGroup = step.falseStepId
-            ? groupByStepId.get(step.falseStepId)
-            : undefined;
-          return trueGroup === groupId || falseGroup === groupId;
+          for (const target of [step.trueStepId, step.falseStepId]) {
+            const chain = target ? groupChainByStepId.get(target) : undefined;
+            if (chain && chain.includes(groupId)) return true;
+          }
+          return false;
         })
         .map((step) => ({
           conditionLabel: step.label?.trim() || step.id,
-          whenTrue: groupByStepId.get(step.trueStepId) === groupId,
-        }));
-    let start = 0;
-    return item.processFlow.steps
-      .filter((step) => step.kind === "group")
-      .map((group, index, all) => {
-        const flowSteps = group.steps || [];
-        const view = {
-          id: group.id,
-          name: group.label,
-          label: group.label,
-          index,
-          start,
-          count: flowSteps.length,
-          number: String(index + 1).padStart(2, "0"),
-          tab: flowSteps.find((step) => step.page?.index !== undefined)?.page?.index + 1 || 1,
-          url: flowSteps.find((step) => step.pageUrl)?.pageUrl || item.url || "",
-          flowSteps,
-          branchEntries: branchEntriesOf(group.id),
-          steps: flowSteps.map((step, stepIndex) =>
-            processStepLabel(step, stepIndex, all),
+          whenTrue: (groupChainByStepId.get(step.trueStepId) || []).includes(
+            groupId,
           ),
-        };
-        start += flowSteps.length;
-        return view;
-      });
+        }));
+    // 层级编号（01 / 01-01 / 01-01-01…）：numberingOf 按树位置派生，
+    // Process/Instruction/Test 三处共用同一映射。
+    const numbering = FlowGraph.numberingOf(item.processFlow);
+    const byId = new Map();
+    const topLevelGroups = item.processFlow.steps.filter((s) => s.kind === "group");
+    const countLeaves = (list) => {
+      let n = 0;
+      for (const step of list || []) {
+        if (step?.kind === "group") n += countLeaves(step.steps);
+        else n += 1;
+      }
+      return n;
+    };
+    let leafCursor = 0;
+    // 递归建组视图：start/count 对齐扁平叶序（Process 卡行区间/Instruction
+    // 树渲染共用）；byId 覆盖全部层级（嵌套组卡查找），groups 挂子组视图。
+    const buildView = (group, index, containerId) => {
+      const flowSteps = group.steps || [];
+      const leafCount = countLeaves(flowSteps);
+      const view = {
+        id: group.id,
+        name: group.label,
+        label: group.label,
+        index,
+        start: leafCursor,
+        count: leafCount,
+        number: numbering.get(group.id) || String(index + 1).padStart(2, "0"),
+        numbering,
+        containerId: containerId || null,
+        tab: flowSteps.find((step) => step.page?.index !== undefined)?.page?.index + 1 || 1,
+        url: flowSteps.find((step) => step.pageUrl)?.pageUrl || item.url || "",
+        targetSystem: group.targetSystem || "",
+        flowSteps,
+        branchEntries: branchEntriesOf(group.id),
+        steps: flowSteps.map((step, stepIndex) =>
+          processStepLabel(step, stepIndex, topLevelGroups),
+        ),
+        groups: [],
+      };
+      byId.set(group.id, view);
+      let childIndex = 0;
+      for (const step of flowSteps) {
+        if (step?.kind === "group") view.groups.push(buildView(step, childIndex++, group.id));
+      }
+      leafCursor += leafCount;
+      return view;
+    };
+    const views = topLevelGroups.map((group, index) => buildView(group, index, null));
+    views.byId = byId;
+    return views;
   }
   // 无 processFlow 的录制项（重启后恢复、旧数据）：按标签页/URL 对真实步骤分组，
   // 组名来自实际页面（bridge.js 的 buildGroupsFromSteps），不再套用演示种子文本。
@@ -6883,12 +7957,19 @@ function computeProposalDiff(currentFlow, proposalFlow) {
       changed.add(id);
   }
   for (const id of currentSteps.keys()) if (!proposalSteps.has(id)) removed.add(id);
-  const groupsOf = (flow) =>
-    new Map(
-      (flow?.steps || [])
-        .filter((step) => step.kind === "group")
-        .map((group) => [group.id, group]),
-    );
+  // 分组收集覆盖全部层级（嵌套组增删改名同样进变更清单；id 全 Flow 唯一）。
+  const groupsOf = (flow) => {
+    const map = new Map();
+    const walk = (list) => {
+      for (const step of list || []) {
+        if (step?.kind !== "group") continue;
+        map.set(step.id, step);
+        walk(step.steps);
+      }
+    };
+    walk(flow?.steps || []);
+    return map;
+  };
   const currentGroups = groupsOf(currentFlow);
   const proposalGroups = groupsOf(proposalFlow);
   const groupAdded = new Set();
@@ -6937,12 +8018,18 @@ function describePendingChanges(currentFlow, pendingFlow) {
   const pendingSteps = flatStepsOf(pendingFlow);
   const nameOf = (step, fallback) =>
     String(step?.label || step?.kind || fallback || "").trim() || fallback || "";
-  const groupsOf = (flow) =>
-    new Map(
-      (flow?.steps || [])
-        .filter((step) => step.kind === "group")
-        .map((group) => [group.id, group]),
-    );
+  const groupsOf = (flow) => {
+    const map = new Map();
+    const walk = (list) => {
+      for (const step of list || []) {
+        if (step?.kind !== "group") continue;
+        map.set(step.id, step);
+        walk(step.steps);
+      }
+    };
+    walk(flow?.steps || []);
+    return map;
+  };
   const currentGroups = groupsOf(currentFlow);
   const pendingGroups = groupsOf(pendingFlow);
 
@@ -7268,6 +8355,12 @@ function bindStepEditor() {
           beginInlineLabelEdit(row, item, found.entry);
         return;
       }
+      const systemChip = e.target.closest("[data-instruction-system]");
+      if (systemChip && item) {
+        if (instructionEditable(item))
+          beginGroupSystemEdit(systemChip, item, systemChip.dataset.instructionSystem);
+        return;
+      }
       const button = e.target.closest("[data-instruction-expand]");
       if (!button || !item) return;
       const id = button.dataset.instructionExpand,
@@ -7281,8 +8374,11 @@ function bindStepEditor() {
       button.querySelector("span").textContent = expanded
         ? "Collapse"
         : "Expand";
-      button
-        .closest(".steps-group")
+      const groupSection = button.closest(".steps-group");
+      // 内层组卡：Expand/Collapse 同时揭示/收起其内容（行与更深组卡）。
+      if (groupSection?.classList.contains("nested-group"))
+        groupSection.classList.toggle("is-collapsed", !expanded);
+      groupSection
         .querySelectorAll(".instruction-step")
         .forEach((row) => {
           const fields = row.querySelector("[data-group-details]");
@@ -7867,12 +8963,12 @@ function showConfirmDialog(message, { confirmLabel = "OK" } = {}) {
 window.showConfirmDialog = showConfirmDialog;
 
 async function addProcessGroupAfter(item, groupId) {
-  const groups = item.processFlow?.steps || [];
-  const index = groups.findIndex((group) => group.kind === "group" && group.id === groupId);
-  if (index < 0) return;
+  const steps = item.processFlow?.steps || [];
+  const located = locateGroup(steps, groupId);
+  if (!located) return;
   const label = await showProcessGroupDialog({
     title: "New group",
-    name: `Group ${groups.length + 1}`,
+    name: `Group ${steps.length + 1}`,
   });
   if (!label) return;
   const group = {
@@ -7881,7 +8977,7 @@ async function addProcessGroupAfter(item, groupId) {
     label,
     steps: [],
   };
-  groups.splice(index + 1, 0, group);
+  located.list.splice(located.index + 1, 0, group);
   item.selectedGroup = group.id;
   try {
     await persistProcessFlow(item);
@@ -7893,9 +8989,7 @@ async function addProcessGroupAfter(item, groupId) {
 }
 
 function showManualStepEditor(item, groupId, insertAtIndex) {
-  const group = item.processFlow?.steps.find(
-    (step) => step.kind === "group" && step.id === groupId,
-  );
+  const group = findGroupDeep(item.processFlow?.steps || [], groupId);
   if (!group) return;
   // 契约已放宽：condition 可位于组内任意位置，无需钳位/拒绝插入。
   const dialog = rowTemplate("processStepEditorTemplate").cloneNode(true);
@@ -8170,7 +9264,14 @@ function bindProcessMap() {
     canvas = panel?.querySelector(".process-canvas"),
     item = currentAssistantItem();
   if (!canvas || canvas.hidden || !item) return;
-  const world = canvas.querySelector(".process-canvas-world");
+  // 视图引擎：X6 变换承担 pan/zoom/fit（引擎缺失时 fillProcessPanel 已显式
+  // 报错，这里直接退出，画布无交互对象）。
+  const engine =
+    ensureProcessX6() && processCanvasGraphs.get(canvas)
+      ? processCanvasGraphs.get(canvas)
+      : null;
+  const x6graph = engine?.graph || null;
+  if (!x6graph) return;
   const placeGroupActions = () => {
     const group = [...canvas.querySelectorAll("[data-canvas-group]")].find(
         (element) => element.dataset.canvasGroup === item.selectedGroup,
@@ -8195,44 +9296,102 @@ function bindProcessMap() {
     actions.style.left = `${left}px`;
     actions.style.top = `${top}px`;
   };
-  let zoom = 1,
-    x = 0,
-    y = 0,
-    drag = null;
-  const paint = () => {
-    world.style.transform = `translate(${x}px,${y}px) scale(${zoom})`;
-    canvas.querySelector(".canvas-zoom-label").textContent =
-      Math.round(zoom * 100) + "%";
+  let drag = null;
+  // 缩放百分比与分组操作条位置跟随 X6 变换（替代旧 paint() 对 world
+  // transform 的同步）：每次 bind 重建 handler，先解绑旧引用。
+  if (engine.viewHandler) {
+    x6graph.off("scale", engine.viewHandler);
+    x6graph.off("translate", engine.viewHandler);
+  }
+  const onViewChange = () => {
+    const label = canvas.querySelector(".canvas-zoom-label");
+    if (label) label.textContent = Math.round(x6graph.zoom() * 100) + "%";
     placeGroupActions();
   };
+  engine.viewHandler = onViewChange;
+  x6graph.on("scale", onViewChange);
+  x6graph.on("translate", onViewChange);
   const fit = () => {
-    zoom = Math.min(
+    // 与旧实现同公式：内容尺寸来自 dagre 布局产出（fillProcessPanel 写入
+    // engine.world），水平居中、顶部至少 24px、缩放夹在 [0.2, 1]。
+    const world = engine.world;
+    if (!world || !world.width || !world.height) return;
+    let zoom = Math.min(
       1,
-      (canvas.clientHeight - 64) / world.offsetHeight,
-      (canvas.clientWidth - 80) / world.offsetWidth,
+      (canvas.clientHeight - 64) / world.height,
+      (canvas.clientWidth - 80) / world.width,
     );
     zoom = Math.max(0.2, zoom);
-    x = (canvas.clientWidth - world.offsetWidth * zoom) / 2;
-    y = Math.max(24, (canvas.clientHeight - world.offsetHeight * zoom) / 2);
-    paint();
+    x6graph.zoomTo(zoom, { absolute: true });
+    x6graph.translate(
+      (canvas.clientWidth - world.width * zoom) / 2,
+      Math.max(24, (canvas.clientHeight - world.height * zoom) / 2),
+    );
   };
   const scale = (
     factor,
     cx = canvas.clientWidth / 2,
     cy = canvas.clientHeight / 2,
   ) => {
-    const previous = zoom;
-    zoom = Math.max(0.2, Math.min(2, zoom * factor));
-    x = cx - ((cx - x) * zoom) / previous;
-    y = cy - ((cy - y) * zoom) / previous;
-    paint();
+    // X6 zoom 以给定中心点保点缩放（内部公式与旧手写实现一致）。
+    x6graph.zoom(factor, {
+      minScale: 0.2,
+      maxScale: 2,
+      center: { x: cx, y: cy },
+    });
   };
   processCanvasObserver = new ResizeObserver(fit);
   processCanvasObserver.observe(canvas);
-  processCanvasObserver.observe(world);
   canvas.onclick = (e) => {
     if (!e.target.closest("#canvasStepMenu")) hideStepMenu();
     if (!e.target.closest("#canvasGroupMenu")) hideGroupMenu();
+    // —— Process 工具栏：视图菜单 / Expend / 级别切换 / 下钻面包屑 ——
+    const menuButton = e.target.closest("[data-process-menu]");
+    if (menuButton) {
+      const menu = canvas.querySelector(".process-view-menu");
+      menu.hidden = !menu.hidden;
+      menuButton.setAttribute("aria-expanded", String(!menu.hidden));
+      return;
+    }
+    const viewMenu = canvas.querySelector(".process-view-menu");
+    if (viewMenu && !viewMenu.hidden) {
+      viewMenu.hidden = true;
+      canvas
+        .querySelector("[data-process-menu]")
+        ?.setAttribute("aria-expanded", "false");
+    }
+    const viewChoice = e.target.closest("[data-process-view]");
+    if (viewChoice) {
+      item.processView =
+        viewChoice.dataset.processView === "swimlane" ? "swimlane" : "flow";
+      item.processDrill = [];
+      renderSummaryWorkspace();
+      canvas.querySelector("[data-process-menu]")?.focus();
+      return;
+    }
+    const expandToggle = e.target.closest("[data-process-expand]");
+    if (expandToggle) {
+      item.processExpanded = !item.processExpanded;
+      renderSummaryWorkspace();
+      canvas.querySelector("[data-process-expand]")?.focus();
+      return;
+    }
+    const levelChoice = e.target.closest("[data-process-level]");
+    if (levelChoice) {
+      item.processLevel = Number(levelChoice.dataset.processLevel);
+      item.processDrill = [];
+      renderSummaryWorkspace();
+      return;
+    }
+    const crumb = e.target.closest("[data-drill-crumb]");
+    if (crumb) {
+      item.processDrill = (item.processDrill || []).slice(
+        0,
+        Number(crumb.dataset.drillCrumb),
+      );
+      renderSummaryWorkspace();
+      return;
+    }
     const select =
       e.target.closest("[data-group-select]") ||
       (!e.target.closest("button")
@@ -8254,7 +9413,9 @@ function bindProcessMap() {
       placeGroupActions();
       renderAIPanel();
     } else if (
-      !e.target.closest(".canvas-view-controls,.canvas-group-actions")
+      !e.target.closest(
+        ".canvas-view-controls,.canvas-group-actions,.process-toolbar,.process-hierarchy,.process-breadcrumb",
+      )
     ) {
       item.selectedGroup = null;
       canvas.querySelectorAll("[data-canvas-group]").forEach((group) => {
@@ -8322,6 +9483,7 @@ function bindProcessMap() {
     if (e.target.closest("[data-canvas-fit]")) fit();
   };
   canvas.onwheel = (e) => {
+    if (e.target.closest(".process-toolbar,.process-view-menu")) return;
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     scale(
@@ -8334,19 +9496,18 @@ function bindProcessMap() {
     if (
       e.button !== 0 ||
       e.target.closest(
-        ".canvas-group,.canvas-view-controls,#canvasStepMenu,#canvasGroupMenu,.canvas-group-actions",
+        ".canvas-group,.canvas-view-controls,#canvasStepMenu,#canvasGroupMenu,.canvas-group-actions,.process-toolbar,.process-hierarchy,.process-breadcrumb",
       )
     )
       return;
-    drag = { x: e.clientX, y: e.clientY, ox: x, oy: y };
+    const t = x6graph.translate();
+    drag = { x: e.clientX, y: e.clientY, ox: t.tx, oy: t.ty };
     canvas.setPointerCapture(e.pointerId);
     canvas.classList.add("panning");
   };
   canvas.onpointermove = (e) => {
     if (!drag) return;
-    x = drag.ox + e.clientX - drag.x;
-    y = drag.oy + e.clientY - drag.y;
-    paint();
+    x6graph.translate(drag.ox + e.clientX - drag.x, drag.oy + e.clientY - drag.y);
   };
   const end = () => {
     drag = null;
@@ -8606,6 +9767,42 @@ function bindProcessMap() {
       else if (action === "after")
         beginGroupRecording(item, groupId, "after");
     };
+  // 视图菜单键盘操作（radio 组语义：↑↓ 移动焦点、Esc 关闭）。
+  const viewSelect = canvas.querySelector(".process-view-select");
+  if (viewSelect)
+    viewSelect.onkeydown = (e) => {
+      const menu = viewSelect.querySelector(".process-view-menu");
+      const trigger = viewSelect.querySelector("[data-process-menu]");
+      const choices = [...menu.querySelectorAll("button")];
+      if (e.key === "Escape" && !menu.hidden) {
+        e.preventDefault();
+        e.stopPropagation();
+        menu.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.focus();
+      } else if (["ArrowDown", "ArrowUp"].includes(e.key)) {
+        e.preventDefault();
+        menu.hidden = false;
+        trigger.setAttribute("aria-expanded", "true");
+        const index = choices.indexOf(document.activeElement);
+        const next =
+          (index + (e.key === "ArrowDown" ? 1 : -1) + choices.length) %
+          choices.length;
+        choices[next].focus();
+      }
+    };
+  // 双击分组卡下钻一级（Flow 视图；下钻链面包屑返回）。
+  canvas.ondblclick = (e) => {
+    if (item.processView === "swimlane") return;
+    const groupEl = e.target.closest("[data-canvas-group]");
+    if (!groupEl) return;
+    const groupId = groupEl.dataset.canvasGroup;
+    if (!groupId) return;
+    const target = ensureProcessGroups(item).byId?.get(groupId);
+    if (!target || !target.flowSteps?.length) return;
+    item.processDrill = [...(item.processDrill || []), groupId];
+    renderSummaryWorkspace();
+  };
   requestAnimationFrame(fit);
 }
 async function beginGroupRecording(item, groupId, mode) {
@@ -8613,11 +9810,12 @@ async function beginGroupRecording(item, groupId, mode) {
   // 将浏览器带到目标节点之前的状态。
   const state = recordingSession();
   if (state.stage === "recording") return;
-  const group = ensureProcessGroups(item).find((g) => g.id === groupId);
-  if (!group) return;
+  const groupViews = ensureProcessGroups(item);
+  const groupView = groupViews.find((g) => g.id === groupId) || groupViews.byId?.get(groupId);
+  if (!groupView) return;
   const message =
     mode === "replace"
-      ? `Re-record node ${group.number}? This will replace its recorded steps.`
+      ? `Re-record node ${groupView.number}? This will replace its recorded steps.`
       : mode === "before"
         ? "Add a new recording before this node?"
         : "Add a new recording after this node?";
@@ -8666,7 +9864,8 @@ async function beginGroupRecording(item, groupId, mode) {
 }
 async function finishGroupRecording(state, pending, item) {
   // 同步替换或插入步骤、详情和截图范围，再根据更新后的扁平步骤序列重建分组及测试 Flow 状态。
-  const group = ensureProcessGroups(item).find((g) => g.id === pending.groupId);
+  const groupViews = ensureProcessGroups(item);
+  const group = groupViews.find((g) => g.id === pending.groupId) || groupViews.byId?.get(pending.groupId);
   if (!group) return;
   const steps =
     Array.isArray(pending.recordedSteps) && pending.recordedSteps.length
@@ -8683,10 +9882,9 @@ async function finishGroupRecording(state, pending, item) {
           )
           .filter(Boolean);
   if (item.processFlow) {
-    const groupIndex = item.processFlow.steps.findIndex(
-      (step) => step.kind === "group" && step.id === pending.groupId,
-    );
-    if (groupIndex >= 0 && steps.length) {
+    // 嵌套任意层级：直接定位分组所在父列表做替换/前插/后插。
+    const located = locateGroup(item.processFlow.steps, pending.groupId);
+    if (located && steps.length) {
       const recordedFlowSteps = Array.isArray(pending.recordedFlowSteps)
         ? pending.recordedFlowSteps
         : (pending.recordedDetails || []).map((detail, index) =>
@@ -8696,7 +9894,7 @@ async function finishGroupRecording(state, pending, item) {
               (Number(detail.tab) || 1) - 1,
             ),
           );
-      const oldGroup = item.processFlow.steps[groupIndex];
+      const oldGroup = located.group;
       let position = group.start;
       if (pending.groupMode === "replace") {
         oldGroup.steps = recordedFlowSteps;
@@ -8708,7 +9906,7 @@ async function finishGroupRecording(state, pending, item) {
           label: `${after ? "After" : "Before"} ${oldGroup.label}`,
           steps: recordedFlowSteps,
         };
-        item.processFlow.steps.splice(groupIndex + (after ? 1 : 0), 0, newGroup);
+        located.list.splice(located.index + (after ? 1 : 0), 0, newGroup);
         if (after) position += group.count;
       }
       if (pending.media) {
@@ -8811,24 +10009,44 @@ async function finishGroupRecording(state, pending, item) {
 
 async function deleteProcessGroup(item, groupId) {
   if (item.processFlow) {
-    const groups = item.processFlow.steps.filter((step) => step.kind === "group");
-    const groupIndex = item.processFlow.steps.findIndex(
-      (step) => step.kind === "group" && step.id === groupId,
-    );
-    if (groupIndex < 0) return;
-    if (groups.length <= 1) {
-      await showWorkspaceNotice("A Flow must keep at least one group.");
+    const steps = item.processFlow.steps;
+    const located = locateGroup(steps, groupId);
+    if (!located) return;
+    const { group, list, index } = located;
+    const descendantStepIds = stepIdsOf(group);
+    const nestedGroupCount = (function count(list) {
+      let n = 0;
+      for (const step of list || []) {
+        if (step?.kind !== "group") continue;
+        n += 1 + count(step.steps);
+      }
+      return n;
+    })(group.steps);
+    // 契约：删除后 Flow 仍须至少保留一个可执行步骤。
+    if (executableFlowSteps(steps).length - descendantStepIds.size < 1) {
+      await showWorkspaceNotice("A Flow must keep at least one step.");
       return;
     }
     if (
       !(await confirmWorkspaceAction(
-        `Delete group “${groups.find((group) => group.id === groupId)?.label}” and its steps? Branches pointing into it will fall back to sequential continuation.`,
+        nestedGroupCount > 0
+          ? `Delete group “${group.label}”? It contains ${descendantStepIds.size} step(s) in ${nestedGroupCount} nested group(s); all of them will be deleted together and affected branches will fall back to sequential continuation.`
+          : `Delete group “${group.label}” and its ${descendantStepIds.size} step(s)? Branches pointing into it will fall back to sequential continuation.`,
       ))
     )
       return;
-    const removedIds = stepIdsOf(groups.find((group) => group.id === groupId));
-    item.processFlow.steps.splice(groupIndex, 1);
-    clearDanglingBranchRefs(item.processFlow.steps, removedIds);
+    const removedIds = new Set(descendantStepIds);
+    removedIds.add(group.id);
+    list.splice(index, 1);
+    // 删空组连带：删除后外层组若变空（仅剩该子组），一并移除。
+    if (located.parent && !located.parent.steps.length) {
+      const parentLocated = locateGroup(steps, located.parent.id);
+      if (parentLocated) {
+        parentLocated.list.splice(parentLocated.index, 1);
+        removedIds.add(located.parent.id);
+      }
+    }
+    clearDanglingBranchRefs(steps, removedIds);
     item.selectedGroup = null;
     try {
       await persistProcessFlow(item);
@@ -8866,9 +10084,7 @@ async function deleteProcessGroup(item, groupId) {
 /* 分组操作（重命名 / 上移下移 / 并入下一组）都走 flow:updateSteps 校验保存；
  * 01/02 编号是 ensureProcessGroups 的派生值，保存后重渲染即自动重算。 */
 async function renameProcessGroup(item, groupId) {
-  const group = item.processFlow?.steps.find(
-    (step) => step.kind === "group" && step.id === groupId,
-  );
+  const group = findGroupDeep(item.processFlow?.steps || [], groupId);
   if (!group) return;
   const label = await showProcessGroupDialog({
     title: "Rename group",
@@ -8885,14 +10101,17 @@ async function renameProcessGroup(item, groupId) {
 }
 
 async function moveProcessGroup(item, groupId, direction) {
+  // 组上移/下移：在同级兄弟间换位（嵌套组在其父列表内移动，顶层在根列表内）。
   const steps = item.processFlow?.steps || [];
-  const groups = steps.filter((step) => step.kind === "group");
-  const position = groups.findIndex((group) => group.id === groupId);
-  const swapWith = direction === "up" ? position - 1 : position + 1;
-  if (position < 0 || swapWith < 0 || swapWith >= groups.length) return;
-  const a = steps.indexOf(groups[position]);
-  const b = steps.indexOf(groups[swapWith]);
-  [steps[a], steps[b]] = [steps[b], steps[a]];
+  const located = locateGroup(steps, groupId);
+  if (!located) return;
+  const { list, index } = located;
+  // 与相邻的分组兄弟换位（跳过夹在中间的裸步骤，保持旧顶层换位语义）。
+  let swapWith = direction === "up" ? index - 1 : index + 1;
+  while (swapWith >= 0 && swapWith < list.length && list[swapWith]?.kind !== "group")
+    swapWith += direction === "up" ? -1 : 1;
+  if (swapWith < 0 || swapWith >= list.length) return;
+  [list[index], list[swapWith]] = [list[swapWith], list[index]];
   item.selectedGroup = groupId;
   try {
     await persistProcessFlow(item);

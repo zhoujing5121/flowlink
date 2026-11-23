@@ -793,7 +793,7 @@ async function persistFlowUpdate(
 ): Promise<Flow> {
 	const current = await loadFlow(recording.flowFile)
 	await writeFlowHistorySnapshot(recording, current, source, summary)
-	const updated = parseFlow({ ...flow, version: current.version + 1 }, recording.flowFile)
+	const updated = parseFlow({ ...flow, version: current.version + 1 }, recording.flowFile, { strict: true })
 	await saveFlow(updated, recording.flowFile, { backup: true })
 	return updated
 }
@@ -2287,7 +2287,7 @@ function registerIpc(): void {
 				...flow,
 				version: flow.version + 1,
 				variables: opts.variables,
-			}, recording.flowFile)
+			}, recording.flowFile, { strict: true })
 			await saveFlow(updated, recording.flowFile)
 			return updated.variables
 		},
@@ -2312,7 +2312,7 @@ function registerIpc(): void {
 				...flow,
 				version: flow.version + 1,
 				steps: opts.steps,
-			}, recording.flowFile)
+			}, recording.flowFile, { strict: true })
 			await saveFlow(updated, recording.flowFile, { backup: true })
 			return updated
 		},
@@ -2350,7 +2350,7 @@ function registerIpc(): void {
 			if (!recording.isRefined) throw new Error('原始录制不适用待确认更新（请走另存新纪录路径）')
 			const current = await loadFlow(recording.flowFile)
 			// 与 saveFlow 同一约束：先完整校验再落盘；单槽设计，新 pending 覆盖旧 pending。
-			const flow = parseFlow(opts.flow, pendingPathOf(recording))
+			const flow = parseFlow(opts.flow, pendingPathOf(recording), { strict: true })
 			const existedBefore = !!(await readPending(recording))
 			const createdAt = new Date().toISOString()
 			const pending: FlowPending = {
@@ -2464,7 +2464,7 @@ function registerIpc(): void {
 			if (!recording) throw new Error('找不到该录制')
 			if (!recording.isRefined) throw new Error('原始录制不适用直落盘（请走 REPAIRED- 另存路径）')
 			// 先完整校验再生效；不做 baseVersion 校验（修复以最新现场为准，历史快照兜底回滚）。
-			const flow = parseFlow(opts.flow, recording.flowFile)
+			const flow = parseFlow(opts.flow, recording.flowFile, { strict: true })
 			return persistFlowUpdate(
 				recording,
 				flow,

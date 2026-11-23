@@ -353,7 +353,7 @@ export type Step =
 	| z.infer<typeof switchTabStep>
 	| z.infer<typeof openTabStep>
 	| z.infer<typeof closeTabStep>
-	| { kind: 'group'; id: string; label: string; steps: Step[]; expect?: Expect; timeout?: number }
+	| { kind: 'group'; id: string; label: string; steps: Step[]; expect?: Expect; timeout?: number; targetSystem?: string }
 
 /**
  * 步骤递归通过 lazy schema 表达嵌套 group；判别字段 `kind` 决定具体动作结构。
@@ -383,6 +383,12 @@ export const StepSchema: z.ZodType<Step, z.ZodTypeDef, unknown> = z.lazy(() =>
 			kind: z.literal('group'),
 			label: z.string(),
 			steps: z.array(StepSchema),
+			/**
+			 * 目标系统标签（可选，自由文本）：标识该分组所操作的目标系统，
+			 * 同值字符串即同一系统。叶子步骤的有效系统 = 最近祖先分组的标签。
+			 * 必须显式声明：zod 默认 strip 未知键，不声明会在保存/加载链路被洗掉。
+			 */
+			targetSystem: z.string().optional(),
 		}),
 	]),
 )
@@ -479,20 +485,41 @@ export function resolveTemplate(value: string, vars: Record<string, string>): st
 
 const SAFE_REL_PATH = /^(?!\/)(?!.*\.\.)[\w./-]+$/
 
+export interface FlowContractOptions {
+	/**
+	 * 严格结构校验（写盘路径）：组/步骤 id 全 Flow 命名空间唯一、空分组拒绝。
+	 * 旧数据加载不开启——历史遗留的重复 id/空组不阻断读取（执行器对重复 id
+	 * 防御性取首现），首次保存时才暴露冲突，便于用户打开修正后再落盘。
+	 */
+	strict?: boolean
+}
+
 /**
  * 检查 Zod 单字段类型无法表达的整体约束，返回所有发现的问题而不在首错处中断。
  * 遍历嵌套 group、目标引用及 expect 引用，验证候选排序、裁剪路径安全、
  * closed-shadow 点击坐标以及密码值必须使用变量模板。此检查不改写输入数据。
  */
-export function validateFlowContract(flow: Flow): string[] {
+export function validateFlowContract(flow: Flow, opts: FlowContractOptions = {}): string[] {
 	const errors: string[] = []
-	const topLevelGroups = flow.steps.filter(
-		(step): step is Extract<Step, { kind: 'group' }> => step.kind === 'group',
-	)
-	const groupIds = new Set<string>()
-	for (const group of topLevelGroups) {
-		if (groupIds.has(group.id)) errors.push(`steps: group id "${group.id}" 重复`)
-		groupIds.add(group.id)
+	if (opts.strict) {
+		// 组 id 与步骤 id 共享命名空间，在整个 Flow 内唯一（重复即拒绝，
+		// 不再仅防御性取首现）；空分组不产出任何可执行步骤，一并拒绝。
+		const seenIds = new Set<string>()
+		const visitIds = (list: Step[], where: string): void => {
+			for (let i = 0; i < list.length; i++) {
+				const step = list[i]!
+				const at = `${where}[${i}]`
+				if (seenIds.has(step.id))
+					errors.push(`${at}: id "${step.id}" 重复（组/步骤共享命名空间，全 Flow 唯一）`)
+				seenIds.add(step.id)
+				if (step.kind === 'group') {
+					if (step.steps.length === 0)
+						errors.push(`${at}: 空分组被拒绝（group "${step.id}" 无任何步骤）`)
+					visitIds(step.steps, `${at}.steps`)
+				}
+			}
+		}
+		visitIds(flow.steps, 'steps')
 	}
 	// condition 分支目标的解析域：Flow 内全部步骤 id（含各层 group 内，递归扁平化收集；
 	// 组 id 不是合法目标——步骤 id 与组 id 共享命名空间且步骤 id 全局唯一）。

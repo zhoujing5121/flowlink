@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-import { FlowSchema, SCHEMA_VERSION, validateFlowContract, type Flow } from './schema.js'
+import { FlowSchema, SCHEMA_VERSION, validateFlowContract, type Flow, type FlowContractOptions } from './schema.js'
 
 /**
  * Flow 文件边界上的校验错误。`issues` 保留可逐项展示的诊断文本，
@@ -20,7 +20,7 @@ export class FlowValidationError extends Error {
  * 把不可信输入迁移、解析并执行跨字段契约检查，产出当前版本的 Flow。
  * 结构错误或契约错误均以 FlowValidationError 报告；迁移遇到不支持的版本则明确失败。
  */
-export function parseFlow(input: unknown, source = '<memory>'): Flow {
+export function parseFlow(input: unknown, source = '<memory>', opts: FlowContractOptions = {}): Flow {
 	// 先迁移旧结构，再做 Zod 结构解析与跨字段契约检查；任何一步失败都不返回部分结果。
 	const migrated = migrateFlow(input)
 	const parsed = FlowSchema.safeParse(migrated)
@@ -28,7 +28,7 @@ export function parseFlow(input: unknown, source = '<memory>'): Flow {
 		const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
 		throw new FlowValidationError(source, issues)
 	}
-	const contractIssues = validateFlowContract(parsed.data)
+	const contractIssues = validateFlowContract(parsed.data, opts)
 	if (contractIssues.length) throw new FlowValidationError(source, contractIssues)
 	return parsed.data
 }
@@ -89,8 +89,8 @@ export interface SaveOptions {
  * backup=true 时先尝试保留旧内容为 `.bak`；首次写入没有旧文件属于正常情况。
  */
 export async function saveFlow(flow: Flow, file: string, opts: SaveOptions = {}): Promise<void> {
-	// 写入前完整校验；非法 IR 不得落盘。
-	const validated = parseFlow(flow, file)
+	// 写入前完整校验（strict：id 全命名空间唯一、空组拒绝）；非法 IR 不得落盘。
+	const validated = parseFlow(flow, file, { strict: true })
 	await mkdir(dirname(file), { recursive: true })
 	if (opts.backup) {
 		try {

@@ -1121,11 +1121,107 @@
                   aria-label="Process canvas"
                   hidden
                 >
+                  <div
+                    class="process-toolbar"
+                    role="group"
+                    aria-label="Process views"
+                  >
+                    <div class="process-view-select">
+                      <button
+                        type="button"
+                        data-process-menu
+                        aria-label="Process view"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                      >
+                        <svg
+                          class="process-view-icon"
+                          aria-hidden="true"
+                          viewBox="0 0 24 24"
+                        >
+                          <rect x="3" y="4" width="7" height="6" rx="1"></rect>
+                          <rect x="14" y="4" width="7" height="6" rx="1"></rect>
+                          <rect x="8" y="14" width="8" height="6" rx="1"></rect>
+                          <path d="M6.5 10v2h11v-2M12 12v2"></path>
+                        </svg>
+                        <span data-process-view-label>Flow</span>
+                        <svg
+                          class="process-chevron"
+                          viewBox="0 0 16 16"
+                          aria-hidden="true"
+                        >
+                          <path d="m3 6 5 5 5-5" />
+                        </svg>
+                      </button>
+                      <div class="process-view-menu" role="menu" hidden>
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked="true"
+                          data-process-view="flow"
+                        >
+                          <svg
+                            class="process-view-icon"
+                            aria-hidden="true"
+                            viewBox="0 0 24 24"
+                          >
+                            <rect x="3" y="4" width="7" height="6" rx="1"></rect>
+                            <rect x="14" y="4" width="7" height="6" rx="1"></rect>
+                            <rect x="8" y="14" width="8" height="6" rx="1"></rect>
+                            <path d="M6.5 10v2h11v-2M12 12v2"></path>
+                          </svg>
+                          <span>Flow</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked="false"
+                          data-process-view="swimlane"
+                        >
+                          <svg
+                            class="process-view-icon"
+                            aria-hidden="true"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              d="M4 3h16M4 21h16M9 3v18M15 3v18"
+                            ></path>
+                            <rect x="2.5" y="9" width="5" height="5" rx="1"></rect>
+                            <rect x="16.5" y="9" width="5" height="5" rx="1"></rect>
+                          </svg>
+                          <span>Swimlane</span>
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      data-process-expand
+                      aria-expanded="false"
+                      title="Expend action"
+                    >
+                      <span data-process-expand-label>Expend</span>
+                      <svg
+                        class="process-chevron"
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                      >
+                        <path d="m3 6 5 5 5-5" />
+                      </svg>
+                    </button>
+                  </div>
+                  <nav
+                    class="process-breadcrumb"
+                    data-process-breadcrumb
+                    aria-label="Process drill path"
+                    hidden
+                  ></nav>
+                  <div class="process-hierarchy" aria-label="Process numbering" data-process-levels></div>
                   <div class="process-status" role="status" hidden>
                     Loading saved Flow…
                   </div>
                   <div class="process-status error" role="alert" hidden></div>
-                  <div class="process-canvas-world"></div>
+                  <div class="process-canvas-x6"></div>
+                  <div class="process-minimap" hidden></div>
                   <div class="canvas-step-menu" id="canvasStepMenu" hidden>
                     <button data-step-modify>Modify</button>
                     <button data-step-break>Break</button>
@@ -1652,6 +1748,13 @@
         <div class="canvas-group-nodes"></div>
       </section>
     </template>
+    <template id="canvasGroupContainerTemplate">
+      <section class="canvas-group canvas-group-container">
+        <img class="canvas-group-icon" alt="" loading="lazy" />
+        <button class="canvas-group-heading" aria-pressed="false"></button>
+        <span class="canvas-group-branch" hidden></span>
+      </section>
+    </template>
     <template id="canvasStepTemplate">
       <div class="canvas-step">
         <span data-step-code></span>
@@ -1677,6 +1780,47 @@
     </template>
     <template id="canvasEmptyStepTemplate">
       <div class="canvas-step empty">No steps yet</div>
+    </template>
+    <template id="swimlaneTaskTemplate">
+      <div class="swimlane-task">
+        <div class="swimlane-task-heading">
+          <span data-task-code></span>
+          <span data-task-text></span>
+          <span
+            class="execution-mode-icon"
+            role="img"
+            aria-label="Automated"
+            title="Automated"
+          >
+            <svg data-mode-icon="automated" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="7" width="16" height="13" rx="2"></rect>
+              <path d="M12 3v4M1 12h3M20 12h3M8 16h8"></path>
+              <circle cx="9" cy="12" r=".5"></circle>
+              <circle cx="15" cy="12" r=".5"></circle>
+            </svg>
+            <svg data-mode-icon="manual" viewBox="0 0 24 24" aria-hidden="true" hidden>
+              <circle cx="12" cy="7" r="4"></circle>
+              <path d="M4 21v-2a8 8 0 0 1 16 0v2"></path>
+            </svg>
+          </span>
+        </div>
+        <div class="swimlane-task-body" data-task-body hidden></div>
+      </div>
+    </template>
+    <template id="swimlaneDetailTemplate">
+      <div class="swimlane-task-detail">
+        <span data-detail-code hidden></span>
+        <span data-detail-text></span>
+      </div>
+    </template>
+    <template id="swimlaneLaneTemplate">
+      <div class="swimlane-lane-label"><span data-lane-name></span></div>
+    </template>
+    <template id="swimlaneBandTemplate">
+      <div class="swimlane-band-label">
+        <strong data-band-title></strong>
+        <span data-band-name></span>
+      </div>
     </template>
     <template id="processGroupActionsTemplate">
       <div class="canvas-group-actions" hidden>

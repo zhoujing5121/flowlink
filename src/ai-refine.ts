@@ -745,6 +745,43 @@ export function dropStepsWithoutAssertion(steps: Step[]): { steps: Step[]; dropp
 	return { steps: visit(steps), dropped }
 }
 
+/**
+ * 生成输出的嵌套多级结构契约（add-multilevel-grouping）：
+ * - 顶层必须全部是 L1 业务级分组，数量 2–6；
+ * - 分组嵌套至多两层（L1 内含 L2），步骤只出现在 L1/L2 之内（输出深度 ≤3 级）；
+ * - 分组 label 必填非空；targetSystem 可选，出现时必须是字符串（证据不足应省略）；
+ * - 空分组拒绝。畸形即败（不产半成品），问题逐项列出。
+ */
+export function validateGenerationStructure(steps: Step[]): string[] {
+	const errors: string[] = []
+	const topGroups = steps.filter((step) => step?.kind === 'group')
+	const bareCount = steps.length - topGroups.length
+	if (bareCount > 0)
+		errors.push(`顶层存在 ${bareCount} 个未分组步骤（顶层必须全部是 L1 业务级分组）`)
+	if (topGroups.length < 2 || topGroups.length > 6)
+		errors.push(`顶层分组数量 ${topGroups.length} 超出契约（L1 业务级分组必须 2–6 个）`)
+	const visit = (list: Step[], depth: number, where: string): void => {
+		for (let i = 0; i < list.length; i++) {
+			const step = list[i]!
+			const at = `${where}[${i}]`
+			if (step.kind !== 'group') continue
+			if (typeof step.label !== 'string' || !step.label.trim())
+				errors.push(`${at}: 分组 label 必填（非空字符串）`)
+			if (step.targetSystem !== undefined && typeof step.targetSystem !== 'string')
+				errors.push(`${at}: targetSystem 必须是字符串（证据不足应省略字段）`)
+			if (step.steps.length === 0)
+				errors.push(`${at}: 空分组被拒绝（group "${step.id}" 无任何步骤）`)
+			if (depth >= 2) {
+				errors.push(`${at}: 分组嵌套超出 3 级（L1 > L2 > 步骤 已是最深层）`)
+				continue
+			}
+			visit(step.steps, depth + 1, `${at}.steps`)
+		}
+	}
+	visit(steps, 0, 'steps')
+	return errors
+}
+
 export async function generateRefinedFlow(options: GenerateFlowOptions): Promise<GenerateResult> {
 	// 阶段标注：失败时错误对象带 detail（阶段+底层原因），AI 面板直接展示完整文本。
 	let stage = '准备'
@@ -828,6 +865,10 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		)
 		const secretDroppedNames = [...sourceSecretNames].filter((name) => !usedOrDefined.has(name))
 		stage = '契约校验与落盘前组装'
+		// 嵌套多级输出契约：畸形即败（不产半成品），与 parseFlow strict 检查互补。
+		const structureIssues = validateGenerationStructure(steps)
+		if (structureIssues.length)
+			throw new Error(`生成的分组结构不符合契约：\n  - ${structureIssues.join('\n  - ')}`)
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
 				? parsed.title.trim()
@@ -849,6 +890,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				selfHealed: [],
 			},
 			'<ai-refine>',
+			{ strict: true },
 		)
 		return {
 			ok: true,

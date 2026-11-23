@@ -531,12 +531,19 @@ test('generateRefinedFlow validates and returns a parsed Flow without saving', a
 	const file = join(tempDir, 'ai-refine-source.json')
 	await flowIO.saveFlow(parsed, file)
 	const projection = aiRefine.projectFlows([parsed])
+	// 生成契约（add-multilevel-grouping）：顶层 = 2-6 个 L1 业务级分组。
 	const modelSteps = [
 		{
 			kind: 'group',
 			id: 'g1',
 			label: 'Stage 1',
 			steps: JSON.parse(projection.flows[0].stepsJson),
+		},
+		{
+			kind: 'group',
+			id: 'g2',
+			label: 'Stage 2',
+			steps: [{ kind: 'wait', id: 'w1', condition: 'timeout', ms: 5 }],
 		},
 	]
 	const respond = (payload) => async () => ({ ok: true, text: '```json\n' + JSON.stringify(payload) + '\n```' })
@@ -588,6 +595,7 @@ test('generateRefinedFlow preserves source variable definitions independently of
 	const file = join(tempDir, 'ai-refine-variable-source.json')
 	await flowIO.saveFlow(parsed, file)
 	const projection = aiRefine.projectFlows([parsed])
+	const sourceSteps = JSON.parse(projection.flows[0].stepsJson)
 	const ok = await aiRefine.generateRefinedFlow({
 		flowFiles: [file],
 		templates: promptGenerationTemplates,
@@ -595,7 +603,11 @@ test('generateRefinedFlow preserves source variable definitions independently of
 			ok: true,
 			text: JSON.stringify({
 				title: 'Variable inheritance',
-				steps: JSON.parse(projection.flows[0].stepsJson),
+				// 生成契约：顶层 = 2-6 个 L1 业务级分组
+				steps: [
+					{ kind: 'group', id: 'g1', label: 'Stage 1', steps: sourceSteps.slice(0, 1) },
+					{ kind: 'group', id: 'g2', label: 'Stage 2', steps: sourceSteps.slice(1) },
+				],
 			}),
 		}),
 	})

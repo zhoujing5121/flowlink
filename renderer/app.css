@@ -3564,8 +3564,8 @@ body {
   position: absolute;
   z-index: 4;
   top: 8px;
-  left: 8px;
-  max-width: min(440px, calc(100% - 16px));
+  left: 16px;
+  max-width: min(440px, calc(100% - 32px));
   margin: 0;
   padding: 6px 10px;
   background: #fff;
@@ -3576,7 +3576,8 @@ body {
 }
 
 .process-status {
-  top: 36px;
+  /* 工具栏（top 16 + 44 高）下方，避开遮挡 */
+  top: 68px;
 }
 
 .process-status.error {
@@ -3587,58 +3588,49 @@ body {
   cursor: grabbing;
 }
 
-/* ---------------- Process 流程图（dagre）：边层 / 哨节点 / 回放态叠加 ---------------- */
+/* ---------------- Process 流程图（X6 + dagre）：画布容器 / 哨节点 / 回放态叠加 ---------------- */
 
-.process-graph-edges {
+/* X6 画布宿主：X6 自注入的 .x6-graph 铺满该层；节点为 HTML 卡（foreignObject），
+   边样式随 X6 attrs 内联（不再用 .process-edge* CSS 类）。 */
+.process-canvas-x6 {
   position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* X6 HTML 节点内容根：铺满 foreignObject，卡片绝对定位于其左上 */
+.process-canvas-x6 .flow-node-body,
+.process-minimap .flow-node-body {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.process-canvas-x6 .canvas-group,
+.process-canvas-x6 .process-sentinel,
+.process-canvas-x6 .process-decision,
+.process-minimap .canvas-group,
+.process-minimap .process-sentinel,
+.process-minimap .process-decision {
   left: 0;
   top: 0;
-  pointer-events: none;
-  z-index: 0;
-  overflow: visible;
 }
 
-.process-edge {
-  stroke: #7d8a92;
-  stroke-width: 1.6;
-  fill: none;
-}
-
-.process-edge.taken {
-  stroke: #00884a;
-  stroke-width: 2.4;
-}
-
-.process-edge.dim {
-  stroke: #c3cbd1;
-  stroke-width: 1.2;
-}
-
-.process-edge-label {
+/* 小地图（X6 MiniMap 插件）：画布右下角悬浮；空画布时由 JS 置 hidden */
+.process-minimap {
   position: absolute;
-  transform: translate(-50%, -50%);
-  z-index: 2;
-  pointer-events: none;
-  padding: 0 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 4;
+  padding: 4px;
   background: #fff;
-  border: 1px solid #00884a;
-  border-radius: 8px;
-  color: #005c33;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 18px;
-  white-space: nowrap;
+  border: 1px solid #c5cdd4;
+  overflow: hidden;
 }
 
-.process-edge-label.no {
-  color: #8a4b00;
-  border-color: #c77c1e;
-}
-
-.process-edge-label.dim {
-  color: #98a2a9;
-  border-color: #c3cbd1;
-}
+/* 边的样式（实线/走过加粗/未走变暗、箭头、是/否标签）随 X6 edge attrs 内联，
+   由 drawProcessGraph 的迁移版（buildProcessEdgeCells）按回放态计算。 */
 
 .process-sentinel {
   position: absolute;
@@ -3827,15 +3819,8 @@ body {
   flex: none;
 }
 
-/* 流程图模式：world 尺寸由 JS 按 dagre 布局结果设置；卡片绝对定位，
-   组间连接改由 SVG 边层（.process-graph-edges）绘制。 */
-.process-canvas-world {
-  position: absolute;
-  left: 0;
-  top: 0;
-  transform-origin: 0 0;
-}
-
+/* 流程图模式：卡片经 X6 HTML 节点（foreignObject 内绝对定位，铺满 .flow-node-body），
+   组间连接由 X6 边（dagre 折线 vertices + 自定义连接器）绘制。 */
 .canvas-group {
   position: absolute;
   z-index: 1;
@@ -3897,6 +3882,44 @@ body {
 /* 分支目标组：虚线描边区分"按条件执行"的组与串行组。 */
 .canvas-group.branch-target {
   border-style: dashed;
+}
+
+/* 容器卡（外层组卡，嵌套分组）：铺满 X6 节点盒，边界由 layoutGraph 的
+   子节点包围盒推导（头部 52 + 内边距 14，见 flow-graph.js CONTAINER_* 常量）；
+   内层组卡/步骤卡是独立 cell，几何上落在容器内。 */
+.canvas-group-container {
+  width: 100%;
+  height: 100%;
+  padding: 0 14px;
+  border: 1px solid #b9c4cc;
+  background: #f4f7f8;
+  border-radius: 4px;
+}
+
+.canvas-group-container .canvas-group-heading {
+  min-height: 0;
+  padding: 10px 0 6px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.canvas-group-container .canvas-group-branch {
+  margin: 0 0 4px;
+}
+
+/* targetSystem 标签（组卡头右侧自由文本 chip；编辑入口在 Instruction 组卡头） */
+.canvas-group-system {
+  display: inline-block;
+  margin: -6px 0 10px;
+  padding: 1px 8px;
+  border: 1px solid #8a97a0;
+  border-radius: 10px;
+  background: #fff;
+  color: #52616c;
+  font-size: 11px;
+  line-height: 18px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* 组卡分支徽标：说明该组作为哪个 condition 的 true/false 目标。 */
@@ -4126,6 +4149,389 @@ body {
   font-size: 12px;
   min-width: 40px;
   text-align: center;
+}
+
+/* ---------------- Process 工具栏：Flow|Swimlane 视图菜单 + Expend + 级别切换器 ---------------- */
+
+.process-toolbar {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border: 1px solid #dadde0;
+  box-shadow: 0 4px 12px rgba(16, 20, 22, 0.1);
+}
+
+.process-view-select {
+  position: relative;
+}
+
+.process-view-select > button,
+.process-toolbar > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 14px;
+  background: #fff;
+  color: #101416;
+  border: 0;
+  font: 400 14px/20px var(--font-ui, inherit);
+  cursor: pointer;
+}
+
+.process-toolbar > button {
+  border-left: 1px solid #d7dee7;
+  justify-content: space-between;
+  min-width: 104px;
+}
+
+.process-view-select > button {
+  min-width: 138px;
+  justify-content: flex-start;
+}
+
+.process-toolbar .process-chevron {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  flex: none;
+}
+
+.process-chevron.is-expanded {
+  transform: rotate(180deg);
+}
+
+.process-view-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.process-view-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 138px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #dadde0;
+  box-shadow: 0 4px 12px rgba(16, 20, 22, 0.12);
+}
+
+.process-view-menu[hidden] {
+  display: none;
+}
+
+.process-view-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 40px;
+  padding: 0 14px;
+  text-align: left;
+  white-space: nowrap;
+  font: inherit;
+  background: #fff;
+  color: #101416;
+  border: 0;
+  cursor: pointer;
+}
+
+.process-view-menu button:hover,
+.process-view-menu button[aria-checked="true"] {
+  background: #edf8f1;
+}
+
+/* 级别切换器（编号图例位置，右上）：01_Activity / 01-01_Task / 01-01-01_Action */
+.process-hierarchy {
+  position: absolute;
+  right: 16px;
+  top: 24px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  color: #7b8186;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.process-hierarchy[hidden] {
+  display: none;
+}
+
+.process-hierarchy button {
+  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.process-hierarchy button:hover {
+  background: #f0f3f2;
+  color: #30353a;
+}
+
+.process-hierarchy button[aria-current="true"] {
+  background: #edf8f1;
+  color: #00884a;
+  font-weight: 700;
+}
+
+.process-hierarchy.is-legend button {
+  cursor: default;
+}
+
+.process-hierarchy.is-legend button:hover {
+  background: transparent;
+  color: inherit;
+}
+
+/* 下钻面包屑（工具栏下方） */
+.process-breadcrumb {
+  position: absolute;
+  left: 16px;
+  top: 72px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 32px);
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #dadde0;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52585e;
+  overflow: hidden;
+}
+
+.process-breadcrumb[hidden] {
+  display: none;
+}
+
+.process-breadcrumb button {
+  max-width: 180px;
+  padding: 2px 6px;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: #00884a;
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.process-breadcrumb button:hover {
+  background: #edf8f1;
+}
+
+.process-breadcrumb .process-breadcrumb-sep {
+  color: #98a2a9;
+}
+
+.process-breadcrumb .process-breadcrumb-current {
+  color: #30353a;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------- 泳道视图（X6）：列头/阶段带/任务卡 ---------------- */
+
+.swimlane-lane-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0 12px;
+  background: #ebf4ef;
+  border-bottom: 1px solid #d7e4dd;
+  color: #235c43;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swimlane-band-label {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px;
+  background: #f3f7f5;
+  color: #223d31;
+  font-size: 13px;
+  line-height: 18px;
+  overflow: hidden;
+}
+
+.swimlane-band-label strong {
+  color: #00884a;
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.swimlane-band-label span {
+  overflow-wrap: anywhere;
+}
+
+.swimlane-task {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  width: 320px;
+  border: 1px solid #d7dee7;
+  border-left: 3px solid #00884a;
+  background: #fff;
+  padding: 8px 14px;
+  color: #101416;
+}
+
+.swimlane-task.is-manual {
+  border-left-color: #eab308;
+}
+
+.swimlane-task.selected {
+  border-color: #00884a;
+  background: #f5fbf7;
+}
+
+.swimlane-task.result-pass {
+  border-color: #00884a;
+  border-left-color: #00884a;
+  background: #f5fbf7;
+}
+
+.swimlane-task.result-fail {
+  border-color: #b00020;
+  border-left-color: #b00020;
+  background: #fdf5f6;
+}
+
+.swimlane-task.result-skip {
+  border-color: #98a2a9;
+  border-left-color: #98a2a9;
+  opacity: 0.8;
+}
+
+.swimlane-task-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.swimlane-task-heading > [data-task-code] {
+  flex: none;
+  color: #52585e;
+  font-variant-numeric: tabular-nums;
+}
+
+.swimlane-task-heading > [data-task-text] {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swimlane-task-heading > .execution-mode-icon {
+  flex: none;
+}
+
+.swimlane-task-body {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #e0e7e4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.swimlane-task-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #49525a;
+}
+
+.swimlane-task-detail > [data-detail-code] {
+  flex: none;
+  color: #7b8186;
+  font-variant-numeric: tabular-nums;
+}
+
+.swimlane-task-detail > [data-detail-text] {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+/* 卡内明细行（Expend）：Flow 卡行下与泳道卡通用 */
+.canvas-action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px;
+}
+
+.canvas-action-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #5d6770;
+  background: #f7f9f8;
+  border-left: 2px solid #cfe3d8;
+}
+
+.canvas-action-row > span:first-child {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: #7b8186;
+}
+
+.canvas-action-row > .canvas-action-body {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+/* 级别视图步骤卡（下钻）：比组卡更轻 */
+.canvas-group.is-step-card {
+  width: 360px;
+  background: #fff;
+}
+
+.canvas-group.is-step-card .canvas-group-icon {
+  display: none;
 }
 
 /* ---------------- REFINED 单线演进：AI 面板 pending Confirm / Discard 快捷块 ---------------- */
@@ -4699,6 +5105,64 @@ body {
   border-color: #b7dfc9;
   background: #edf8f1;
   color: #00663a;
+}
+
+/* 嵌套组卡（add-multilevel-grouping）：内层组卡缩进 + 左侧竖线区隔；
+ * 默认折叠（is-collapsed 隐藏其行与更深组卡，只留组卡头）。 */
+.steps-group.nested-group {
+  margin: 8px 0 4px 16px;
+  padding: 8px 0 0 12px;
+  border-left: 2px solid #dfe4e8;
+}
+
+.steps-group.is-collapsed > .instruction-step,
+.steps-group.is-collapsed > .steps-group {
+  display: none;
+}
+
+.steps-group.is-collapsed {
+  margin-bottom: 8px;
+}
+
+/* targetSystem 标签 chip（组卡头）：有值实心、无值虚线占位；行内编辑输入框 */
+.instruction-group-system {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid #8a97a0;
+  border-radius: 10px;
+  background: #fff;
+  color: #52616c;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.instruction-group-system.empty {
+  border-style: dashed;
+  border-color: #c5cdd4;
+  color: #8a97a0;
+}
+
+.instruction-group-system:disabled {
+  cursor: default;
+}
+
+.instruction-group-system-input {
+  width: 160px;
+  padding: 1px 6px;
+  border: 1px solid #00884a;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: #52616c;
+  outline: none;
 }
 
 .instruction-row .step-badges {
