@@ -107,7 +107,7 @@ test('migrates schema v1 and validates condition branches against existing steps
 	])
 
 	const parsed = flowIO.parseFlow(input)
-	assert.equal(parsed.schemaVersion, 2)
+	assert.equal(parsed.schemaVersion, 3)
 
 	const invalid = structuredClone(parsed)
 	invalid.steps[0].steps[0].trueStepId = 'missing'

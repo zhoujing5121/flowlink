@@ -104,8 +104,13 @@ const api = {
 
 	flow: {
 		load: (flowFile: string) => ipcRenderer.invoke('flow:load', flowFile),
-		updateVariables: (opts: { taskCode: string; recordingId: string; variables: unknown[] }) =>
-			ipcRenderer.invoke('flow:updateVariables', opts),
+		/** 变量元数据落盘（version+1，.bak）；attachments 与元数据同一次原子保存（附件字节写入 references/） */
+		updateVariables: (opts: {
+			taskCode: string
+			recordingId: string
+			variables: unknown[]
+			attachments?: Array<{ name: string; fileName: string; data: Uint8Array }>
+		}) => ipcRenderer.invoke('flow:updateVariables', opts),
 		updateSteps: (opts: { taskCode: string; recordingId: string; steps: unknown[] }) =>
 			ipcRenderer.invoke('flow:updateSteps', opts),
 		/** REFINED 单线演进：AI 对已 REFINED 记录的修改暂存为 pending（不落正式盘），AI 面板 Confirm/Discard 决议 */
@@ -129,6 +134,30 @@ const api = {
 		/** 接管修复直落盘：历史快照 → version+1 覆盖正式 Flow（不产生 pending）；返回新 flow */
 		directUpdate: (opts: { taskCode: string; recordingId: string; flow: unknown; summary?: string }) =>
 			ipcRenderer.invoke('flow:directUpdate', opts),
+	},
+
+	/** Reference 一等对象：类型目录 / 即时校验 / 上传文件持久化（窄 API，无 Node 泄漏） */
+	reference: {
+		/** 类型目录 + 终端显示映射 + 上传扩展名（唯一来源，渲染层不复制） */
+		catalog: () => ipcRenderer.invoke('reference:catalog'),
+		/** 单对象静态校验（编辑对话框即时反馈，不落盘）：{ ok, issues } */
+		validateObject: (opts: { objects: unknown[]; name: string }) =>
+			ipcRenderer.invoke('reference:validateObject', opts),
+		/** 全量校验（回放前干跑）：{ ok, issues, values, injectedEmpty } */
+		validateAll: (opts: { objects: unknown[]; values?: Record<string, string> }) =>
+			ipcRenderer.invoke('reference:validateAll', opts),
+		/** 规则摘要 + 预设反编译（表格列与对话框默认视图共用）：机器键 → { summary, custom, presets } */
+		describe: (opts: { objects: unknown[] }) =>
+			ipcRenderer.invoke('reference:describe', opts),
+		/** 上传文件持久化进工件目录（字节由渲染层读入）；返回 { id, name, type, path } */
+		addFile: (opts: { taskCode: string; recordingId: string; name: string; data: Uint8Array }) =>
+			ipcRenderer.invoke('flow:addReferenceFile', opts),
+		/** 删除持久化文件（工件文件 + 元数据 + 版本递增） */
+		removeFile: (opts: { taskCode: string; recordingId: string; fileId: string }) =>
+			ipcRenderer.invoke('flow:removeReferenceFile', opts),
+		/** 持久化文件的下载 URL（路径校验在主进程） */
+		fileUrl: (opts: { taskCode: string; recordingId: string; fileId: string }) =>
+			ipcRenderer.invoke('reference:fileUrl', opts),
 	},
 
 	browser: {

@@ -22,6 +22,7 @@ import {
 } from '../engine/schema/src/index.js'
 import { formatTemplate, type GenerationTemplates } from './prompts.js'
 import { appLog, appLogFields } from './app-logger.js'
+import { mapLegacyType } from '../engine/reference/src/index.js'
 
 export interface PromptRunner {
 	(prompt: string, timeoutMs: number): Promise<{ ok: boolean; text: string; error?: string }>
@@ -525,13 +526,19 @@ export function applyReanchor(steps: Step[], entries: ReanchorEntry[]): Step[] {
 /* ---------------- 变量合并 ---------------- */
 
 const VARIABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-const VARIABLE_TYPES = ['string', 'text', 'email', 'date', 'number', 'secret', 'file'] as const
 
 /**
  * 合并所有源 Flow 的变量：首个非 secret 默认值生效（按源顺序）。模型若额外
- * 输出 variables，只接受合法命名且非 secret 的条目。
+ * 输出 variables，只接受合法命名且非 secret 的条目（type 经旧→新目录归一）。
+ * 模型输出的 variableLabels（[{name, label}]）在此合并：未知机器键整次拒绝
+ * （与后置守卫「引用了不存在的变量」同一报错面），非空 label 覆盖启发式/旧值；
+ * 其余 Reference 元数据（必填/校验/活动关联）不来自模型、按源 Flow 保留。
  */
-export function mergeVariables(flows: Flow[], piVariables?: unknown): Variable[] {
+export function mergeVariables(
+	flows: Flow[],
+	piVariables?: unknown,
+	piVariableLabels?: unknown,
+): Variable[] {
 	const merged = new Map<string, Variable>()
 	const add = (variable: Variable): void => {
 		const existing = merged.get(variable.name)
@@ -551,19 +558,178 @@ export function mergeVariables(flows: Flow[], piVariables?: unknown): Variable[]
 			const name = candidate.name
 			if (typeof name !== 'string' || !VARIABLE_NAME_RE.test(name)) continue
 			if (candidate.secret === true) continue
-			const type = VARIABLE_TYPES.includes(candidate.type as (typeof VARIABLE_TYPES)[number])
-				? (candidate.type as Variable['type'])
+			const defaultValue = typeof candidate.defaultValue === 'string' ? candidate.defaultValue : undefined
+			const type = typeof candidate.type === 'string'
+				? mapLegacyType(candidate.type, defaultValue).type
 				: 'string'
 			add({
 				name,
 				type,
-				defaultValue: typeof candidate.defaultValue === 'string' ? candidate.defaultValue : undefined,
+				defaultValue,
 				secret: false,
 				source: candidate.source === 'csv' ? 'csv' : 'input',
 			})
 		}
 	}
+	if (piVariableLabels !== undefined) {
+		if (!Array.isArray(piVariableLabels)) {
+			throw new Error('variableLabels 必须是 [{name, label}] 数组')
+		}
+		for (const entry of piVariableLabels) {
+			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+				throw new Error('variableLabels 条目必须是 {name, label} 对象')
+			}
+			const { name, label } = entry as Record<string, unknown>
+			if (typeof name !== 'string' || !VARIABLE_NAME_RE.test(name)) {
+				throw new Error(`variableLabels 的变量名无效：${JSON.stringify(name)}`)
+			}
+			const target = merged.get(name)
+			if (!target) {
+				throw new Error(`生成的 variableLabels 引用了不存在的变量 {{${name}}}；源流程未改动`)
+			}
+			if (typeof label === 'string' && label.trim()) {
+				merged.set(name, { ...target, label: label.trim() })
+			}
+		}
+	}
 	return [...merged.values()]
+}
+
+/* ---------------- 活动关联：使用证据推导 + AI 建议补空（修订轮 D8） ---------------- */
+
+/**
+ * 解析模型 variableActivities 建议表：[{name, activities: [groupId]}]。
+ * 未知机器键整次拒绝（与 variableLabels 同一报错面）；条目形状非法也拒绝。
+ * 未知分组 id 不在此拒——留待按新材料真实分组剔除。
+ */
+export function parseVariableActivities(
+	raw: unknown,
+	knownNames: ReadonlySet<string>,
+): Map<string, string[]> {
+	const out = new Map<string, string[]>()
+	if (raw === undefined) return out
+	if (!Array.isArray(raw)) throw new Error('variableActivities 必须是 [{name, activities}] 数组')
+	for (const entry of raw) {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+			throw new Error('variableActivities 条目必须是 {name, activities: [groupId]} 对象')
+		}
+		const { name, activities } = entry as Record<string, unknown>
+		if (typeof name !== 'string' || !VARIABLE_NAME_RE.test(name)) {
+			throw new Error(`variableActivities 的变量名无效：${JSON.stringify(name)}`)
+		}
+		if (!knownNames.has(name)) {
+			throw new Error(`生成的 variableActivities 引用了不存在的变量 {{${name}}}；源流程未改动`)
+		}
+		if (!Array.isArray(activities) || !activities.every((id) => typeof id === 'string' && id)) {
+			throw new Error(`variableActivities[${name}] 的 activities 必须是非空字符串数组`)
+		}
+		out.set(name, activities as string[])
+	}
+	return out
+}
+
+/** 收集一条字符串值里的 {{name}}（模板语法非法时跳过该字段，防御） */
+function templateNamesIn(value: unknown): string[] {
+	if (typeof value !== 'string') return []
+	try {
+		return parseTemplate(value)
+	} catch {
+		return []
+	}
+}
+
+/**
+ * 使用证据推导：变量模板出现在哪些顶层分组的步骤中 → 该变量默认关联哪些分组
+ * （多处即多选）。顶层裸步骤（不属于任何分组）不产生关联；组内递归收集。
+ */
+export function deriveVariableActivities(
+	variables: ReadonlyArray<Variable>,
+	steps: ReadonlyArray<Step>,
+): Map<string, string[]> {
+	const evidence = new Map<string, Set<string>>()
+	const noteNames = (names: string[], groupId: string): void => {
+		for (const name of names) {
+			if (!evidence.has(name)) evidence.set(name, new Set())
+			evidence.get(name)!.add(groupId)
+		}
+	}
+	const collectStep = (step: Step, groupId: string): void => {
+		const names: string[] = []
+		switch (step.kind) {
+			case 'navigate':
+				names.push(...templateNamesIn(step.url))
+				break
+			case 'input':
+				names.push(...templateNamesIn(step.value))
+				break
+			case 'select':
+				if (typeof step.value === 'string') names.push(...templateNamesIn(step.value))
+				else for (const item of step.value) names.push(...templateNamesIn(item))
+				break
+			case 'upload':
+				for (const file of step.files) names.push(...templateNamesIn(file))
+				break
+			case 'dialog':
+				names.push(...templateNamesIn(step.promptText))
+				break
+			case 'wait':
+				names.push(...templateNamesIn(step.prompt))
+				break
+			case 'key':
+				names.push(...templateNamesIn(step.key))
+				break
+			default:
+				break
+		}
+		if (step.kind === 'assert' || step.kind === 'condition') {
+			if (step.assertion.kind === 'text') {
+				names.push(...templateNamesIn(step.assertion.equals), ...templateNamesIn(step.assertion.contains))
+			} else if (step.assertion.kind === 'value') {
+				names.push(...templateNamesIn(step.assertion.equals))
+			}
+		}
+		if (step.expect?.kind === 'urlChange') names.push(...templateNamesIn(step.expect.pattern))
+		if (step.expect?.kind === 'textChange') names.push(...templateNamesIn(step.expect.to))
+		noteNames(names, groupId)
+	}
+	const walkGroup = (list: ReadonlyArray<Step>, groupId: string): void => {
+		for (const step of list) {
+			if (step.kind === 'group') walkGroup(step.steps, groupId)
+			else collectStep(step, groupId)
+		}
+	}
+	for (const step of steps) {
+		if (step.kind === 'group') walkGroup(step.steps, step.id)
+	}
+	const out = new Map<string, string[]>()
+	for (const variable of variables) {
+		const ids = evidence.get(variable.name)
+		if (ids && ids.size) out.set(variable.name, [...ids])
+	}
+	return out
+}
+
+/**
+ * 应用活动关联默认值（新材料落盘前）：
+ * 1) 清除自源 Flow 继承的分组 id（新材料分组结构不同，旧 id 悬空）；
+ * 2) 使用证据推导优先（变量模板出现在哪些 L1 分组即关联哪些）；
+ * 3) 无使用证据的变量用模型建议填充（钳制到新材料真实存在的分组 id，未知剔除不拒）。
+ */
+export function applyActivityDefaults(
+	variables: Variable[],
+	steps: ReadonlyArray<Step>,
+	suggestions: ReadonlyMap<string, string[]>,
+): Variable[] {
+	const evidence = deriveVariableActivities(variables, steps)
+	const topLevelGroupIds = new Set(
+		steps.filter((step): step is Extract<Step, { kind: 'group' }> => step.kind === 'group').map((step) => step.id),
+	)
+	return variables.map((variable) => {
+		const evidenceIds = evidence.get(variable.name) ?? []
+		const suggested = evidenceIds.length ? evidenceIds : (suggestions.get(variable.name) ?? [])
+		const activities = suggested.filter((id) => topLevelGroupIds.has(id))
+		return activities.length ? { ...variable, activities } : { ...variable, activities: undefined }
+	})
 }
 
 /**
@@ -847,7 +1013,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		if (options.reanchor?.length) steps = applyReanchor(steps, options.reanchor)
 		const sources = options.sources?.length ? options.sources : undefined
 		if (sources) annotateSourceFlowIds(steps, projection.library, refIdsByStep)
-		const variables = mergeVariables(flows, parsed.variables)
+		const variables = mergeVariables(flows, parsed.variables, parsed.variableLabels)
 		// 参数保护守卫（不依赖模型自觉）：
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
 		// 2) 源 Flow 的变量定义属于流程契约，不能因模型改写步骤或引用扫描范围而被删除；
@@ -869,6 +1035,14 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		const structureIssues = validateGenerationStructure(steps)
 		if (structureIssues.length)
 			throw new Error(`生成的分组结构不符合契约：\n  - ${structureIssues.join('\n  - ')}`)
+		// 活动关联默认值（修订轮 D8）：清除源继承的悬空分组 id，使用证据推导优先，
+		// 模型 variableActivities 建议仅补无证据变量（未知分组 id 剔除不拒）。
+		stage = '活动关联'
+		const suggestions = parseVariableActivities(
+			parsed.variableActivities,
+			new Set(variables.map((variable) => variable.name)),
+		)
+		const variablesWithActivities = applyActivityDefaults(variables, steps, suggestions)
 		const rawTitle =
 			typeof parsed.title === 'string' && parsed.title.trim()
 				? parsed.title.trim()
@@ -885,7 +1059,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 				// 本次的直接源，transitive 可按 flowId 沿各源 flow 的 meta 追溯。
 				...(sources ? { meta: { ...flows[0]!.meta, sourceFlows: sources } } : {}),
 				steps,
-				variables,
+				variables: variablesWithActivities,
 				stats: undefined,
 				selfHealed: [],
 			},

@@ -4150,18 +4150,96 @@ async function deleteInstructionStep(item, flatIndex) {
   }
 }
 
+/* ---------- Reference：类型目录（经 preload IPC 取唯一来源，渲染层不复制映射表） ---------- */
+let referenceTypeDisplayMap = null;
+let referenceCatalogPromise = null;
+function referenceCatalog() {
+  if (!window.flowlink?.reference?.catalog) return Promise.resolve(null);
+  referenceCatalogPromise ??= window.flowlink.reference.catalog().catch(() => null);
+  return referenceCatalogPromise;
+}
+void referenceCatalog().then((catalog) => {
+  if (catalog?.types)
+    referenceTypeDisplayMap = Object.fromEntries(
+      catalog.types.map((type) => [type.value, type.display]),
+    );
+});
+function displayTypeOf(type) {
+  return (referenceTypeDisplayMap && referenceTypeDisplayMap[type]) || type;
+}
+
+/** 文件类类型（excel/word/csv/md/file）：值 = 持久化附件（上传控件编辑，回放注入绝对路径） */
+function isFileClassType(type) {
+  return ["excel", "word", "csv", "md", "file"].includes(type);
+}
+
+/** 校验列摘要：如「大写 · email 格式 · 公式」 */
+function referenceValidationSummary(reference) {
+  if (reference.kind !== "variable") return "";
+  const parts = [];
+  const validation = reference.validation || {};
+  if (validation.caseMode === "upper") parts.push("大写");
+  else if (validation.caseMode === "lower") parts.push("小写");
+  if (validation.format?.preset) parts.push(`${validation.format.preset} 格式`);
+  else if (validation.format?.pattern) parts.push("正则");
+  if (validation.sign)
+    parts.push({ positive: "正数", negative: "负数", nonNegative: "非负", nonPositive: "非正" }[validation.sign] || "");
+  if (validation.condition) parts.push("条件必填");
+  if (validation.formula) parts.push("公式");
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** 活动关联选项：当前 Flow 顶层分组（Refine 后）；无分组 = 整段录制（隐含活动） */
+function referenceActivityOptions(item) {
+  const groups = (item?.referenceFlow?.steps || []).filter(
+    (step) => step && step.kind === "group",
+  );
+  return groups.map((group) => ({ id: group.id, label: group.label || group.id }));
+}
+
+function referenceActivitiesSummary(item, reference) {
+  if (reference.kind !== "variable") return "";
+  const options = referenceActivityOptions(item);
+  if (!options.length) return item?.name || "";
+  if (!reference.activities?.length) return "—";
+  const labels = options
+    .filter((option) => reference.activities.includes(option.id))
+    .map((option) => option.label);
+  return labels.length ? labels.join("、") : "—";
+}
+
 function fillReferencePanel(panel, item) {
   const section = panel.querySelector('[data-result-tab="Reference"]');
   const files = ensureReferenceFiles(item);
   const selectedCount = files.filter((file) => file.selected).length;
+  const gateIssues = (item && item.referenceGateIssues) || [];
+  const gateBlock = section.querySelector("#referenceGateIssues");
+  if (gateBlock) {
+    gateBlock.hidden = !gateIssues.length;
+    gateBlock.querySelector("ul").replaceChildren(
+      ...gateIssues.map((issue) => {
+        const li = document.createElement("li");
+        li.textContent = `${issue.label || issue.name} · ${issue.ruleLabel || issue.rule} — ${issue.reason}`;
+        return li;
+      }),
+    );
+  }
+  if (gateIssues.length === 0 && item && item.referenceDescribe === undefined) {
+    void refreshReferenceDescribe(item).then(() => {
+      if (panel.isConnected && currentAssistantItem() === item) fillReferencePanel(panel, item);
+    });
+  }
+  const issueNames = new Set(gateIssues.map((issue) => issue.name));
   section.querySelector("#referenceSelectAll").disabled = !files.length;
   section.querySelector("#referenceRows").replaceChildren(
     ...files.map((file) => {
       const row = rowTemplate("referenceRowTemplate").cloneNode(true);
       row.dataset.referenceRow = file.id;
+      if (issueNames.has(file.name)) row.classList.add("reference-row-invalid");
       const check = row.querySelector(".recording-check");
       check.dataset.referenceCheck = file.id;
-      check.setAttribute("aria-label", "Select " + file.name);
+      const displayName = file.kind === "variable" ? file.label || file.name : file.name;
+      check.setAttribute("aria-label", "Select " + displayName);
       check.checked = !!file.selected;
       const isVariable = file.kind === "variable";
       const span = row.querySelector("span.reference-name");
@@ -4169,25 +4247,58 @@ function fillReferencePanel(panel, item) {
       span.hidden = !isVariable;
       link.hidden = isVariable;
       if (isVariable) {
-        span.textContent = file.name;
+        span.textContent = displayName;
       } else {
-        link.href = file.url;
         link.setAttribute("download", file.name);
         link.textContent = file.name;
+        if (file.persistedId) {
+          link.removeAttribute("href");
+          if (window.flowlink?.reference?.fileUrl && currentFlow) {
+            void window.flowlink.reference
+              .fileUrl({
+                taskCode: currentFlow.code || activeFlowKey,
+                recordingId: item?.recordingId,
+                fileId: file.persistedId,
+              })
+              .then((url) => {
+                if (link.isConnected) link.href = url;
+              })
+              .catch(() => undefined);
+          }
+        } else if (file.url) {
+          link.href = file.url;
+        }
       }
-      row.querySelector('[data-slot="type"]').textContent = file.type;
+      const rawFileType = String(file.type || "");
+      const mappedFileType = referenceTypeDisplayMap?.[rawFileType.toLowerCase()];
+      row.querySelector('[data-slot="type"]').textContent = isVariable
+        ? displayTypeOf(file.variableType || "string")
+        : mappedFileType || rawFileType;
       row.querySelector('[data-slot="value"]').textContent = isVariable
-        ? file.secret && file.value
-          ? "••••••"
-          : file.value || ""
+        ? file.validation?.formula
+          ? "（公式）"
+          : isFileClassType(file.variableType)
+            ? file.attachment?.name || ""
+            : file.secret && file.value
+              ? "••••••"
+              : file.value || ""
         : "";
+      row.querySelector('[data-slot="required"]').textContent =
+        isVariable && file.required ? "是" : "";
+      row.querySelector('[data-slot="validation"]').textContent = isVariable
+        ? (item.referenceDescribe?.[file.name]?.summary ?? referenceValidationSummary(file))
+        : "";
+      row.querySelector('[data-slot="activities"]').textContent =
+        referenceActivitiesSummary(item, file);
       const [edit, remove] = row.querySelectorAll(
         ".reference-row-actions .icon-button",
       );
+      // 持久化文件行不提供编辑（重命名未在契约内；删除后重新上传即可）
+      edit.hidden = !!file.persistedId;
       edit.dataset.referenceEdit = file.id;
-      edit.setAttribute("aria-label", "Update " + file.name);
+      edit.setAttribute("aria-label", "Update " + displayName);
       remove.dataset.referenceDelete = file.id;
-      remove.setAttribute("aria-label", "Delete " + file.name);
+      remove.setAttribute("aria-label", "Delete " + displayName);
       return row;
     }),
   );
@@ -8667,6 +8778,8 @@ async function hydrateReferenceVariables(item) {
   try {
     const flow = await window.flowlink.flow.load(item.flowFile);
     if (item.referenceVariablesGeneration !== generation) return false;
+    item.referenceFlow = flow;
+    item.referenceGateIssues = [];
     const knownNames = new Set(
       ensureReferenceFiles(item)
         .filter((reference) => reference.kind === "variable")
@@ -8678,13 +8791,21 @@ async function hydrateReferenceVariables(item) {
         id: "reference-" + ++referenceSequence,
         kind: "variable",
         name: variable.name,
-        type: "Variable",
+        // label 是唯一面向用户的名称；机器键不出现在用户视野
+        label: variable.label || variable.name,
         variableType: variable.type || "string",
         secret: !!variable.secret,
+        required: !!variable.required,
+        validation: variable.validation ? structuredClone(variable.validation) : undefined,
+        activities: variable.activities ? [...variable.activities] : [],
+        // 文件类对象的持久化附件（值即文件；保存后值列显示文件名，回放注入绝对路径）
+        attachment: variable.file ? { name: variable.file.name, path: variable.file.path } : undefined,
         source: variable.source || "input",
         value: variable.defaultValue || "",
       });
     }
+    syncPersistedReferenceFileRows(item);
+    void refreshReferenceDescribe(item);
     item.referenceLoadError = "";
     item.referenceVariablesLoaded = true;
     return true;
@@ -8699,14 +8820,67 @@ async function hydrateReferenceVariables(item) {
   }
 }
 
+/** 上传文件行 ←→ flow.referenceFiles 对账：刷新后按落盘元数据重建（重启不丢） */
+function syncPersistedReferenceFileRows(item) {
+  if (!item || !Array.isArray(item.references)) return;
+  item.references = item.references.filter((reference) => !reference.persistedId);
+  const entries = item.referenceFlow?.referenceFiles || [];
+  for (const entry of entries) {
+    item.references.push({
+      id: "reference-" + ++referenceSequence,
+      kind: "file",
+      persistedId: entry.id,
+      name: entry.name,
+      type: entry.type,
+      persisted: true,
+    });
+  }
+}
+
+/** 上传/删除后的持久化文件刷新：重新加载 flow 元数据并重建文件行 */
+async function refreshPersistedReferenceFiles(item) {
+  if (!item?.recordingId || !item.flowFile || !window.flowlink?.flow?.load) return;
+  try {
+    const flow = await window.flowlink.flow.load(item.flowFile);
+    item.referenceFlow = flow;
+    syncPersistedReferenceFileRows(item);
+  } catch (error) {
+    console.error("[reference] Unable to refresh persisted files:", error);
+  }
+}
+
+/** 规则摘要 + 预设反编译缓存（表格校验列与编辑对话框默认视图共用，engine 侧单一实现） */
+async function refreshReferenceDescribe(item) {
+  if (!item || !window.flowlink?.reference?.describe) return;
+  const objects = referenceVariableDefinitions(ensureReferenceFiles(item));
+  if (!objects.length) {
+    item.referenceDescribe = {};
+    return;
+  }
+  try {
+    item.referenceDescribe = await window.flowlink.reference.describe({ objects });
+  } catch (error) {
+    console.error("[reference] Unable to describe rules:", error);
+    item.referenceDescribe = {};
+  }
+}
+
 function referenceVariableDefinitions(references) {
   return references
     .filter((reference) => reference.kind === "variable")
     .map((reference) => ({
       name: reference.name,
+      label: reference.label || undefined,
       type: reference.variableType || "string",
       ...(!reference.secret ? { defaultValue: reference.value ?? "" } : {}),
       secret: !!reference.secret,
+      required: reference.required || undefined,
+      validation: reference.validation || undefined,
+      activities:
+        reference.activities && reference.activities.length
+          ? reference.activities
+          : undefined,
+      ...(reference.attachment ? { file: { ...reference.attachment } } : {}),
       source: reference.source || "input",
     }));
 }
@@ -8724,21 +8898,55 @@ async function referenceVariablesForReplay(item) {
 
 window.referenceVariablesForReplay = referenceVariablesForReplay;
 
-async function persistReferenceVariables(item, references) {
+/**
+ * 回放闸门拒绝（6.5）：一次性列出全部违规（对象 label + 规则 + 原因）。
+ * bridge 的回放/接管 catch 里解析 REFERENCE_VALIDATION 前缀错误后调用。
+ */
+window.showReferenceGateIssues = function showReferenceGateIssues(item, issues) {
+  if (!item) return;
+  item.referenceGateIssues = Array.isArray(issues) ? issues : [];
+  if (item.referenceGateIssues.length) {
+    item.resultTab = "Reference";
+    showFlowlinkNotice(
+      "回放启动前校验未通过：" +
+        item.referenceGateIssues
+          .map((issue) => `${issue.label || issue.name}（${issue.rule}）${issue.reason}`)
+          .join("；"),
+      "warn",
+    );
+  }
+  renderSummaryWorkspace();
+};
+
+/** 解析主进程闸门结构化错误（REFERENCE_VALIDATION:<json>）；非该类错误返回 null */
+window.parseReferenceGateError = function parseReferenceGateError(message) {
+  if (typeof message !== "string") return null;
+  const marker = message.indexOf("REFERENCE_VALIDATION:");
+  if (marker < 0) return null;
+  try {
+    const issues = JSON.parse(message.slice(marker + "REFERENCE_VALIDATION:".length));
+    return Array.isArray(issues) ? issues : null;
+  } catch {
+    return null;
+  }
+};
+
+async function persistReferenceVariables(item, references, attachments) {
   if (!item.recordingId || !item.flowFile || !window.flowlink?.flow?.updateVariables)
-    return;
-  await window.flowlink.flow.updateVariables({
+    return undefined;
+  // 附件与元数据同一次原子保存（version+1，.bak）；返回落盘后的变量表（含附件元数据）
+  return window.flowlink.flow.updateVariables({
     taskCode: currentFlow?.code || activeFlowKey,
     recordingId: item.recordingId,
     variables: referenceVariableDefinitions(references),
+    ...(attachments?.length ? { attachments } : {}),
   });
 }
 
 function bindReferenceFiles() {
-  const input = $("referenceFileInput"),
-    panel = $("summaryResultPanel"),
+  const panel = $("summaryResultPanel"),
     item = currentAssistantItem();
-  if (!input || !item) return;
+  if (!panel || !item) return;
   const redraw = () => {
     fillReferencePanel(panel, item);
     bindReferenceFiles();
@@ -8757,8 +8965,6 @@ function bindReferenceFiles() {
     else {
       const status = panel.querySelector("#referenceStatus");
       if (status && item.referenceLoadError) status.textContent = item.referenceLoadError;
-      const addVariable = panel.querySelector("[data-reference-add-variable]");
-      if (addVariable && item.referenceLoadError) addVariable.disabled = true;
     }
   });
   const all = panel.querySelector("#referenceSelectAll");
@@ -8782,53 +8988,15 @@ function bindReferenceFiles() {
     downloadReferenceArchive(item);
   };
   const dialog = panel.querySelector("#referenceDialog");
-  const showChooser = () => {
-    dialog.innerHTML = `<h2 id="referenceDialogTitle">Add to Reference</h2><p>Choose what to add.</p><div class="reference-dialog-actions"><button type="button" class="btn secondary reference-dialog-btn" data-reference-add-variable ${item.referenceLoadError ? "disabled" : ""}>${designIcon("plus")}<span>Add variable</span></button><button type="button" class="btn secondary reference-dialog-btn" data-reference-upload>${designIcon("plus")}<span>Upload files</span></button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div>`;
-    dialog.showModal();
-  };
-  $("referenceAdd").onclick = showChooser;
-  input.onchange = () => {
-    // 文件选择完成（选择器已关闭）后恢复抽屉 Escape 响应。
-    setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
-    for (const file of input.files) {
-      const ext = file.name.split(".").pop().toLowerCase(),
-        type = ["xlsx", "xls", "csv"].includes(ext)
-          ? "Excel"
-          : ["md", "markdown"].includes(ext)
-            ? "MD"
-            : ext.toUpperCase();
-      item.references.push({
-        id: "reference-" + ++referenceSequence,
-        kind: "file",
-        name: file.name,
-        type,
-        file,
-        url: URL.createObjectURL(file),
-      });
-    }
-    redraw();
-    $("referenceAdd").focus();
+  // Add 直开对象编辑对话框（修订轮 3）：不再有中间选择弹窗；
+  // 文件上传收敛为「新建文件类对象 + 值栏上传控件」。
+  $("referenceAdd").onclick = () => {
+    showReferenceEditor(dialog, null, item);
   };
   panel.onclick = async (e) => {
-    const addVariable = e.target.closest("[data-reference-add-variable]"),
-      upload = e.target.closest("[data-reference-upload]"),
-      closeDialog = e.target.closest("[data-reference-dialog-close]"),
+    const closeDialog = e.target.closest("[data-reference-dialog-close]"),
       edit = e.target.closest("[data-reference-edit]"),
       remove = e.target.closest("[data-reference-delete]");
-    if (addVariable) {
-      showReferenceEditor(dialog, null);
-      return;
-    }
-    if (upload) {
-      dialog.close();
-      input.oncancel = (e) => {
-        e.stopPropagation();
-        setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
-      };
-      suppressDrawerCancelUntil = Date.now() + 60000;
-      input.click();
-      return;
-    }
     if (closeDialog) {
       dialog.close();
       return;
@@ -8837,6 +9005,7 @@ function bindReferenceFiles() {
       showReferenceEditor(
         dialog,
         item.references.find((reference) => reference.id === edit.dataset.referenceEdit),
+        item,
       );
       return;
     }
@@ -8851,8 +9020,30 @@ function bindReferenceFiles() {
         ))
       )
         return;
+      const target = item.references[index];
+      if (target.persistedId && window.flowlink?.reference?.removeFile && currentFlow) {
+        // 持久化文件：删工件文件 + flow.referenceFiles 元数据 + 版本递增
+        try {
+          await window.flowlink.reference.removeFile({
+            taskCode: currentFlow.code || activeFlowKey,
+            recordingId: item.recordingId,
+            fileId: target.persistedId,
+          });
+        } catch (error) {
+          console.error("[reference] Unable to remove persisted file:", error);
+          const status = panel.querySelector("#referenceStatus");
+          if (status)
+            status.textContent = `Unable to delete file: ${error.message || error}`;
+          return;
+        }
+        await refreshPersistedReferenceFiles(item);
+        redraw();
+        const next = panel.querySelector("[data-reference-delete]");
+        (next || $("referenceAdd")).focus();
+        return;
+      }
       const nextReferences = item.references.filter((_, row) => row !== index);
-      if (item.references[index].kind === "variable") {
+      if (target.kind === "variable") {
         try {
           await persistReferenceVariables(item, nextReferences);
         } catch (error) {
@@ -8887,63 +9078,144 @@ function bindReferenceFiles() {
     event.preventDefault();
     const form = event.target,
       editingId = form.dataset.referenceId,
-      existing = item.references.find((reference) => reference.id === editingId),
-      isVariable = !existing || existing.kind === "variable",
-      rawName = form.elements.referenceName.value.trim(),
-      name = isVariable ? rawName : rawName.replace(/[\\/:*?"<>|]/g, "_"),
-      value = isVariable ? form.elements.referenceValue.value : undefined,
-      variableType = existing?.variableType || form.elements.referenceType?.value || "string",
-      secret = existing?.secret ?? variableType === "secret";
-    if (!name) return;
-    if (isVariable && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      form.elements.referenceName.setCustomValidity("Use a valid variable identifier.");
-      form.elements.referenceName.reportValidity();
+      editingKind = form.dataset.referenceKind || "variable",
+      existing = item.references.find((reference) => reference.id === editingId);
+    if (editingKind === "file") {
+      // 会话级文件行：仅允许重命名显示名（持久化文件行不提供编辑入口）
+      const name = form.elements.referenceName.value.trim().replace(/[\\/:*?"<>|]/g, "_");
+      if (!name) return;
+      if (existing) {
+        const position = item.references.findIndex((reference) => reference.id === editingId);
+        item.references[position] = { ...existing, name };
+      }
+      dialog.close();
+      redraw();
+      $("referenceAdd").focus();
       return;
     }
+    // ---- 变量对象：Object（label）编辑，机器键不可见不可改 ----
+    const label = form.elements.referenceLabel.value.trim();
+    if (!label) return;
     if (
-      isVariable &&
       item.references.some(
         (reference) =>
           reference.kind === "variable" &&
           reference.id !== editingId &&
-          reference.name === name,
+          (reference.label || reference.name) === label,
       )
     ) {
-      form.elements.referenceName.setCustomValidity("A variable with this name already exists.");
-      form.elements.referenceName.reportValidity();
+      form.elements.referenceLabel.setCustomValidity("An object with this label already exists.");
+      form.elements.referenceLabel.reportValidity();
       return;
     }
-    form.elements.referenceName.setCustomValidity("");
-    const updated = existing
-      ? { ...existing, name, ...(isVariable ? { value, variableType, secret } : {}) }
-      : {
-          id: "reference-" + ++referenceSequence,
-          kind: "variable",
-          name,
-          type: "Variable",
-          variableType,
-          secret,
-          source: "input",
-          value,
+    form.elements.referenceLabel.setCustomValidity("");
+    const variableType = form.elements.referenceType?.value || existing?.variableType || "string";
+    const hasFormula = !!(form.elements.referenceFormula?.value || "").trim();
+    const collectValidation = () => {
+      const caseMode = form.elements.referenceCaseMode?.value;
+      const preset = form.elements.referenceFormatPreset?.value;
+      const pattern = (form.elements.referenceFormatPattern?.value || "").trim();
+      const sign = form.elements.referenceSign?.value;
+      const condition = (form.elements.referenceCondition?.value || "").trim();
+      const formula = (form.elements.referenceFormula?.value || "").trim();
+      const validation = {};
+      if (caseMode && caseMode !== "preserve") validation.caseMode = caseMode;
+      if (preset || pattern)
+        validation.format = {
+          ...(preset ? { preset } : {}),
+          ...(pattern ? { pattern } : {}),
         };
+      if (sign) validation.sign = sign;
+      if (condition) validation.condition = condition;
+      if (formula) validation.formula = formula;
+      return Object.keys(validation).length ? validation : undefined;
+    };
+    const activities = [...form.querySelectorAll("[name=referenceActivities]:checked")].map(
+      (checkbox) => checkbox.value,
+    );
+    const isFileType = isFileClassType(variableType);
+    const value = hasFormula ? "" : isFileType ? "" : form.elements.referenceValue?.value ?? "";
+    const machineName =
+      existing?.name ||
+      nextFlowVariableName(item.referenceFlow || { variables: [] }, "var");
+    const draft = {
+      id: existing?.id || "reference-" + ++referenceSequence,
+      kind: "variable",
+      name: machineName,
+      label,
+      variableType,
+      secret: variableType === "secret",
+      required: form.elements.referenceRequired?.checked || false,
+      validation: collectValidation(),
+      activities,
+      source: existing?.source || "input",
+      // 保留既有附件（未删除且无新上传）；新上传由 attachments 通道原子写入，保存后从落盘结果回填
+      ...(isFileType && !attachmentRemoved && !pendingUpload && reference?.attachment
+        ? { attachment: { ...reference.attachment } }
+        : {}),
+      value,
+    };
+    const pendingAttachments =
+      isFileType && pendingUpload
+        ? [{ name: machineName, fileName: pendingUpload.fileName, data: pendingUpload.data }]
+        : [];
     const nextReferences = existing
-      ? item.references.map((reference) => reference.id === editingId ? updated : reference)
-      : [...item.references, updated];
-    if (isVariable) {
+      ? item.references.map((reference) => (reference.id === editingId ? draft : reference))
+      : [...item.references, draft];
+    // 保存前经 preload 校验 IPC 做一次静态检查（语法/未知名/循环依赖），违规阻止保存
+    if (window.flowlink?.reference?.validateObject) {
       try {
-        await persistReferenceVariables(item, nextReferences);
+        const check = await window.flowlink.reference.validateObject({
+          objects: referenceVariableDefinitions(nextReferences),
+          name: machineName,
+        });
+        if (!check.ok && check.issues?.length) {
+          const issue = check.issues[0];
+          const status = panel.querySelector("#referenceStatus");
+          if (status)
+            status.textContent = `${issue.label || issue.name} · ${issue.rule} — ${issue.reason}`;
+          return;
+        }
       } catch (error) {
-        console.error("[reference] Unable to save variable:", error);
+        console.error("[reference] Validation IPC failed:", error);
         const status = panel.querySelector("#referenceStatus");
-        if (status) status.textContent = `Unable to save variable changes: ${error.message || error}`;
+        if (status)
+          status.textContent = `Unable to validate object: ${error.message || error}`;
         return;
+      }
+    }
+    let savedVariables;
+    try {
+      savedVariables = await persistReferenceVariables(item, nextReferences, pendingAttachments);
+    } catch (error) {
+      console.error("[reference] Unable to save variable:", error);
+      const status = panel.querySelector("#referenceStatus");
+      if (status) status.textContent = `Unable to save variable changes: ${error.message || error}`;
+      return;
+    }
+    // 持久化成功后局部刷新 referenceFlow（label/校验/附件等元数据已随版本落盘）
+    if (item.flowFile && window.flowlink?.flow?.load) {
+      try {
+        item.referenceFlow = await window.flowlink.flow.load(item.flowFile);
+      } catch {
+        /* 展示层刷新失败不阻塞对话框收起 */
+      }
+    }
+    void refreshReferenceDescribe(item);
+    // 附件元数据以落盘结果为准（新上传的 path 由主进程清洗去重后分配）
+    if (Array.isArray(savedVariables)) {
+      const savedVariable = savedVariables.find((entry) => entry.name === machineName);
+      if (savedVariable) {
+        draft.attachment = savedVariable.file
+          ? { name: savedVariable.file.name, path: savedVariable.file.path }
+          : undefined;
       }
     }
     if (existing) {
       const position = item.references.findIndex((reference) => reference.id === editingId);
-      item.references[position] = updated;
+      item.references[position] = draft;
     } else {
-      item.references.push(updated);
+      item.references.push(draft);
     }
     dialog.close();
     redraw();
@@ -8951,14 +9223,310 @@ function bindReferenceFiles() {
   };
 }
 
-function showReferenceEditor(dialog, reference) {
-  const isVariable = !reference || reference.kind === "variable",
-    title = reference ? "Update Reference item" : "Add variable",
-    variableType = reference?.variableType || "string",
-    types = ["string", "text", "email", "date", "number", "secret", "file"];
-  dialog.innerHTML = `<form class="reference-editor" data-reference-id="${escapeHTML(reference?.id || "")}"><h2 id="referenceDialogTitle">${title}</h2><label>Name<input name="referenceName" value="${escapeHTML(reference?.name || "")}" maxlength="255" required ${isVariable ? 'pattern="[A-Za-z_][A-Za-z0-9_]*"' : ""}></label>${isVariable ? `${reference ? "" : `<label>Type<select name="referenceType">${types.map((type) => `<option value="${type}" ${type === variableType ? "selected" : ""}>${type}</option>`).join("")}</select></label>`}<label>Value<input name="referenceValue" type="${reference?.secret || variableType === "secret" ? "password" : "text"}" value="${escapeHTML(reference?.value || "")}"></label>` : ""}<div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
+function showReferenceEditor(dialog, reference, item) {
+  if (reference && reference.kind !== "variable") {
+    // 文件行：保持旧的重命名表单（持久化文件行的编辑入口在渲染层隐藏）
+    dialog.innerHTML = `<form class="reference-editor" data-reference-id="${escapeHTML(reference.id || "")}" data-reference-kind="file"><h2 id="referenceDialogTitle">Update Reference item</h2><label>Name<input name="referenceName" value="${escapeHTML(reference.name || "")}" maxlength="255" required></label><div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
+    dialog.showModal();
+    dialog.querySelector("[name=referenceName]").focus();
+    return;
+  }
+  const title = reference ? "Update object" : "Add object";
+  const variableType = reference?.variableType || "string";
+  const validation = reference?.validation || {};
+  const catalogTypes = Object.entries(referenceTypeDisplayMap || {});
+  const typeOptions = catalogTypes.length
+    ? catalogTypes
+    : [
+        ["url", "网址"], ["string", "文本"], ["integer", "整数"], ["decimal", "小数"],
+        ["date", "日期"], ["secret", "密钥"], ["excel", "Excel"], ["word", "Word"],
+        ["csv", "CSV"], ["md", "Markdown"], ["file", "文件"],
+      ];
+  const hasFormula = !!validation.formula;
+  /** 公式是否生效：标记构建期用已落盘结构（此刻 dialog 里还是上一个表单，不能读实时 DOM）；
+   *  值栏重渲染发生在 innerHTML 就位之后，读高级区表达式的实时值。 */
+  const formulaActive = (fromLive = true) => {
+    if (!fromLive) return hasFormula;
+    const live = dialog.querySelector("[name=referenceFormula]");
+    return !!((live ? live.value : validation.formula) || "").trim();
+  };
+  const activities = reference?.activities || [];
+  // 附件状态：保留的既有附件 / 待上传的新附件（保存时经 attachments 原子写入）/ 已删除
+  let attachmentState = reference?.attachment ? { ...reference.attachment } : null;
+  let pendingUpload = null;
+  let attachmentRemoved = false;
+  const currentAttachmentName = () =>
+    pendingUpload?.fileName ??
+    (attachmentRemoved || !attachmentState ? "" : attachmentState.name);
+  const ATTACHMENT_ACCEPT = {
+    excel: ".xlsx,.xls",
+    word: ".docx",
+    csv: ".csv",
+    md: ".md,.markdown",
+    file: "",
+  };
+  const valueControlMarkup = (type) => {
+    if (isFileClassType(type)) {
+      const name = currentAttachmentName();
+      return `<div class="reference-upload-control"><button type="button" class="reference-upload-trigger" data-reference-upload-trigger${formulaActive(!markupBuilding) ? " disabled" : ""}>${name ? escapeHTML(name) : "点击选择文件"}</button>${name ? '<button type="button" class="reference-upload-remove icon-button" data-reference-upload-remove title="删除附件" aria-label="删除附件"><span aria-hidden="true">✕</span></button>' : ""}<input type="file" name="referenceAttachmentInput" hidden${ATTACHMENT_ACCEPT[type] ? ` accept="${ATTACHMENT_ACCEPT[type]}"` : ""}></div>`;
+    }
+    return `<input name="referenceValue" type="${type === "secret" ? "password" : "text"}" value="${escapeHTML(reference?.value || "")}"${formulaActive(!markupBuilding) ? ' disabled title="公式对象的值由表达式求值产生"' : ""}>`;
+  };
+  /** 标记构建期（dialog.innerHTML 赋值前）禁止读实时 DOM */
+  let markupBuilding = true;
+  const options = referenceActivityOptions(item);
+  const activityMarkup = options.length
+    ? options
+        .map(
+          (option) =>
+            `<label class="reference-activity-option"><input type="checkbox" name="referenceActivities" value="${escapeHTML(option.id)}" ${activities.includes(option.id) ? "checked" : ""}><span>${escapeHTML(option.label)}</span></label>`,
+        )
+        .join("")
+    : `<p class="reference-activity-note">未 Refine 的原始录制只有一个隐含活动（整段录制「${escapeHTML(item?.name || "")}」），全部对象默认关联它。</p>`;
+
+  // 其他对象的 label（句子式条件必填的可选引用；机器键不出现在用户视野）
+  const otherLabels = (item?.references || [])
+    .filter((entry) => entry.kind === "variable" && entry.id !== reference?.id)
+    .map((entry) => entry.label || entry.name);
+
+  // 预设状态：优先取主进程 describe 反编译（权威），缺失时按原始结构客户端兜底
+  const described = reference?.name ? item?.referenceDescribe?.[reference.name] : undefined;
+  const matchDateAuto = (formula) => {
+    const text = (formula || "").trim();
+    if (!text) return { mode: "manual", n: 0 };
+    if (text === "TODAY()") return { mode: "today", n: 0 };
+    let match = /^DATEADD\(TODAY\(\),\s*(\d+),\s*"day"\)$/.exec(text);
+    if (match) return { mode: "todayPlus", n: Number(match[1]) };
+    match = /^DATEADD\(TODAY\(\),\s*-(\d+),\s*"day"\)$/.exec(text);
+    if (match) return { mode: "todayMinus", n: Number(match[1]) };
+    return { mode: "custom", n: 0 };
+  };
+  const matchRequiredWhen = (condition) => {
+    const text = (condition || "").trim();
+    if (!text) return "";
+    const match = /^NOT\(ISEMPTY\((.+)\)\)$/.exec(text);
+    const referenced = match?.[1]?.trim();
+    return referenced && otherLabels.includes(referenced) ? referenced : "custom";
+  };
+  const presetState = described?.presets || {
+    caseMode: validation.caseMode === "upper" || validation.caseMode === "lower" ? validation.caseMode : "preserve",
+    format: validation.format?.preset || "",
+    sign: validation.sign || "",
+    ...matchDateAuto(validation.formula),
+    requiredWhen: matchRequiredWhen(validation.condition),
+  };
+  const isCustom = described ? described.custom : !!(validation.format?.pattern) || matchDateAuto(validation.formula).mode === "custom" || matchRequiredWhen(validation.condition) === "custom";
+
+  const dateAutoValue =
+    presetState.dateAutoMode || (presetState.mode ?? "manual");
+  const dateAutoOptions = [
+    ["manual", "手动填写"],
+    ["today", "自动填：今天"],
+    ["todayPlus", "自动填：今天 + N 天"],
+    ["todayMinus", "自动填：今天 − N 天"],
+    ...(dateAutoValue === "custom" ? [["custom", "自定义公式（在高级区编辑）"]] : []),
+  ];
+  const requiredWhenValue = presetState.requiredWhen ?? matchRequiredWhen(validation.condition);
+  const requiredWhenOptions = [
+    ["", "不需要"],
+    ...otherLabels.map((label) => [label, `当『${label}』已填写时本项必填`]),
+    ...(requiredWhenValue === "custom" ? [["custom", "自定义条件（在高级区编辑）"]] : []),
+  ];
+
+  dialog.innerHTML = `<form class="reference-editor reference-object-editor" data-reference-id="${escapeHTML(reference?.id || "")}" data-reference-kind="variable"><h2 id="referenceDialogTitle">${title}</h2><p class="reference-section-title">基本</p><div class="reference-basic-grid"><label>Object<input name="referenceLabel" value="${escapeHTML(reference?.label || reference?.name || "")}" maxlength="200" required></label><label>Type<select name="referenceType">${typeOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === variableType ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select></label><label class="reference-basic-full">Value<span class="reference-value-slot" data-value-slot>${valueControlMarkup(variableType)}</span></label><label class="reference-inline-check"><input type="checkbox" name="referenceRequired" ${reference?.required ? "checked" : ""}><span>必填</span></label></div><p class="reference-section-title">填写规则</p><div class="reference-presets-grid"><label>大小写<select name="referenceCaseMode"><option value="preserve" ${presetState.caseMode !== "upper" && presetState.caseMode !== "lower" ? "selected" : ""}>保持原样</option><option value="upper" ${presetState.caseMode === "upper" ? "selected" : ""}>全部大写</option><option value="lower" ${presetState.caseMode === "lower" ? "selected" : ""}>全部小写</option></select></label><label>格式<select name="referenceFormatPreset"><option value="" ${!presetState.format ? "selected" : ""}>不限制</option><option value="email" ${presetState.format === "email" ? "selected" : ""}>邮箱</option><option value="url" ${presetState.format === "url" ? "selected" : ""}>网址</option><option value="phone" ${presetState.format === "phone" ? "selected" : ""}>手机号</option></select></label><label>正负<select name="referenceSign"><option value="" ${!presetState.sign ? "selected" : ""}>不限制</option><option value="positive" ${presetState.sign === "positive" ? "selected" : ""}>必须为正数</option><option value="negative" ${presetState.sign === "negative" ? "selected" : ""}>必须为负数</option><option value="nonNegative" ${presetState.sign === "nonNegative" ? "selected" : ""}>不能为负数</option><option value="nonPositive" ${presetState.sign === "nonPositive" ? "selected" : ""}>不能为正数</option></select></label><label>条件必填<select name="referenceRequiredWhen">${requiredWhenOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === requiredWhenValue ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select></label><div class="reference-date-auto"><label class="reference-date-auto-label" for="referenceDateAutoSelect">日期自动计算</label><div class="reference-date-auto-row"><select name="referenceDateAuto" id="referenceDateAutoSelect">${dateAutoOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === dateAutoValue ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select><span class="reference-date-auto-n" hidden><input type="number" name="referenceDateAutoDays" min="1" max="3650" value="${Number(presetState.dateAutoN || presetState.n || 1)}" aria-label="天数 N"><span>天</span></span>${isCustom ? '<span class="reference-custom-badge">含自定义规则（见高级区）</span>' : ""}</div></div></div><fieldset class="reference-activities-editor"><legend>活动关联</legend>${activityMarkup}</fieldset><details class="reference-advanced"${isCustom ? " open" : ""}><summary>高级（自定义正则与表达式）</summary><div class="reference-advanced-body"><label>自定义正则<input name="referenceFormatPattern" value="${escapeHTML(validation.format?.pattern || "")}" maxlength="500" placeholder="^ORD-\\d+$"></label><label>条件表达式（高级）<textarea name="referenceCondition" rows="2" placeholder="如：NOT(ISEMPTY(客户类型))">${escapeHTML(validation.condition || "")}</textarea></label><div class="reference-expression-error" data-expression-error="condition" hidden></div><label>公式表达式（高级）<textarea name="referenceFormula" rows="2" placeholder="如：DATEADD(TODAY(), 7, &quot;day&quot;)">${escapeHTML(validation.formula || "")}</textarea></label><div class="reference-expression-error" data-expression-error="formula" hidden></div><p class="reference-activity-note">上方预设选择会同步写这里的表达式；直接编辑的表达式保存时优先。</p></div></details><div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
   dialog.showModal();
-  dialog.querySelector("[name=referenceName]").focus();
+  markupBuilding = false;
+  dialog.querySelector("[name=referenceLabel]").focus();
+
+  // ---- 值栏控件（修订轮 3）：文件类 = 上传控件（选择/覆盖/删除），随类型切换重渲染 ----
+  const renderValueControl = (type) => {
+    const slot = form0().querySelector("[data-value-slot]");
+    if (!slot) return;
+    const previous = form0().elements.referenceValue;
+    const previousValue = previous ? previous.value : null;
+    slot.innerHTML = valueControlMarkup(type);
+    if (previousValue !== null && form0().elements.referenceValue)
+      form0().elements.referenceValue.value = previousValue;
+    bindUploadEvents();
+  };
+  const form0 = () => dialog.querySelector("form");
+  const bindUploadEvents = () => {
+    const form = form0();
+    const trigger = form.querySelector("[data-reference-upload-trigger]");
+    const removeButton = form.querySelector("[data-reference-upload-remove]");
+    const fileInput = form.elements.referenceAttachmentInput;
+    if (!trigger || !fileInput) return;
+    trigger.onclick = () => {
+      if (trigger.disabled) return;
+      // 原生文件选择器打开期间抑制抽屉 Escape（与旧上传入口同机制）
+      fileInput.oncancel = (event) => {
+        event.stopPropagation();
+        setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
+      };
+      suppressDrawerCancelUntil = Date.now() + 60000;
+      fileInput.click();
+    };
+    if (removeButton)
+      removeButton.onclick = () => {
+        attachmentRemoved = true;
+        pendingUpload = null;
+        renderValueControl(form.elements.referenceType.value);
+      };
+    fileInput.onchange = async () => {
+      setTimeout(() => (suppressDrawerCancelUntil = 0), 1000);
+      const picked = fileInput.files?.[0];
+      fileInput.value = "";
+      if (!picked) return;
+      pendingUpload = {
+        fileName: picked.name,
+        data: new Uint8Array(await picked.arrayBuffer()),
+      };
+      attachmentRemoved = false;
+      renderValueControl(form.elements.referenceType.value);
+    };
+  };
+  bindUploadEvents();
+  form0().elements.referenceType?.addEventListener("change", () => {
+    renderValueControl(form0().elements.referenceType.value);
+  });
+
+  // 即时校验（高级区表达式 + label）：经 preload 校验 IPC 报错并阻止保存
+  const form = dialog.querySelector("form");
+  const saveButton = form.querySelector("button[type=submit]");
+  const collectDraftValidation = () => {
+    const caseMode = form.elements.referenceCaseMode?.value;
+    const preset = form.elements.referenceFormatPreset?.value;
+    const pattern = (form.elements.referenceFormatPattern?.value || "").trim();
+    const sign = form.elements.referenceSign?.value;
+    const condition = (form.elements.referenceCondition?.value || "").trim();
+    const formula = (form.elements.referenceFormula?.value || "").trim();
+    const collected = {};
+    if (caseMode && caseMode !== "preserve") collected.caseMode = caseMode;
+    if (preset || pattern)
+      collected.format = { ...(preset ? { preset } : {}), ...(pattern ? { pattern } : {}) };
+    if (sign) collected.sign = sign;
+    if (condition) collected.condition = condition;
+    if (formula) collected.formula = formula;
+    return Object.keys(collected).length ? collected : undefined;
+  };
+  const runImmediateCheck = async () => {
+    if (!window.flowlink?.reference?.validateObject) return;
+    const errorBoxes = {
+      condition: form.querySelector('[data-expression-error="condition"]'),
+      formula: form.querySelector('[data-expression-error="formula"]'),
+    };
+    const objects = referenceVariableDefinitions(
+      item.references
+        .filter((entry) => entry.kind === "variable")
+        .map((entry) =>
+          entry.id === reference?.id
+            ? { ...entry, validation: collectDraftValidation() }
+            : entry,
+        ),
+    );
+    let blocked = false;
+    try {
+      const check = await window.flowlink.reference.validateObject({
+        objects,
+        name: reference?.name || "__draft__",
+      });
+      const issues = (check && check.ok ? [] : check.issues || []).filter(
+        (issue) =>
+          issue.rule === "formula-expression" ||
+          issue.rule === "condition-expression" ||
+          issue.rule === "label",
+      );
+      for (const field of ["condition", "formula"]) {
+        const box = errorBoxes[field];
+        if (!box) continue;
+        const hit = issues.find((issue) => issue.rule === `${field}-expression`);
+        box.hidden = !hit;
+        box.textContent = hit ? hit.reason : "";
+        if (hit) blocked = true;
+      }
+      if (issues.some((issue) => issue.rule === "label")) blocked = true;
+    } catch {
+      /* 校验 IPC 异常不阻塞输入；保存关口会再拦一次 */
+    }
+    saveButton.disabled = blocked;
+  };
+
+  // 预设 → 高级区表达式同步（高级区文本是保存时的唯一事实源）
+  const syncFormulaFromPreset = () => {
+    const mode = form.elements.referenceDateAuto.value;
+    const days = Math.min(3650, Math.max(1, Number(form.elements.referenceDateAutoDays?.value || 1)));
+    let formula = "";
+    if (mode === "today") formula = "TODAY()";
+    else if (mode === "todayPlus") formula = `DATEADD(TODAY(), ${days}, "day")`;
+    else if (mode === "todayMinus") formula = `DATEADD(TODAY(), -${days}, "day")`;
+    if (mode !== "custom") {
+      form.elements.referenceFormula.value = formula;
+      renderValueControl(form.elements.referenceType.value);
+      void runImmediateCheck();
+    }
+  };
+  const syncConditionFromPreset = () => {
+    const value = form.elements.referenceRequiredWhen.value;
+    if (value !== "custom") {
+      form.elements.referenceCondition.value = value ? `NOT(ISEMPTY(${value}))` : "";
+      void runImmediateCheck();
+    }
+  };
+  const syncDateAutoDaysVisibility = () => {
+    const mode = form.elements.referenceDateAuto.value;
+    const wrapper = form.querySelector(".reference-date-auto-n");
+    if (wrapper) wrapper.hidden = mode !== "todayPlus" && mode !== "todayMinus";
+  };
+  form.elements.referenceDateAuto?.addEventListener("change", () => {
+    syncDateAutoDaysVisibility();
+    syncFormulaFromPreset();
+  });
+  form.elements.referenceDateAutoDays?.addEventListener("change", syncFormulaFromPreset);
+  syncDateAutoDaysVisibility();
+  form.elements.referenceRequiredWhen?.addEventListener("change", syncConditionFromPreset);
+
+  // 高级区表达式 → 预设下拉回同步（编辑为非预设形式时显示「自定义」项）
+  const resyncPresetSelects = () => {
+    const matched = matchDateAuto(form.elements.referenceFormula.value);
+    const select = form.elements.referenceDateAuto;
+    if (matched.mode === "custom") {
+      if (![...select.options].some((option) => option.value === "custom")) {
+        const option = document.createElement("option");
+        option.value = "custom";
+        option.textContent = "自定义公式（在高级区编辑）";
+        select.append(option);
+      }
+      select.value = "custom";
+    } else {
+      select.value = matched.mode;
+      if (matched.n) form.elements.referenceDateAutoDays.value = String(matched.n);
+    }
+    const conditionMatch = matchRequiredWhen(form.elements.referenceCondition.value);
+    const conditionSelect = form.elements.referenceRequiredWhen;
+    if (conditionMatch === "custom") {
+      if (![...conditionSelect.options].some((option) => option.value === "custom")) {
+        const option = document.createElement("option");
+        option.value = "custom";
+        option.textContent = "自定义条件（在高级区编辑）";
+        conditionSelect.append(option);
+      }
+      conditionSelect.value = "custom";
+    } else {
+      conditionSelect.value = conditionMatch;
+    }
+    // 下拉值被程序改写不会触发 change，显隐必须在这里同步跟上
+    syncDateAutoDaysVisibility();
+  };
+  for (const field of ["referenceCondition", "referenceFormula", "referenceLabel"]) {
+    form.elements[field]?.addEventListener("input", () => {
+      if (field !== "referenceLabel") resyncPresetSelects();
+      void runImmediateCheck();
+    });
+  }
+  // 公式变化（预设同步或高级区手写）→ 值栏重建为锁定/解锁形态（文本值保留）
+  form.elements.referenceFormula?.addEventListener("input", () => {
+    renderValueControl(form.elements.referenceType.value);
+  });
 }
 
 function bindScreenshotZoom() {

@@ -1268,13 +1268,26 @@
                   data-result-tab="Reference"
                   hidden
                 >
+                  <div
+                    class="reference-gate-issues"
+                    id="referenceGateIssues"
+                    hidden
+                  >
+                    <p class="reference-gate-title">
+                      回放启动前校验未通过（Reference）
+                    </p>
+                    <ul></ul>
+                  </div>
                   <div class="reference-table-wrap">
                     <table class="reference-table" aria-label="Reference items">
                       <colgroup>
                         <col class="reference-check-column" />
                         <col class="reference-name-column" />
-                        <col />
+                        <col class="reference-type-column" />
                         <col class="reference-value-column" />
+                        <col class="reference-required-column" />
+                        <col class="reference-validation-column" />
+                        <col class="reference-activities-column" />
                         <col class="reference-actions-column" />
                       </colgroup>
                       <thead>
@@ -1287,9 +1300,12 @@
                               aria-label="Select all reference items"
                             />
                           </th>
-                          <th scope="col">Name</th>
+                          <th scope="col">Object</th>
                           <th scope="col">Type</th>
                           <th scope="col">Value</th>
+                          <th scope="col">Required</th>
+                          <th scope="col">Validation</th>
+                          <th scope="col">Activities</th>
                           <th scope="col" aria-label="Reference actions"></th>
                         </tr>
                       </thead>
@@ -1298,13 +1314,6 @@
                   </div>
                   <div class="reference-footer">
                     <span role="status" id="referenceStatus"></span>
-                    <input
-                      type="file"
-                      id="referenceFileInput"
-                      accept=".xlsx,.xls,.csv,.md,.markdown"
-                      multiple
-                      hidden
-                    />
                     <button
                       type="button"
                       class="btn secondary"
@@ -2059,6 +2068,9 @@
         </td>
         <td data-slot="type"></td>
         <td data-slot="value"></td>
+        <td data-slot="required"></td>
+        <td data-slot="validation"></td>
+        <td data-slot="activities"></td>
         <td class="reference-action-cell">
           <div class="reference-row-actions">
             <button type="button" class="icon-button" title="Update">

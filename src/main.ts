@@ -21,10 +21,23 @@ import { disposePiWorker, getGenerationSkills, getPromptTemplates, getPiProxyOpt
 import { aiTakeoverInProgress, abortAiTakeover, startAiTakeover, type GateEvaluation, type TakeoverEvidence, type TakeoverEvidenceNode, type TakeoverEvidencePage } from './ai-takeover.js'
 import { perf, perfSinceAppStart } from './perf.js'
 import { elementKey, generateRefinedFlow, projectFlows, type ReanchorEntry } from './ai-refine.js'
+import { gateReferenceVariables, saveVariablesWithAttachments, type AttachmentUpload } from './reference-persistence.js'
 import { EmptyRecordingError, recordOnPage, writeFlowForgeArchive, resolveSystem, type CaptureTab, type HostCaptureEvent, type RecordResult } from '../engine/recorder/src/index.js'
 import { evaluateAssertion, flattenSteps, playOnPage, prefixSteps, type RunResult, type VerifyDeps } from '../engine/executor/src/index.js'
 import { resolve as resolveElement } from '../engine/resolver/src/index.js'
-import { loadFlow, parseFlow, saveFlow, makeId, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
+import {
+	REFERENCE_TYPES,
+	REFERENCE_FILE_EXTENSIONS,
+	TYPE_DISPLAY,
+	decomposeValidation,
+	describeRules,
+	isInsideDirectory,
+	planReferenceFileTarget,
+	referenceTypeFromFileName,
+	validateReferences,
+	staticValidateExpressions,
+} from '../engine/reference/src/index.js'
+import { loadFlow, parseFlow, saveFlow, makeId, VariableSchema, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
 import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
 import { appLog, appLogFields, startupLogFileName } from './app-logger.js'
 import type { Flow } from '../engine/schema/src/index.js'
@@ -1931,6 +1944,20 @@ function registerIpc(): void {
 		if (!recording) throw new Error('找不到该录制')
 
 		const flow: Flow = await loadFlow(recording.flowFile)
+		/* Reference 统一校验闸门：回放启动前一次性收集全部违规（对象 label+规则+原因），
+		 * 有违规以结构化错误拒绝启动；无违规把解析后值表（公式求值/大小写转换/空串填充/
+		 * 附件→工件内绝对路径）传给 executor——executor 不再承担缺失失败职责（仅防御性
+		 * 拒绝未知机器键模板引用）。非必填且无值/默认/公式的对象以空串注入（既定语义变化）。 */
+		const gate = await gateReferenceVariables(flow.variables, opts.variables ?? {}, recording.artifactsDir)
+		if (!gate.ok) {
+			throw new Error(`REFERENCE_VALIDATION:${JSON.stringify(gate.issues)}`)
+		}
+		if (gate.injectedEmpty.length) {
+			console.log(
+				`[playback:${flow.id}] 空串注入对象（非必填缺失）：${gate.injectedEmpty.join(', ')}`,
+			)
+		}
+		const resolvedVariables = gate.values
 		const flattenedSteps = flattenSteps(flow.steps)
 		// 续跑下标钳制到扁平长度（超界 = 全部 bypassed，执行器自然空转收尾）。
 		const startCursor =
@@ -1971,7 +1998,7 @@ function registerIpc(): void {
 			stepDelayMs: 350,
 			highlightSteps: true,
 			stopOnFailure: true,
-			variables: opts.variables,
+			variables: resolvedVariables,
 			...(startCursor > 0 ? { startCursor } : {}),
 			abortSignal: playAbortController.signal,
 			waitForUserOperation: ({ stepId, prompt, signal }) =>
@@ -2088,13 +2115,18 @@ function registerIpc(): void {
 			const recording = task?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error(`Recording not found: ${opts.recordingId}`)
 			const flow = await loadFlow(recording.flowFile)
+			// Reference 统一校验闸门（与 playback:run 同源）：违规拒绝接管启动，无违规传解析后值表。
+			const gate = await gateReferenceVariables(flow.variables, opts.variables ?? {}, recording.artifactsDir)
+			if (!gate.ok) {
+				throw new Error(`REFERENCE_VALIDATION:${JSON.stringify(gate.issues)}`)
+			}
 			// fire-and-forget：进度经 playback:aiStep / playback:aiDone 事件推送。
 			const takeoverMode = opts.mode === 'single' ? 'single' as const : 'remaining' as const
 			void startAiTakeover({
 				flow,
 				fromStepIndex: opts.fromStepIndex,
 				mode: takeoverMode,
-				variables: opts.variables ?? {},
+				variables: gate.values,
 				failureSummary:
 					typeof opts.failureSummary === 'string'
 						? opts.failureSummary.slice(0, 2_000)
@@ -2283,7 +2315,15 @@ function registerIpc(): void {
 	)
 	ipcMain.handle(
 		'flow:updateVariables',
-		async (_event, opts: { taskCode: string; recordingId: string; variables: unknown[] }) => {
+		async (
+			_event,
+			opts: {
+				taskCode: string
+				recordingId: string
+				variables: unknown[]
+				attachments?: AttachmentUpload[]
+			},
+		) => {
 			if (
 				!opts ||
 				typeof opts.taskCode !== 'string' ||
@@ -2292,16 +2332,237 @@ function registerIpc(): void {
 			) {
 				throw new Error('变量更新请求无效')
 			}
+			if (opts.attachments !== undefined && !Array.isArray(opts.attachments)) {
+				throw new Error('附件上传列表无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			// Reference 元数据（label/必填/校验/活动/附件）与附件字节在同一 IPC 内、
+			// 同一次版本递增落盘（原子保存：失败回滚新写文件，成功后清理孤儿旧文件）。
+			const saved = await saveVariablesWithAttachments({
+				flowFile: recording.flowFile,
+				artifactsDir: recording.artifactsDir,
+				variables: opts.variables,
+				attachments: opts.attachments,
+			})
+			return saved.variables
+		},
+	)
+
+	/* ---------- Reference：目录 / 即时校验 / 上传文件持久化 ---------- */
+
+	/** 类型目录 + 显示映射的唯一来源（渲染层不复制映射表） */
+	ipcMain.handle('reference:catalog', () => ({
+		types: REFERENCE_TYPES.map((type) => ({ value: type, display: TYPE_DISPLAY[type] })),
+		fileExtensions: REFERENCE_FILE_EXTENSIONS,
+	}))
+
+	/** 编辑对话框即时校验：单对象语法/未知名/循环检查（不落盘） */
+	ipcMain.handle(
+		'reference:validateObject',
+		(_event, opts: { objects: unknown[]; name: string }) => {
+			if (!opts || !Array.isArray(opts.objects) || typeof opts.name !== 'string') {
+				throw new Error('校验请求无效')
+			}
+			const parsed = VariableSchema.array().safeParse(opts.objects)
+			if (!parsed.success) {
+				throw new Error(`变量定义无效：${parsed.error.issues[0]?.message ?? 'schema 校验失败'}`)
+			}
+			const issues = staticValidateExpressions(parsed.data).filter((issue) => issue.name === opts.name)
+			return { ok: issues.length === 0, issues }
+		},
+	)
+
+	/** 全量校验（回放前干跑 / 行级摘要）：返回违规与解析后值表 */
+	ipcMain.handle(
+		'reference:validateAll',
+		(_event, opts: { objects: unknown[]; values?: Record<string, string> }) => {
+			if (!opts || !Array.isArray(opts.objects)) throw new Error('校验请求无效')
+			const parsed = VariableSchema.array().safeParse(opts.objects)
+			if (!parsed.success) {
+				throw new Error(`变量定义无效：${parsed.error.issues[0]?.message ?? 'schema 校验失败'}`)
+			}
+			const values =
+				opts.values && typeof opts.values === 'object' && !Array.isArray(opts.values)
+					? (opts.values as Record<string, string>)
+					: {}
+			return validateReferences(parsed.data, values)
+		},
+	)
+
+	/**
+	 * 规则摘要 + 预设反编译（表格校验列与编辑对话框的默认视图共用）：
+	 * 返回 机器键 → { summary（中文业务短句）, custom, presets（扁平预设状态） }。
+	 */
+	ipcMain.handle('reference:describe', (_event, opts: { objects: unknown[] }) => {
+		if (!opts || !Array.isArray(opts.objects)) throw new Error('摘要请求无效')
+		const parsed = VariableSchema.array().safeParse(opts.objects)
+		if (!parsed.success) {
+			throw new Error(`变量定义无效：${parsed.error.issues[0]?.message ?? 'schema 校验失败'}`)
+		}
+		const names = parsed.data.map((variable) => variable.label?.trim() || variable.name)
+		const out: Record<
+			string,
+			{
+				summary: string
+				custom: boolean
+				presets: {
+					caseMode: string
+					format: string
+					sign: string
+					dateAutoMode: 'manual' | 'today' | 'todayPlus' | 'todayMinus' | 'custom'
+					dateAutoN: number
+					requiredWhen: string
+				}
+			}
+		> = {}
+		for (const variable of parsed.data) {
+			const { presets, custom } = decomposeValidation(variable.validation, names)
+			const dateAutoMode =
+				variable.validation?.formula && presets.dateAuto.mode === 'manual'
+					? 'custom'
+					: presets.dateAuto.mode
+			out[variable.name] = {
+				summary: describeRules(
+					{ required: variable.required, validation: variable.validation },
+					{ referenceNames: names },
+				),
+				custom,
+				presets: {
+					caseMode: presets.caseMode,
+					format: presets.format,
+					sign: presets.sign,
+					dateAutoMode,
+					dateAutoN: presets.dateAuto.mode === 'todayPlus' || presets.dateAuto.mode === 'todayMinus' ? presets.dateAuto.n : 0,
+					requiredWhen: presets.requiredWhen,
+				},
+			}
+		}
+		return out
+	})
+
+	/**
+	 * 上传 Reference 文件持久化：字节经渲染层读入传入，清洗命名后写入
+	 * artifacts/<recordingId>/references/，元数据入 flow.referenceFiles，版本递增。
+	 */
+	ipcMain.handle(
+		'flow:addReferenceFile',
+		async (
+			_event,
+			opts: { taskCode: string; recordingId: string; name: string; data: Uint8Array },
+		) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				typeof opts.name !== 'string' ||
+				!opts.name.trim()
+			) {
+				throw new Error('Reference 文件上传请求无效')
+			}
+			const bytes =
+				opts.data instanceof Uint8Array
+					? opts.data
+					: typeof opts.data === 'string'
+						? Uint8Array.from(Buffer.from(opts.data, 'base64'))
+						: undefined
+			if (!bytes || !bytes.byteLength) throw new Error('Reference 文件内容为空')
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const mappedType = referenceTypeFromFileName(opts.name)
+			if (!mappedType || !(['excel', 'word', 'csv', 'md'] as const).includes(mappedType as 'excel')) {
+				throw new Error(
+					`不支持的文件类型 "${opts.name}"（允许：${REFERENCE_FILE_EXTENSIONS.join(' ')}）`,
+				)
+			}
+			const type = mappedType as 'excel' | 'word' | 'csv' | 'md'
+			const flow = await loadFlow(recording.flowFile)
+			const referencesDir = join(recording.artifactsDir, 'references')
+			const existing = await readdir(referencesDir).catch(() => [] as string[])
+			const plan = planReferenceFileTarget(referencesDir, opts.name, existing)
+			await mkdir(referencesDir, { recursive: true })
+			await writeFile(plan.absolutePath, bytes)
+			const entry = { id: makeId('ref'), name: plan.displayName, type, path: plan.relativePath }
+			const updated = parseFlow(
+				{
+					...flow,
+					version: flow.version + 1,
+					referenceFiles: [...(flow.referenceFiles ?? []), entry],
+				},
+				recording.flowFile,
+				{ strict: true },
+			)
+			await saveFlow(updated, recording.flowFile, { backup: true })
+			return entry
+		},
+	)
+
+	/** 删除 Reference 文件：删工件文件 + 元数据 + 版本递增（幂等：文件缺失不报错） */
+	ipcMain.handle(
+		'flow:removeReferenceFile',
+		async (_event, opts: { taskCode: string; recordingId: string; fileId: string }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				typeof opts.fileId !== 'string'
+			) {
+				throw new Error('Reference 文件删除请求无效')
+			}
 			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
 			if (!recording) throw new Error('找不到该录制')
 			const flow = await loadFlow(recording.flowFile)
-			const updated = parseFlow({
-				...flow,
-				version: flow.version + 1,
-				variables: opts.variables,
-			}, recording.flowFile, { strict: true })
-			await saveFlow(updated, recording.flowFile)
-			return updated.variables
+			const entry = flow.referenceFiles.find((file) => file.id === opts.fileId)
+			if (!entry) throw new Error('找不到该 Reference 文件')
+			const referencesDir = join(recording.artifactsDir, 'references')
+			const absolutePath = resolve(recording.artifactsDir, entry.path)
+			// 双重防逃逸：必须同时落在工件根与 references/ 子目录内
+			if (!isInsideDirectory(recording.artifactsDir, absolutePath) || !isInsideDirectory(referencesDir, absolutePath)) {
+				throw new Error(`Reference 文件路径越界被拒绝：${entry.path}`)
+			}
+			await rm(absolutePath, { force: true })
+			const updated = parseFlow(
+				{
+					...flow,
+					version: flow.version + 1,
+					referenceFiles: flow.referenceFiles.filter((file) => file.id !== opts.fileId),
+				},
+				recording.flowFile,
+				{ strict: true },
+			)
+			await saveFlow(updated, recording.flowFile, { backup: true })
+			return true
+		},
+	)
+
+	/** 持久化文件的下载 URL：路径校验后返回 file:///（渲染层不拼路径） */
+	ipcMain.handle(
+		'reference:fileUrl',
+		async (_event, opts: { taskCode: string; recordingId: string; fileId: string }) => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				typeof opts.fileId !== 'string'
+			) {
+				throw new Error('Reference 文件请求无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const flow = await loadFlow(recording.flowFile)
+			const entry = flow.referenceFiles.find((file) => file.id === opts.fileId)
+			if (!entry) throw new Error('找不到该 Reference 文件')
+			const referencesDir = join(recording.artifactsDir, 'references')
+			const absolutePath = resolve(recording.artifactsDir, entry.path)
+			if (!isInsideDirectory(referencesDir, absolutePath)) {
+				throw new Error(`Reference 文件路径越界被拒绝：${entry.path}`)
+			}
+			try {
+				await readFile(absolutePath)
+			} catch {
+				throw new Error(`Reference 文件不存在：${entry.name}`)
+			}
+			return `file:///${absolutePath.split(sep).map(encodeURIComponent).join('/')}`
 		},
 	)
 	ipcMain.handle(

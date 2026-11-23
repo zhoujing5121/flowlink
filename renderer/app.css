@@ -3160,8 +3160,10 @@ body {
 }
 
 .reference-dialog {
-  width: 480px;
-  max-width: calc(100vw - 32px);
+  width: 720px;
+  max-width: calc(100vw - 48px);
+  max-height: 90vh;
+  overflow: auto;
   padding: 24px;
   border: 0;
   background: #fff;
@@ -8177,4 +8179,327 @@ body .btn.secondary:disabled {
   justify-content: center;
   color: #a4aeb7;
   font-size: 14px;
+}
+
+/* ---------- Reference 正式化（formalize-reference）：新列 / 闸门清单 / 对象编辑器 ---------- */
+
+.reference-table {
+  min-width: 1020px;
+}
+
+.reference-table .reference-check-column {
+  width: 56px;
+}
+
+.reference-table .reference-name-column {
+  width: 22%;
+}
+
+.reference-table .reference-type-column {
+  width: 96px;
+}
+
+.reference-table .reference-value-column {
+  width: 18%;
+}
+
+.reference-table .reference-required-column {
+  width: 88px;
+}
+
+.reference-table .reference-validation-column {
+  width: 18%;
+}
+
+.reference-table .reference-activities-column {
+  width: 16%;
+}
+
+.reference-table .reference-actions-column {
+  width: 112px;
+}
+
+.reference-table td[data-slot="required"],
+.reference-table td[data-slot="validation"],
+.reference-table td[data-slot="activities"] {
+  color: #4c565f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.reference-row-invalid {
+  background: #fdf3f2;
+}
+
+.reference-row-invalid > td {
+  background: #fdf3f2;
+}
+
+.reference-row-invalid .reference-name {
+  color: #b3261e;
+  font-weight: 700;
+}
+
+.reference-gate-issues {
+  flex: 0 0 auto;
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border: 1px solid #f0c2bd;
+  border-radius: 8px;
+  background: #fdf3f2;
+  color: #8c1d18;
+}
+
+.reference-gate-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.reference-gate-issues ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+.reference-gate-issues li {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.reference-object-editor {
+  display: grid;
+  gap: 12px;
+  min-width: min(560px, calc(100vw - 64px));
+}
+
+/* 勾选框与文字同行（9.4）：label.reference-* 特异度需压过 .reference-editor label 的 grid */
+label.reference-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reference-editor label.reference-inline-check input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  flex: 0 0 auto;
+}
+
+.reference-validation-editor,
+.reference-activities-editor {
+  border: 1px solid #d7dee7;
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.reference-validation-editor legend,
+.reference-activities-editor legend {
+  padding: 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #4c565f;
+}
+
+.reference-validation-editor textarea,
+.reference-object-editor textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 6px 8px;
+  border: 1px solid #c6cfd6;
+  border-radius: 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 14px;
+  line-height: 20px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.reference-expression-error {
+  color: #b3261e;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: pre-wrap;
+}
+
+label.reference-activity-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reference-editor label.reference-activity-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex: 0 0 auto;
+}
+
+.reference-activity-note {
+  margin: 0;
+  color: #4c565f;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* ---------- 修订轮（8.1/8.3）：对象编辑器分区布局与预设视图 ---------- */
+
+.reference-object-editor .reference-section-title {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #4c565f;
+}
+
+.reference-basic-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 16px;
+}
+
+.reference-basic-grid .reference-basic-full {
+  grid-column: 1 / -1;
+}
+
+.reference-presets-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 16px;
+}
+
+/* 日期自动计算：两行结构——标签「日期自动计算」独占一行；下一行 = 下拉框 + 条件显示的
+   N 输入框 + 「天」同行排列（行内垂直居中）。N 仅在「今天 ± N 天」时显示。 */
+.reference-date-auto {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.reference-date-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reference-date-auto-row > select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.reference-date-auto-n {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* display 会覆盖 hidden 属性的 UA 样式，显式保底 */
+.reference-date-auto-n[hidden] {
+  display: none;
+}
+
+.reference-date-auto-n input[type="number"] {
+  width: 88px;
+}
+
+.reference-custom-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #f1f3f4;
+  color: #4c565f;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.reference-advanced {
+  border: 1px dashed #c6cfd6;
+  border-radius: 8px;
+  padding: 8px 12px 12px;
+}
+
+.reference-advanced > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  color: #4c565f;
+  padding: 4px 0;
+}
+
+.reference-advanced[open] > summary {
+  margin-bottom: 8px;
+}
+
+.reference-advanced .reference-advanced-body {
+  display: grid;
+  gap: 10px;
+}
+
+.reference-advanced code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 13px;
+}
+
+/* ---------- 修订轮 3（10.4）：文件类对象的值栏上传控件 ---------- */
+
+.reference-value-slot {
+  display: block;
+  min-width: 0;
+}
+
+.reference-upload-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reference-upload-trigger {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  padding: 0 10px;
+  border: 1px dashed #aeb7bf;
+  background: #fff;
+  color: #101416;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.reference-upload-trigger:hover:not(:disabled) {
+  border-color: #00884a;
+  color: #00884a;
+}
+
+.reference-upload-trigger:disabled {
+  cursor: default;
+  color: #838b92;
+  background: #f1f3f4;
+}
+
+.reference-upload-remove {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  color: #838b92;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.reference-upload-remove:hover {
+  color: #b3261e;
 }

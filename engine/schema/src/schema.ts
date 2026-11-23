@@ -9,7 +9,10 @@
  */
 import { z } from 'zod'
 
-export const SCHEMA_VERSION = 2
+import { REFERENCE_TYPES, isFileReferenceType } from '../../reference/src/type-catalog.js'
+import { staticValidateExpressions } from '../../reference/src/validate.js'
+
+export const SCHEMA_VERSION = 3
 
 /** 元素/视口矩形（相对 viewport 的 CSS 像素） */
 export const RectSchema = z.object({
@@ -119,12 +122,76 @@ export const ExpectSchema = z.discriminatedUnion('kind', [
 ])
 export type Expect = z.infer<typeof ExpectSchema>
 
+/** Reference 校验规则（大小写/格式/正负/条件必填/公式）；表达式为安全子集，见 engine/reference */
+export const VariableValidationSchema = z.object({
+	/** 注入前的大小写转换；preserve/缺省 = 原样 */
+	caseMode: z.enum(['preserve', 'upper', 'lower']).optional(),
+	format: z
+		.object({
+			/** 内置预设：email / URL / 手机号 */
+			preset: z.enum(['email', 'url', 'phone']).optional(),
+			/** 自定义正则（JS 正则语法，按整串匹配语义由校验器决定） */
+			pattern: z.string().max(500).optional(),
+		})
+		.optional(),
+	/** 正负规则（仅 integer/decimal 类型生效） */
+	sign: z.enum(['positive', 'negative', 'nonNegative', 'nonPositive']).optional(),
+	/** 条件必填表达式：为真时该对象必须有值 */
+	condition: z.string().max(2_000).optional(),
+	/** 公式表达式：对象的值由求值产生，用户不可手填 */
+	formula: z.string().max(2_000).optional(),
+})
+export type VariableValidation = z.infer<typeof VariableValidationSchema>
+
+/** 上传 Reference 文件的持久化元数据：path 相对录制工件根，必须落在 references/ 内 */
+export const ReferenceFileSchema = z.object({
+	id: z.string().min(1),
+	/** 原始显示文件名（用户可见） */
+	name: z.string().min(1),
+	type: z.enum(['excel', 'word', 'csv', 'md', 'file']),
+	/** 相对工件根的落盘路径，形如 references/<文件名>；契约校验禁止逃逸 */
+	path: z.string().min(1),
+})
+export type ReferenceFile = z.infer<typeof ReferenceFileSchema>
+
+/**
+ * Reference 文件路径契约：必须是 `references/` 下不含子目录、不含 `..`、
+ * 不含分隔符的单段文件名（相对录制工件根）。
+ */
+export function isSafeReferenceFilePath(path: string): boolean {
+	if (!path.startsWith('references/')) return false
+	const fileName = path.slice('references/'.length)
+	if (!fileName || fileName.includes('/') || fileName.includes('\\')) return false
+	if (fileName.includes('..') || fileName.trim() !== fileName) return false
+	return !/[\u0000-\u001f\u007f]/.test(fileName)
+}
+
+/** 文件类对象（excel/word/csv/md/file）的可选附件元数据：path 相对工件根，复用 references/ 单段防逃逸契约 */
+export const VariableAttachmentSchema = z.object({
+	/** 附件显示文件名 */
+	name: z.string().min(1),
+	/** 相对录制工件根的落盘路径，形如 references/<文件名> */
+	path: z.string().min(1),
+})
+export type VariableAttachment = z.infer<typeof VariableAttachmentSchema>
+
 export const VariableSchema = z.object({
 	name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, '变量名必须是合法标识符'),
-	type: z.enum(['string', 'text', 'email', 'date', 'number', 'secret', 'file']).default('string'),
+	/** 业务显示名（唯一面向用户的名称）；机器键不出现在用户视野 */
+	label: z.string().min(1).max(200).optional(),
+	/** 封闭类型目录（engine/reference type-catalog）：url/string/integer/decimal/date/secret/excel/word/csv/md/file */
+	type: z.enum(REFERENCE_TYPES).default('string'),
 	defaultValue: z.string().optional(),
 	/** secret 变量不会以明文出现在动作轨迹中；界面只显示 ****** */
 	secret: z.boolean().default(false),
+	/** 必填：回放启动前缺失则拒绝启动 */
+	required: z.boolean().optional(),
+	/** 校验规则（大小写/格式/正负/条件必填/公式） */
+	validation: VariableValidationSchema.optional(),
+	/** 关联的 L1 活动分组 id（Refine 后顶层分组）；未 Refine 录制的隐含整段活动不入此数组 */
+	activities: z.array(z.string().min(1)).optional(),
+	/** 文件类对象的可选附件（值即文件）；回放时解析为工件内绝对路径注入 */
+	file: VariableAttachmentSchema.optional(),
 	source: z.enum(['input', 'csv']).default('input'),
 })
 export type Variable = z.infer<typeof VariableSchema>
@@ -441,6 +508,8 @@ export const FlowSchema = z.object({
 			.optional(),
 	}),
 	variables: z.array(VariableSchema).default([]),
+	/** 上传 Reference 文件的持久化元数据（相对工件根 references/ 路径） */
+	referenceFiles: z.array(ReferenceFileSchema).default([]),
 	steps: z.array(StepSchema).min(1),
 	stats: z
 		.object({
@@ -501,6 +570,36 @@ export interface FlowContractOptions {
  */
 export function validateFlowContract(flow: Flow, opts: FlowContractOptions = {}): string[] {
 	const errors: string[] = []
+	// Reference 元数据契约（始终检查，不只 strict 模式）：
+	// 1) label 重复会让表达式引用歧义；2) 表达式必须静态合法（语法/未知名/循环）；
+	// 3) 上传文件路径必须留在 references/ 内（防逃逸）。
+	const labelSeen = new Set<string>()
+	for (const variable of flow.variables) {
+		const label = variable.label?.trim()
+		if (!label) continue
+		if (labelSeen.has(label)) {
+			errors.push(`variables[${variable.name}]: label "${label}" 重复（label 必须唯一，否则表达式引用歧义）`)
+		}
+		labelSeen.add(label)
+	}
+	// 附件契约：仅文件类对象可携带；路径必须留在 references/ 内（防逃逸）
+	for (const variable of flow.variables) {
+		if (!variable.file) continue
+		if (!isFileReferenceType(variable.type)) {
+			errors.push(`variables[${variable.name}]: 只有文件类对象（excel/word/csv/md/file）可携带附件，当前类型 ${variable.type}`)
+		}
+		if (!isSafeReferenceFilePath(variable.file.path)) {
+			errors.push(`variables[${variable.name}]: 附件 path "${variable.file.path}" 必须是 references/ 下的安全单段相对路径`)
+		}
+	}
+	for (const issue of staticValidateExpressions(flow.variables)) {
+		errors.push(`variables[${issue.name}]（${issue.label}）: ${issue.rule} — ${issue.reason}`)
+	}
+	for (const file of flow.referenceFiles) {
+		if (!isSafeReferenceFilePath(file.path)) {
+			errors.push(`referenceFiles[${file.id}]: path "${file.path}" 必须是 references/ 下的安全单段相对路径`)
+		}
+	}
 	if (opts.strict) {
 		// 组 id 与步骤 id 共享命名空间，在整个 Flow 内唯一（重复即拒绝，
 		// 不再仅防御性取首现）；空分组不产出任何可执行步骤，一并拒绝。

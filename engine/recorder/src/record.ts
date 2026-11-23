@@ -23,6 +23,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import { SCHEMA_VERSION, makeId, saveFlow } from '../../schema/src/index.js'
+import { assignLabels, type LabelEvidence, type LabelSeed } from '../../reference/src/index.js'
 import type {
 	Candidate,
 	ElementRef,
@@ -105,6 +106,22 @@ const SIGNATURE_INTERVAL_MS = 120
 const HOVER_LOOKBACK_MS = 600
 /** 采样上限，防止长录制把内存吃掉 */
 const MAX_SIGNATURE_SAMPLES = 600
+
+/**
+ * 录制收尾：按种子给变量统一生成业务 label（成对日期/同名去重/业务化兜底）。
+ * 导出供单测使用；机器键与模板语义不变（label 只是显示层元数据）。
+ */
+export function applyRecordingLabels(
+	variables: ReadonlyArray<Variable>,
+	seeds: ReadonlyArray<LabelSeed>,
+): Variable[] {
+	const labels = assignLabels(seeds)
+	const labelByKey = new Map(seeds.map((seed, index) => [seed.key, labels[index]!]))
+	return variables.map((variable) => ({
+		...variable,
+		label: labelByKey.get(variable.name) ?? variable.label,
+	}))
+}
 
 function newURLSafeHost(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
 const URLSafeHost = newURLSafeHost
@@ -242,6 +259,26 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 
 	const steps: Step[] = []
 	const variables = new Map<string, Variable>()
+	/** 变量业务命名种子（机器键 → 页面证据）；录制收尾统一 assignLabels 生成 label */
+	const labelSeeds = new Map<string, LabelSeed>()
+	const noteVariableLabel = (name: string, seed: Omit<LabelSeed, 'key'>): void => {
+		if (!labelSeeds.has(name)) labelSeeds.set(name, { key: name, ...seed })
+	}
+	/** ElementRef → 命名证据（label 文本 > placeholder > aria-label > name > 类型） */
+	const labelEvidenceFromRef = (target: ElementRef, pageIndex: number): LabelEvidence => {
+		const attrs = target.observed.attributes
+		const labelCandidate = target.candidates.find(
+			(candidate) => candidate.kind === 'label' && typeof candidate.value === 'string',
+		)
+		return {
+			labelText: (labelCandidate?.value as string | undefined) ?? target.fingerprint.accessibleName,
+			placeholder: attrs['placeholder'],
+			ariaLabel: attrs['aria-label'],
+			nameAttr: attrs['name'],
+			inputType: attrs['type'],
+			pageIndex,
+		}
+	}
 	/** 整页步骤截图（相对 record/ 产物目录，如 "screenshots/step-0001.png"，按步骤序） */
 	const stepScreenshots: string[] = []
 	let stepSeq = 0
@@ -891,10 +928,14 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		 * 为什么是占位变量：浏览器安全模型不把用户选的文件路径暴露给页面，
 		 * 录制端拿不到（这是产品限制，不是实现偷懒）。同一次录制里第 N 个上传 → `file_N`。
 		 */
-		const buildUploadStep = (id: string, target: ElementRef): Step => {
+		const buildUploadStep = (id: string, target: ElementRef, pageIndex: number): Step => {
 			uploadSeq += 1
 			const name = uploadVariableName(uploadSeq)
 			variables.set(name, { name, type: 'file', secret: false, source: 'input' })
+			noteVariableLabel(name, {
+				evidence: labelEvidenceFromRef(target, pageIndex),
+				kindHint: 'upload',
+			})
 			return { kind: 'upload', id, target, files: [`{{${name}}}`] }
 		}
 
@@ -924,10 +965,14 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 				const name = `url_${++urlSeq}`
 				variables.set(name, {
 					name,
-					type: 'string',
+					type: 'url',
 					defaultValue: action.url ?? pageOfAction(action).url(),
 					secret: false,
 					source: 'input',
+				})
+				noteVariableLabel(name, {
+					evidence: { pageIndex: pageIndexOf(action, tabState.page) },
+					kindHint: 'url',
 				})
 				return { kind: 'navigate', id, url: `{{${name}}}`, navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence, ...(isOptional ? { isOptional: true } : {}) }
 			}
@@ -937,7 +982,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 					if (!target) return undefined
 					// 点到 <input type=file> → 记 upload（占位变量），点本身没有回放价值：
 					// 浏览器文件对话框在 Playwright 里根本打不开，回放靠 setInputFiles 填路径。
-					if (isFileInput(target)) return buildUploadStep(id, target)
+					if (isFileInput(target)) return buildUploadStep(id, target, pageIndexOf(action, tabState.page))
 					const step: Step = {
 						kind: 'click',
 						id,
@@ -953,6 +998,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 				}
 				case 'input': {
 					if (!target) return undefined
+					const pageIndex = pageIndexOf(action, tabState.page)
 					const type = target.observed.attributes['type']?.toLowerCase()
 					if (action.masked || type === 'password') {
 						variables.set('password', {
@@ -960,6 +1006,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 							type: 'secret',
 							secret: true,
 							source: 'input',
+						})
+						noteVariableLabel('password', {
+							evidence: labelEvidenceFromRef(target, pageIndex),
+							kindHint: 'password',
 						})
 						return { kind: 'input', id, target, value: '{{password}}', clear: true }
 					}
@@ -970,6 +1020,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 						defaultValue: action.value ?? '',
 						secret: false,
 						source: 'input',
+					})
+					noteVariableLabel(name, {
+						evidence: labelEvidenceFromRef(target, pageIndex),
+						kindHint: 'input',
 					})
 					return { kind: 'input', id, target, value: `{{${name}}}`, clear: true }
 				}
@@ -988,6 +1042,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 							defaultValue: values[0] ?? '',
 							secret: false,
 							source: 'input',
+						})
+						noteVariableLabel(name, {
+							evidence: labelEvidenceFromRef(target, pageIndexOf(action, tabState.page)),
+							kindHint: 'select',
 						})
 						return { kind: 'select', id, target, value: `{{${name}}}` }
 					}
@@ -1597,7 +1655,8 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 				},
 				recorder: { name: RECORDER_NAME, version: RECORDER_VERSION },
 			},
-			variables: [...variables.values()],
+			variables: applyRecordingLabels([...variables.values()], [...labelSeeds.values()]),
+			referenceFiles: [],
 			steps,
 			selfHealed: [],
 		}

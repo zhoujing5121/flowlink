@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 import { FlowSchema, SCHEMA_VERSION, validateFlowContract, type Flow, type FlowContractOptions } from './schema.js'
+import { assignLabels, mapLegacyType, type LabelEvidence, type LabelKindHint, type LabelSeed } from '../../reference/src/index.js'
 
 /**
  * Flow 文件边界上的校验错误。`issues` 保留可逐项展示的诊断文本，
@@ -58,8 +59,156 @@ export function migrateFlow(raw: unknown): unknown {
 		doc.schemaVersion = 2
 		version = 2
 	}
+	if (version === 2) {
+		doc.schemaVersion = 3
+		version = 3
+		migrateVariablesV2ToV3(doc)
+	}
 	if (version === SCHEMA_VERSION) return doc
 	throw new Error(`未知的 flow 版本 ${version}`)
+}
+
+/* ------------------------------------------------------------------ */
+/* v2 → v3：Reference 元数据升级（只动 variables，不改写步骤/模板）       */
+/* ------------------------------------------------------------------ */
+
+/** 从步骤侧提取单个变量的命名证据（结构化平面，避开对 ElementRef 类型的依赖） */
+function evidenceFromTarget(target: unknown, pageIndex: number): LabelEvidence {
+	const ref = (target ?? {}) as {
+		observed?: { attributes?: Record<string, string> }
+		candidates?: Array<{ kind?: string; value?: unknown }>
+		fingerprint?: { accessibleName?: string }
+	}
+	const attrs = ref.observed?.attributes ?? {}
+	const labelCandidate = ref.candidates?.find(
+		(candidate) => candidate.kind === 'label' && typeof candidate.value === 'string',
+	)
+	return {
+		labelText: (labelCandidate?.value as string | undefined) ?? ref.fingerprint?.accessibleName,
+		placeholder: attrs['placeholder'],
+		ariaLabel: attrs['aria-label'],
+		nameAttr: attrs['name'],
+		inputType: attrs['type'],
+		pageIndex,
+	}
+}
+
+/** 机器键 → 种类提示（无元素证据时的兜底语义） */
+function kindHintForName(name: string): LabelKindHint | undefined {
+	if (/^url_\d+$/.test(name)) return 'url'
+	if (name === 'password') return 'password'
+	if (/^file_\d+$/.test(name)) return 'upload'
+	if (/^select_\d+$/.test(name)) return 'select'
+	if (/^input_\d+$/.test(name)) return 'input'
+	return undefined
+}
+
+/** 收集一条字符串值里全部 {{name}} 引用（非法模板直接跳过：迁移不因模板语法改判） */
+function templateNamesOf(value: unknown): string[] {
+	if (typeof value !== 'string') return []
+	const out: string[] = []
+	const re = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
+	for (const match of value.matchAll(re)) out.push(match[1]!)
+	return out
+}
+
+/**
+ * 遍历原始步骤，为每个被 {{name}} 引用的变量收集首个出现位置的命名证据。
+ * 递归进入 group；不修改任何步骤数据。
+ */
+function collectVariableSeeds(steps: unknown): Map<string, LabelSeed> {
+	const seeds = new Map<string, LabelSeed>()
+	const note = (name: string, target: unknown, pageIndex: number): void => {
+		if (seeds.has(name)) return
+		seeds.set(name, {
+			key: name,
+			evidence: evidenceFromTarget(target, pageIndex),
+			...(kindHintForName(name) ? { kindHint: kindHintForName(name)! } : {}),
+		})
+	}
+	const visitStep = (raw: unknown, pageIndex: number): void => {
+		const step = (raw ?? {}) as Record<string, unknown>
+		const pageIndexOfStep = typeof step['page'] === 'object' && step['page'] !== null
+			? ((step['page'] as { index?: unknown }).index as number | undefined)
+			: undefined
+		const effectivePage = typeof pageIndexOfStep === 'number' ? pageIndexOfStep : pageIndex
+		const target = step['target']
+		const noteAll = (value: unknown): void => {
+			for (const name of templateNamesOf(value)) note(name, target, effectivePage)
+		}
+		noteAll(step['url'])
+		noteAll(step['value'])
+		noteAll(step['promptText'])
+		noteAll(step['prompt'])
+		noteAll(step['key'])
+		if (Array.isArray(step['files'])) for (const file of step['files']) noteAll(file)
+		const expect = step['expect'] as Record<string, unknown> | undefined
+		if (expect) {
+			noteAll(expect['pattern'])
+			noteAll(expect['to'])
+		}
+		const assertion = step['assertion'] as Record<string, unknown> | undefined
+		if (assertion) {
+			noteAll(assertion['equals'])
+			noteAll(assertion['contains'])
+		}
+		if (Array.isArray(step['steps'])) for (const child of step['steps']) visitStep(child, effectivePage)
+	}
+	if (Array.isArray(steps)) for (const step of steps) visitStep(step, 0)
+	return seeds
+}
+
+/**
+ * v2 → v3 变量升级（就地改写 doc.variables）：
+ * - 类型映射：text→string、email→string+email 格式预设、number→按默认值判 integer/decimal；
+ * - secret 与 type 互为一致（type=secret ⇒ secret=true，secret=true ⇒ type=secret）；
+ * - label 由共享启发式按步骤证据回填（成对日期/去重/业务化兜底）；
+ * - required/validation（除 email 预设外）/activities 缺省为空。
+ * 不改写步骤与模板键。
+ */
+function migrateVariablesV2ToV3(doc: Record<string, unknown>): void {
+	const rawVariables = Array.isArray(doc['variables']) ? doc['variables'] : []
+	if (!rawVariables.length) return
+	const seeds = collectVariableSeeds(doc['steps'])
+	// 生成 label：按变量数组序组织 seeds（成对日期与去重依赖全量上下文）。
+	const orderedSeeds: LabelSeed[] = []
+	for (const raw of rawVariables) {
+		const name = (raw as { name?: unknown })['name']
+		if (typeof name !== 'string') continue
+		const seed = seeds.get(name)
+		if (seed) {
+			orderedSeeds.push(seed)
+			continue
+		}
+		// 步骤里找不到引用的变量（extract 产物等）：按种类提示走类型语义兜底
+		const kindHint = kindHintForName(name)
+		orderedSeeds.push({ key: name, evidence: {}, ...(kindHint ? { kindHint } : {}) })
+	}
+	const labels = assignLabels(orderedSeeds)
+	let labelIndex = 0
+	const migrated = rawVariables.map((raw) => {
+		const variable = { ...(raw as Record<string, unknown>) }
+		const name = variable['name']
+		if (typeof name !== 'string') return variable
+		const defaultValue = typeof variable['defaultValue'] === 'string' ? (variable['defaultValue'] as string) : undefined
+		const legacyType = typeof variable['type'] === 'string' ? (variable['type'] as string) : 'string'
+		const mapping = mapLegacyType(legacyType, defaultValue)
+		variable['type'] = mapping.type
+		const label = labels[labelIndex++]
+		if (label) variable['label'] = label
+		if (mapping.formatPreset) {
+			const validation = { ...(variable['validation'] as Record<string, unknown> | undefined) }
+			const format = { ...(validation['format'] as Record<string, unknown> | undefined) }
+			format['preset'] = mapping.formatPreset
+			validation['format'] = format
+			variable['validation'] = validation
+		}
+		// secret 与 type 保持一致（两字段历史上并存，v3 起互为镜像）
+		if (variable['type'] === 'secret') variable['secret'] = true
+		else if (variable['secret'] === true) variable['type'] = 'secret'
+		return variable
+	})
+	doc['variables'] = migrated
 }
 
 /** 读取 JSON 文本并走与内存输入相同的迁移和完整校验路径。 */

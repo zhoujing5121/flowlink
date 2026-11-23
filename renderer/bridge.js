@@ -1229,6 +1229,13 @@
 			item.testRunning = false
 			state.playbackInFlight = false
 			const message = err instanceof Error ? err.message : String(err)
+			// Reference 闸门拒绝：回放未开始，切到 Reference 页列出全部违规
+			const gateIssues = window.parseReferenceGateError?.(message)
+			if (gateIssues) {
+				if (item.testResults?.[0]?.status === 'running') item.testResults[0] = { status: 'pending' }
+				window.showReferenceGateIssues?.(item, gateIssues)
+				return
+			}
 			const runningIndex = item.testResults?.findIndex((result) => result.status === 'running') ?? -1
 			if (runningIndex >= 0) item.testResults[runningIndex] = { status: 'fail', error: { message } }
 			renderSummaryWorkspace()
@@ -1282,6 +1289,11 @@
 			item.testRunning = false
 			state.playbackInFlight = false
 			const message = err?.message || String(err)
+			const gateIssues = window.parseReferenceGateError?.(message)
+			if (gateIssues) {
+				window.showReferenceGateIssues?.(item, gateIssues)
+				return
+			}
 			renderSummaryWorkspace()
 			if (typeof appendAIMessage === 'function') {
 				appendAIMessage(item, 'assistant', `AI takeover could not start: ${message}`)
@@ -1481,7 +1493,9 @@
 			const message = err?.message || String(err)
 			console.error('[bridge] AI 辅助测试失败：', message)
 			finalize(message)
-			if (typeof appendAIMessage === 'function') {
+			const gateIssues = window.parseReferenceGateError?.(message)
+			if (gateIssues) window.showReferenceGateIssues?.(item, gateIssues)
+			else if (typeof appendAIMessage === 'function') {
 				appendAIMessage(item, 'assistant', `AI-assisted test stopped: ${message}`)
 			}
 			renderSummaryWorkspace()
