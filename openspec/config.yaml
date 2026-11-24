@@ -1,8 +1,8 @@
 schema: spec-driven
 
 context: |
-  Windows-only Electron 桌面应用（win32 x64 打包），Electron/Playwright Core/Zod/Pi SDK 为 external 依赖
-  验证门槛：npm run build + npx tsc --noEmit；不主动运行测试套件
+  Windows-only Electron 桌面应用（win32 x64 打包），Electron/Playwright Core/Zod/Undici/Pi SDK/browser-use 代理为 external 依赖；渲染层依赖（X6/dagre/rrweb）经 dist/renderer-vendor.* vendored 进入
+  验证门槛：npm run build + npx tsc --noEmit + npm test（node:test + tsx；安全边界与 schema 契约改动须补永久回归测试）
   UI/录制/回放改动需真机验证通过才算完成；commit 由用户主导
   遵守 AGENTS.md 的 invariants（observed 证据不可变、Zod 校验、preload 边界、敏感值不落日志）
   规划工件用中文撰写，代码标识符与 requirement 标题保留英文
@@ -15,7 +15,7 @@ rules:
     - 只描述行为契约，不写实现细节；实现细节放 design.md
     - 仅描述已实现或将随本 change 实现的行为，不得包含 roadmap 提案中未实施的能力
   tasks:
-    - 每个任务可独立验证；收尾任务必须是 build + tsc 验证
+    - 每个任务可独立验证；收尾任务必须是 build + tsc + test 验证
     - 涉及 UI/录制/回放时包含一条真机验证任务
 
 operations:
@@ -25,5 +25,5 @@ operations:
       - 不主动 commit、不自动进入 archive
   archive:
     guidance:
-      - 确认所有任务已勾选且验证通过后再归档
+      - 归档前任务全部勾选；残留未勾选任务（如真机验证项）须用户明确确认后归档
       - 归档后简述 delta 合入主 specs 的结果
