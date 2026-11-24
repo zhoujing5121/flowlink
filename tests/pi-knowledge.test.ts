@@ -120,6 +120,19 @@ describe('built-in skills discovery', () => {
 		assert.ok(templates.generation.autoSanitize.includes('four quality gates'))
 		assert.ok(templates.generation.refine.includes('four quality gates'))
 	})
+
+	test('transient SSO waits must be optional in both generation templates', () => {
+		// 可选等待契约（快网跳过、必选裁决）：两个生成模板都必须携带，
+		// 防止瞬时页等待再以必选形态回归（真机曾因此在等待步失败）。
+		const source = createBuiltInPiConfigSource(join(process.cwd(), 'config'))
+		const templates = source.loadPrompts()
+		for (const template of [templates.generation.refine, templates.generation.autoSanitize]) {
+			assert.ok(template.includes('transient SSO pages'), 'must name the transient-page scope')
+			assert.ok(template.includes('"isOptional": true'), 'must mandate the optional flag')
+			assert.ok(template.includes('3000-8000ms'), 'must bound the wait window')
+			assert.ok(/never (emit|leave) a transient-page wait (as )?required/i.test(template))
+		}
+	})
 })
 
 /* ---------- frontmatter 严格校验：显式失败并点名文件 ---------- */

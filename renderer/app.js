@@ -3897,6 +3897,15 @@ function openInstructionStepMenu(button) {
   const items = [
     { key: "edit", label: "编辑描述", disabled: false },
     {
+      key: "execution",
+      label:
+        entry.step.execution === "manual"
+          ? "切换为自动执行"
+          : "切换为人工执行",
+      // wait/assert/condition 自带执行语义，manual 标记对它们无意义。
+      disabled: ["wait", "assert", "condition"].includes(entry.step.kind),
+    },
+    {
       key: "toggle",
       label: item.instructionStepOpen.includes(entry.flattenedStepId)
         ? "收起技术字段"
@@ -3952,6 +3961,9 @@ function openInstructionStepMenu(button) {
     switch (target.dataset.menuKey) {
       case "edit":
         beginInlineLabelEdit(row, item, entry);
+        break;
+      case "execution":
+        void toggleInstructionExecution(item, entry.index);
         break;
       case "toggle":
         toggleInstructionDrawer(item, row, entry);
@@ -4009,6 +4021,34 @@ function toggleInstructionDrawer(item, row, entry) {
   item.instructionStepOpen = wasOpen
     ? item.instructionStepOpen.filter((value) => value !== id)
     : [...item.instructionStepOpen, id];
+}
+
+/** 切换步骤执行方式（manual ⇄ 省略=automated）：录制/手动添加默认 manual、
+ * Refine 由 AI 判定后，此处是用户的人工改判入口。失败回滚并提示。 */
+async function toggleInstructionExecution(item, flatIndex) {
+  // 先落盘防抖中的编辑：flush 成功会以服务端返回的 steps 替换引用，
+  // 步骤查找必须在 flush 之后做。
+  await flushInstructionEdits(item);
+  const found = instructionStepEntry(item, flatIndex);
+  if (!found) return;
+  const step = found.entry.step;
+  if (["wait", "assert", "condition"].includes(step.kind)) return;
+  const snapshot = structuredClone(item.processFlow.steps);
+  if (step.execution === "manual") delete step.execution;
+  else step.execution = "manual";
+  try {
+    await persistProcessFlow(item);
+    renderSummaryWorkspace();
+  } catch (error) {
+    item.processFlow = { ...item.processFlow, steps: snapshot };
+    item.processFlowError =
+      error instanceof Error ? error.message : String(error);
+    showFlowlinkNotice(
+      "切换执行方式失败：" + item.processFlowError,
+      "warn",
+    );
+    renderSummaryWorkspace();
+  }
 }
 
 /** 组内上移/下移：condition 始终保持组尾（schema 契约）。失败还原并提示。 */
@@ -7344,6 +7384,33 @@ async function askPiForAdvice(item, sourceItems, userRequest, mode, extraContext
   return parseAdviceIntent(result.text);
 }
 
+/** 执行方式判定 sidecar → 聊天展示段：人工步骤逐条给理由，自动只给汇总计数。 */
+function describeExecutionDecisions(result) {
+  const decisions = Array.isArray(result?.executionDecisions) ? result.executionDecisions : [];
+  if (!decisions.length) return "";
+  const labelById = new Map();
+  const walk = (steps) => {
+    for (const step of steps || []) {
+      if (step.kind === "group") walk(step.steps);
+      else labelById.set(step.id, step.label || step.id);
+    }
+  };
+  walk(result.flow?.steps || []);
+  const manual = decisions.filter((decision) => decision.execution === "manual");
+  const automatedCount = decisions.length - manual.length;
+  if (!manual.length)
+    return `\n\n执行方式判定：全部 ${automatedCount} 个动作步骤判定为自动执行。`;
+  const lines = manual.map((decision) => {
+    const label = labelById.get(decision.stepId) || decision.stepId;
+    const open =
+      Array.isArray(decision.unresolvedQuestions) && decision.unresolvedQuestions.length
+        ? `（待确认：${decision.unresolvedQuestions.join("；")}）`
+        : "";
+    return `- ${label}：${decision.reason}${open}`;
+  });
+  return `\n\n执行方式判定（${automatedCount} 步自动 / ${manual.length} 步人工）：\n${lines.join("\n")}`;
+}
+
 async function generateRefinedMaterial(sourceItems, request, parentItem) {
   const sources = sourceItems?.length ? sourceItems : [parentItem].filter(Boolean);
   if (!sources.length) throw new Error("Select at least one material to refine.");
@@ -7399,7 +7466,8 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
         "。可在此面板 Confirm / Discard。" +
         (changeList ? `\n\n本版变更：\n${changeList}` : "") +
         `\n\n理由：\n${(Array.isArray(result.rationale) ? result.rationale : []).join("\n- ") || "见生成的步骤。"}` +
-        `\n\n风险 / 需验证：\n${(Array.isArray(result.risks) ? result.risks : []).join("\n- ") || "Confirm 前建议先跑一次 Test。"}`,
+        `\n\n风险 / 需验证：\n${(Array.isArray(result.risks) ? result.risks : []).join("\n- ") || "Confirm 前建议先跑一次 Test。"}` +
+        describeExecutionDecisions(result),
     );
     return target;
   }
@@ -7417,6 +7485,22 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
     summary: true,
     recorded: false,
     analyzed: true,
+    // ...sources[0] 展开会把源项（原始录制）的视图缓存一并带过来：processFlow/
+    // processFlowLoaded/testResults 指向源流程，hydrateProcessFlow 因 Loaded=true
+    // 直接跳过 → Process/Test 页显示的是源录制的扁平流程，生成结果被“藏”住。
+    // 新条目必须全部重置，各视图改从本条目的 flowFile 重新水化。
+    processFlow: null,
+    processFlowLoaded: false,
+    processFlowLoading: false,
+    processFlowError: "",
+    nodeUpdates: false,
+    testResults: [],
+    pendingUpdate: null,
+    pendingLoaded: false,
+    lastTakeover: null,
+    selectedGroup: null,
+    instructionExpanded: [],
+    instructionStepOpen: [],
     sourceIds: sources.flatMap((source) => source.sourceIds || [source.id]),
     steps: flow.steps.map((step, index) => `${step.kind || "action"}${step.url ? ` · ${step.url}` : step.value ? ` · ${step.value}` : step.target?.candidates?.[0]?.value ? ` · ${step.target.candidates[0].value}` : ` · Step ${index + 1}`}`),
     stepDetails: sources[0].stepDetails || [],
@@ -7439,7 +7523,7 @@ async function generateRefinedMaterial(sourceItems, request, parentItem) {
   renderRecordingWorkspace();
   state.aiOpen = true;
   renderAIPanel();
-  appendAIMessage(refined, "assistant", `Created a new refined material: ${refined.name}. The original material was preserved.\n\nRationale:\n${refined.aiRationale.join("\n- ") || "See the generated steps."}\n\nRisks / items to verify:\n${refined.aiRisks.join("\n- ") || "Run a replay test before relying on this material."}`);
+  appendAIMessage(refined, "assistant", `Created a new refined material: ${refined.name}. The original material was preserved.\n\nRationale:\n${refined.aiRationale.join("\n- ") || "See the generated steps."}\n\nRisks / items to verify:\n${refined.aiRisks.join("\n- ") || "Run a replay test before relying on this material."}` + describeExecutionDecisions(result));
   return refined;
 }
 

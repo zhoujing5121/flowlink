@@ -40,7 +40,7 @@ import {
 import { loadFlow, parseFlow, saveFlow, makeId, VariableSchema, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
 import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
 import { appLog, appLogFields, startupLogFileName } from './app-logger.js'
-import type { Flow } from '../engine/schema/src/index.js'
+import type { Flow, Step } from '../engine/schema/src/index.js'
 import type { Page } from 'playwright-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1548,6 +1548,7 @@ function registerIpc(): void {
 				summary: result.summary,
 				rationale: result.rationale,
 				risks: result.risks,
+				executionDecisions: result.executionDecisions,
 			}
 		},
 	)
@@ -1626,7 +1627,7 @@ function registerIpc(): void {
 					? `Steps the AI agent completed (evidence of what actually works on the page):\n${aiDone}`
 					: '',
 				evidenceSection,
-				'Apply the smallest set of changes that makes replay reliable: adjust verification targets following the invariants, add settle/timeout waits around the slow transitions involved in the failures, reorder or remove steps only when the evidence supports it. Never invent selectors or URLs; keep the recorded element references, variable templates, isOptional flags, and the gate-condition + tolerant sign-in structure. Keep every step that already works unchanged.',
+				'Apply the smallest set of changes that makes replay reliable: adjust verification targets following the invariants, add settle and optional transient waits (transient SSO pages get "isOptional": true with a bounded 3000-8000ms timeout so fast replays skip them; required asserts arbitrate) around the slow transitions involved in the failures, reorder or remove steps only when the evidence supports it. Never invent selectors or URLs; keep the recorded element references, variable templates, isOptional flags, and the gate-condition + tolerant sign-in structure. Keep every step that already works unchanged.',
 			]
 				.filter(Boolean)
 				.join('\n\n')
@@ -1662,6 +1663,7 @@ function registerIpc(): void {
 				summary: result.summary,
 				rationale: result.rationale,
 				risks: result.risks,
+				executionDecisions: result.executionDecisions,
 			}
 		},
 	)
@@ -1846,8 +1848,16 @@ function registerIpc(): void {
 			}
 			// 只构造并验证临时前缀 Flow；节点重录不得改写原 Flow 或其最近
 			// 一次运行记录。
+			// 前缀回放是机械的浏览器状态准备（为重录接续），不是 Test 运行，且未接线
+			// 用户确认回调：剥离 execution 标记，一律按录制证据自动预放（含 manual 步）。
+			const stripExecution = (list: Step[]): Step[] =>
+				list.map((step) => {
+					if (step.kind === 'group') return { ...step, steps: stripExecution(step.steps) }
+					const { execution, ...rest } = step as Step & { execution?: string }
+					return execution === undefined ? step : (rest as Step)
+				})
 			const prefixFlow = parseFlow(
-				{ ...flow, steps: prefixSteps(flow.steps, stepCount) },
+				{ ...flow, steps: stripExecution(prefixSteps(flow.steps, stepCount)) },
 				`${recording.flowFile}#prefix-${stepCount}`,
 			)
 			// 前缀回放需要从 Flow 的起始 URL 重建环境；之后保持页面不刷新，

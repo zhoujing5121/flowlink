@@ -48,8 +48,19 @@ export interface Projection {
 	library: ElementLibraryEntry[]
 }
 
+/** 生成结果的执行方式判定条目（报告面：AI 面板展示与复核用，不参与校验）。 */
+export interface ExecutionDecision {
+	stepId: string
+	execution: 'automated' | 'manual'
+	reason: string
+	/** 0-1 提示值，仅辅助人工复核，绝不作为自动放行阈值。 */
+	confidence?: number
+	requiredCapabilities?: string[]
+	unresolvedQuestions?: string[]
+}
+
 export type GenerateResult =
-	| { ok: true; flow: Flow; title: string; summary: string; rationale: string[]; risks: string[] }
+	| { ok: true; flow: Flow; title: string; summary: string; rationale: string[]; risks: string[]; executionDecisions: ExecutionDecision[] }
 	| { ok: false; error: string; detail: { stage: string; reason: string } }
 
 /** flow 级来源元数据（写入生成结果 meta.sourceFlows；镜像 schema 定义）。 */
@@ -911,6 +922,97 @@ export function dropStepsWithoutAssertion(steps: Step[]): { steps: Step[]; dropp
 	return { steps: visit(steps), dropped }
 }
 
+/* ---------------- 执行方式归一（manual/automated 判定的后置守卫） ---------------- */
+
+/** 自带执行语义、不参与 manual 标记的步骤类型（manual 分支会抢先于其原生处理）。 */
+const NON_MANUAL_KINDS = new Set(['wait', 'assert', 'condition', 'dialog', 'script'])
+
+/**
+ * 执行方式归一：提示词已要求模型逐步判定，这里做参数保护守卫（不依赖模型自觉）。
+ * - wait/assert/condition/dialog/script 强制清除 execution；
+ * - 动作步骤缺失/非法（大小写容错）→ 回落 manual（保守：宁可人工执行）并聚合一条 risk；
+ * - executionDecisions sidecar 只做报告面：字段残缺或与输出步骤对不上（再水化可能改写
+ *   冲突 id）的条目降级并入 risks，理由不丢。
+ */
+export function normalizeExecutionModes(steps: Step[], decisions: unknown): {
+	decisions: ExecutionDecision[]
+	risks: string[]
+} {
+	const risks: string[] = []
+	const labelOf = (step: Step): string => step.label ?? step.id
+	const missing: string[] = []
+	const visit = (list: Step[]): void => {
+		for (const step of list) {
+			if (step.kind === 'group') {
+				visit(step.steps)
+				continue
+			}
+			const record = step as Record<string, unknown>
+			const raw = record.execution
+			if (NON_MANUAL_KINDS.has(step.kind)) {
+				if (raw !== undefined) delete record.execution
+			} else if (typeof raw === 'string') {
+				const lowered = raw.trim().toLowerCase()
+				if (lowered === 'manual' || lowered === 'automated') {
+					if (raw !== lowered) record.execution = lowered
+				} else {
+					record.execution = 'manual'
+					risks.push(`步骤「${labelOf(step)}」的执行方式输出非法（${raw}），已回落为人工执行（manual），请复核`)
+				}
+			} else {
+				record.execution = 'manual'
+				missing.push(labelOf(step))
+			}
+		}
+	}
+	visit(steps)
+	if (missing.length) {
+		risks.push(
+			`有 ${missing.length} 个步骤未输出执行方式，已默认人工执行（manual）：` +
+				missing.slice(0, 8).join('、') +
+				(missing.length > 8 ? ' 等' : ''),
+		)
+	}
+
+	const known = new Set<string>()
+	const collect = (list: Step[]): void => {
+		for (const step of list) {
+			if (step.kind === 'group') collect(step.steps)
+			else known.add(step.id)
+		}
+	}
+	collect(steps)
+	const out: ExecutionDecision[] = []
+	if (Array.isArray(decisions)) {
+		for (const entry of decisions) {
+			const source = entry as Record<string, unknown>
+			const stepId = typeof source?.stepId === 'string' ? source.stepId : ''
+			const rawMode = typeof source?.execution === 'string' ? source.execution.trim().toLowerCase() : ''
+			const reason = typeof source?.reason === 'string' ? source.reason.trim() : ''
+			if (!stepId || (rawMode !== 'manual' && rawMode !== 'automated') || !reason || !known.has(stepId)) {
+				const brief = reason ? `：${reason}` : ''
+				risks.push(`执行方式判定条目无法匹配输出步骤（stepId=${stepId || '(缺失)'}）${brief}`)
+				continue
+			}
+			out.push({
+				stepId,
+				execution: rawMode,
+				reason,
+				...(typeof source.confidence === 'number' && Number.isFinite(source.confidence)
+					? { confidence: Math.min(1, Math.max(0, source.confidence)) }
+					: {}),
+				...(Array.isArray(source.requiredCapabilities)
+					? { requiredCapabilities: source.requiredCapabilities.filter((v): v is string => typeof v === 'string') }
+					: {}),
+				...(Array.isArray(source.unresolvedQuestions)
+					? { unresolvedQuestions: source.unresolvedQuestions.filter((v): v is string => typeof v === 'string') }
+					: {}),
+			})
+		}
+	}
+	return { decisions: out, risks }
+}
+
 /**
  * 生成输出的嵌套多级结构契约（add-multilevel-grouping）：
  * - 顶层必须全部是 L1 业务级分组，数量 2–6；
@@ -1013,6 +1115,9 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		if (options.reanchor?.length) steps = applyReanchor(steps, options.reanchor)
 		const sources = options.sources?.length ? options.sources : undefined
 		if (sources) annotateSourceFlowIds(steps, projection.library, refIdsByStep)
+		// 执行方式归一在 id 落定（再水化/重锚定）之后执行，sidecar 才能对上最终步骤。
+		stage = '执行方式归一'
+		const executionModes = normalizeExecutionModes(steps, parsed.executionDecisions)
 		const variables = mergeVariables(flows, parsed.variables, parsed.variableLabels)
 		// 参数保护守卫（不依赖模型自觉）：
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
@@ -1084,7 +1189,9 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 							`源流程包含 secret 变量（${secretDroppedNames.map((name) => `{{${name}}}`).join(', ')}），但生成步骤不再引用：凭据步骤可能已被删除，请人工确认相关步骤`,
 						]
 					: []),
+				...executionModes.risks,
 			],
+			executionDecisions: executionModes.decisions,
 		}
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error)

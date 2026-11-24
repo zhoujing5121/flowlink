@@ -206,14 +206,17 @@ const BaseStepSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().optional(),
 	/**
-	 * 执行方式：automated（默认，回放时自动执行）或 manual（人工执行——
-	 * 回放到该步骤时暂停，等待用户在内嵌浏览器或外部系统完成后确认再继续，
-	 * 复用 userOperation 的宿主确认回调）。省略 = automated，旧 Flow 无需迁移。
+	 * 执行方式：automated（回放时自动执行）或 manual（人工执行——回放到该步骤时
+	 * 暂停，等待用户在内嵌浏览器或外部系统完成后确认再继续，复用 userOperation
+	 * 的宿主确认回调）。录制与手动添加的动作步骤默认 manual；Refine 由 AI 按
+	 * 业务逐步判定。省略 = automated（历史 Flow 的隐式默认，新路径不依赖省略语义）。
 	 */
 	execution: z.enum(['automated', 'manual']).optional(),
 	/**
 	 * 本步骤 expect/assert 校验的等待上限（毫秒）。缺省 5000，executor 侧钳制到
-	 * [1000, 30000]；condition 步骤不走此参数（瞬时判定，0 等待）。
+	 * [1000, 30000]；condition 步骤不走此参数（瞬时判定，0 等待）。对 isOptional
+	 * 的 wait 步骤，此参数兼作「可选等待窗口」：跑满窗口条件仍未出现 → 跳过而非
+	 * 失败（瞬时 SSO 页面在快网下可能已过去），由后续必选步骤裁决。
 	 */
 	timeout: z.number().int().positive().optional(),
 	/**

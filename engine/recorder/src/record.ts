@@ -1620,8 +1620,21 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		// 2) 可编辑元素上的 click 紧跟同目标 input/select 时，丢掉 click（input 自带聚焦）
 		const refinedSteps = refineSteps(steps)
 		steps.length = 0
-		// id 连续化：中途可能有步骤被丢弃（去噪/detached），保证 s1..sN 连续好读
-		steps.push(...refinedSteps.map((step, index) => ({ ...step, id: `s${index + 1}` }) as Step))
+		// id 连续化：中途可能有步骤被丢弃（去噪/detached），保证 s1..sN 连续好读。
+		// 录制 = 用户亲手操作：动作步骤默认人工执行（execution: manual），Refine 时
+		// 再由 AI 按业务逐步判定收编。wait/assert/condition 自带执行语义、dialog 由
+		// 对话框策略处理、script 是引擎代码，都不参与 manual 标记。
+		const nonManualKinds = new Set(['wait', 'assert', 'condition', 'dialog', 'script'])
+		steps.push(
+			...refinedSteps.map(
+				(step, index) =>
+					({
+						...step,
+						id: `s${index + 1}`,
+						...(nonManualKinds.has(step.kind) ? {} : { execution: 'manual' as const }),
+					}) as Step,
+			),
+		)
 
 		/* ---------- 保存登录态（浏览器关闭前；drive 抛错也要存） ---------- */
 

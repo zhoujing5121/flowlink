@@ -715,8 +715,11 @@ export async function runFlowInBrowserContext(
 			// 可选元素步骤：目标在短窗口内不出现 → 跳过（不算失败）。
 			// 与 navigate 的可选分支同语义；用于登录组容忍（如 SSO 记住会话时凭据字段缺失）。
 			// 非 ElementNotFoundError 不吞：落到正常执行路径按原语义失败。
+			// wait 类除外：等待必须跑满自己的窗口（慢网时条件会迟到），提前判跳过会
+			// 错杀——由 dispatch 里的可选等待分支按「超时才跳过」处理。
 			if (
 				item.step.kind !== 'navigate' &&
+				item.step.kind !== 'wait' &&
 				(item.step as { isOptional?: boolean }).isOptional === true &&
 				'target' in item.step &&
 				item.step.target
@@ -983,6 +986,38 @@ export async function runFlowInBrowserContext(
 						signal: opts.abortSignal,
 					})
 					stepLogPush('用户已确认操作完成')
+				} else if (
+					rendered.kind === 'wait' &&
+					(rendered as { isOptional?: boolean }).isOptional === true &&
+					rendered.condition !== 'userOperation'
+				) {
+					// 可选等待：等待的是瞬时条件（SSO 中转页/域登录跳转/自动续期），网络变快
+					// 时该条件可能已过去——跑满本步超时窗口仍未出现不算失败，跳过继续，由
+					// 后续第一个必选步骤（登录门/收尾断言）裁决流程状态。窗口用步骤 timeout
+					// （钳制 [1s,30s]，缺省 8s），提示词契约给瞬时等待配 3-8s。
+					phase = 'action'
+					const optionalWaitMs = Math.max(
+						1_000,
+						Math.min((rendered as { timeout?: number }).timeout ?? 8_000, 30_000),
+					)
+					try {
+						const action = await runAction({ ...actionDeps, timeoutMs: optionalWaitMs }, rendered)
+						if (action.level !== undefined) detail.level = action.level
+						stepLogPush(`可选等待：条件在 ${optionalWaitMs}ms 窗口内满足 ✓`)
+					} catch (err) {
+						if (
+							err instanceof ElementNotFoundError ||
+							(err as { name?: string })?.name === 'TimeoutError'
+						) {
+							stepLogPush(
+								`可选等待：条件在 ${optionalWaitMs}ms 窗口内未出现（瞬时页面可能已跳过），跳过`,
+							)
+							detail.status = 'skip'
+							expectNote = '可选等待超时跳过'
+						} else {
+							throw err
+						}
+					}
 				} else if (rendered.execution === 'manual') {
 					// 人工步骤：不由引擎代执行，暂停等待用户确认完成后继续。
 					phase = 'action'
