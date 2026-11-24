@@ -23,7 +23,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import { SCHEMA_VERSION, makeId, saveFlow } from '../../schema/src/index.js'
-import { assignLabels, type LabelEvidence, type LabelSeed } from '../../reference/src/index.js'
+import { assignLabels, deriveLocator, type LabelEvidence, type LabelSeed } from '../../reference/src/index.js'
 import type {
 	Candidate,
 	ElementRef,
@@ -116,11 +116,18 @@ export function applyRecordingLabels(
 	seeds: ReadonlyArray<LabelSeed>,
 ): Variable[] {
 	const labels = assignLabels(seeds)
-	const labelByKey = new Map(seeds.map((seed, index) => [seed.key, labels[index]!]))
-	return variables.map((variable) => ({
-		...variable,
-		label: labelByKey.get(variable.name) ?? variable.label,
-	}))
+	const entryByKey = new Map(
+		seeds.map((seed, index) => [seed.key, { label: labels[index]!, seed }] as const),
+	)
+	return variables.map((variable) => {
+		const entry = entryByKey.get(variable.name)
+		if (!entry) return { ...variable }
+		return {
+			...variable,
+			label: entry.label ?? variable.label,
+			locator: entry.seed.locator || variable.locator,
+		}
+	})
 }
 
 function newURLSafeHost(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
@@ -278,6 +285,11 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			inputType: attrs['type'],
 			pageIndex,
 		}
+	}
+	/** 动作页面 URL → locator 上下文（systemName + pageUrl；与 pushStep 的系统解析同源） */
+	const locatorContextOfUrl = (pageUrl: string): { systemName?: string; pageUrl: string } => {
+		const { systemName } = resolveSystem(pageUrl, opts.systemAliases)
+		return { systemName: systemName || undefined, pageUrl }
 	}
 	/** 整页步骤截图（相对 record/ 产物目录，如 "screenshots/step-0001.png"，按步骤序） */
 	const stepScreenshots: string[] = []
@@ -928,13 +940,16 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		 * 为什么是占位变量：浏览器安全模型不把用户选的文件路径暴露给页面，
 		 * 录制端拿不到（这是产品限制，不是实现偷懒）。同一次录制里第 N 个上传 → `file_N`。
 		 */
-		const buildUploadStep = (id: string, target: ElementRef, pageIndex: number): Step => {
+		const buildUploadStep = (id: string, target: ElementRef, pageIndex: number, action: CoalescedAction): Step => {
 			uploadSeq += 1
 			const name = uploadVariableName(uploadSeq)
 			variables.set(name, { name, type: 'file', secret: false, source: 'input' })
+			const evidence = labelEvidenceFromRef(target, pageIndex)
+			const context = locatorContextOfUrl(pageOfAction(action).url())
 			noteVariableLabel(name, {
-				evidence: labelEvidenceFromRef(target, pageIndex),
+				evidence,
 				kindHint: 'upload',
+				locator: deriveLocator('upload', evidence, context.systemName, context.pageUrl),
 			})
 			return { kind: 'upload', id, target, files: [`{{${name}}}`] }
 		}
@@ -970,9 +985,12 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 					secret: false,
 					source: 'input',
 				})
+				const urlEvidence: LabelEvidence = { pageIndex: pageIndexOf(action, tabState.page) }
+				const urlContext = locatorContextOfUrl(pageOfAction(action).url())
 				noteVariableLabel(name, {
-					evidence: { pageIndex: pageIndexOf(action, tabState.page) },
+					evidence: urlEvidence,
 					kindHint: 'url',
+					locator: deriveLocator('url', urlEvidence, urlContext.systemName, urlContext.pageUrl),
 				})
 				return { kind: 'navigate', id, url: `{{${name}}}`, navigationType: action.navigationType, previousUrl: action.previousUrl, navigationEvidence: action.navigationEvidence, ...(isOptional ? { isOptional: true } : {}) }
 			}
@@ -982,7 +1000,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 					if (!target) return undefined
 					// 点到 <input type=file> → 记 upload（占位变量），点本身没有回放价值：
 					// 浏览器文件对话框在 Playwright 里根本打不开，回放靠 setInputFiles 填路径。
-					if (isFileInput(target)) return buildUploadStep(id, target, pageIndexOf(action, tabState.page))
+					if (isFileInput(target)) return buildUploadStep(id, target, pageIndexOf(action, tabState.page), action)
 					const step: Step = {
 						kind: 'click',
 						id,
@@ -1007,9 +1025,12 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 							secret: true,
 							source: 'input',
 						})
+						const passwordEvidence = labelEvidenceFromRef(target, pageIndex)
+						const passwordContext = locatorContextOfUrl(pageOfAction(action).url())
 						noteVariableLabel('password', {
-							evidence: labelEvidenceFromRef(target, pageIndex),
+							evidence: passwordEvidence,
 							kindHint: 'password',
+							locator: deriveLocator('password', passwordEvidence, passwordContext.systemName, passwordContext.pageUrl),
 						})
 						return { kind: 'input', id, target, value: '{{password}}', clear: true }
 					}
@@ -1021,9 +1042,12 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 						secret: false,
 						source: 'input',
 					})
+					const inputEvidence = labelEvidenceFromRef(target, pageIndex)
+					const inputContext = locatorContextOfUrl(pageOfAction(action).url())
 					noteVariableLabel(name, {
-						evidence: labelEvidenceFromRef(target, pageIndex),
+						evidence: inputEvidence,
 						kindHint: 'input',
+						locator: deriveLocator('input', inputEvidence, inputContext.systemName, inputContext.pageUrl),
 					})
 					return { kind: 'input', id, target, value: `{{${name}}}`, clear: true }
 				}
@@ -1043,9 +1067,12 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 							secret: false,
 							source: 'input',
 						})
+						const selectEvidence = labelEvidenceFromRef(target, pageIndexOf(action, tabState.page))
+						const selectContext = locatorContextOfUrl(pageOfAction(action).url())
 						noteVariableLabel(name, {
-							evidence: labelEvidenceFromRef(target, pageIndexOf(action, tabState.page)),
+							evidence: selectEvidence,
 							kindHint: 'select',
+							locator: deriveLocator('select', selectEvidence, selectContext.systemName, selectContext.pageUrl),
 						})
 						return { kind: 'select', id, target, value: `{{${name}}}` }
 					}

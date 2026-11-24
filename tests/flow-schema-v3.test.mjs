@@ -83,10 +83,11 @@ describe('v2 → v3 类型映射', () => {
 		const flow = flowIO.parseFlow(raw, '<v2-email>')
 		// 迁移本身不改写步骤（parseFlow 的 Zod 归一化会补默认值，故用 migrateFlow 原始输出比对）
 		assert.equal(JSON.stringify(flowIO.migrateFlow(raw).steps), before, '迁移不改写步骤（逐字节）')
-		assert.equal(flow.schemaVersion, 3)
+		assert.equal(flow.schemaVersion, 4)
 		const variable = flow.variables.find((item) => item.name === 'input_1')
 		assert.equal(variable.type, 'string')
-		assert.equal(variable.validation?.format?.preset, 'email', 'email 迁移必须附带格式预设')
+		assert.equal(variable.rules, '必须是邮箱格式', 'email 预设经 v4 迁移转为规则句子')
+		assert.equal(variable.validation, undefined, '结构化 validation 不再存在')
 		assert.equal(variable.defaultValue, 'a@b.co')
 		assert.equal(flow.steps[1].value, '{{input_1}}')
 		assert.equal(JSON.stringify(flow.steps[1].value), '"{{input_1}}"', '模板引用不变')
@@ -155,24 +156,24 @@ describe('v2 → v3 类型映射', () => {
 })
 
 describe('v1/v2 兼容与版本拒绝', () => {
-	test('v1 录制迁移为 v3，步骤序列不变', () => {
+	test('v1 录制迁移为 v4，步骤序列不变', () => {
 		const raw = baseFlow({ schemaVersion: 1 })
 		delete raw.referenceFiles
 		const before = JSON.stringify(raw.steps)
 		const migrated = flowIO.migrateFlow(raw)
 		assert.equal(JSON.stringify(migrated.steps), before, '迁移不改写步骤（逐字节）')
-		assert.equal(migrated.schemaVersion, 3)
+		assert.equal(migrated.schemaVersion, 4)
 		const flow = flowIO.parseFlow(raw)
-		assert.equal(flow.schemaVersion, 3)
+		assert.equal(flow.schemaVersion, 4)
 		assert.equal(flow.steps[0].url, '{{url_1}}')
 	})
 
-	test('v0（无 schemaVersion）补默认字段并升到 v3', () => {
+	test('v0（无 schemaVersion）补默认字段并升到 v4', () => {
 		const raw = baseFlow()
 		delete raw.schemaVersion
 		delete raw.version
 		const flow = flowIO.parseFlow(raw)
-		assert.equal(flow.schemaVersion, 3)
+		assert.equal(flow.schemaVersion, 4)
 		assert.equal(flow.version, 1)
 	})
 
@@ -183,7 +184,7 @@ describe('v1/v2 兼容与版本拒绝', () => {
 })
 
 describe('新字段契约', () => {
-	test('未声明字段剥离，新字段往返', () => {
+	test('rules/locator 往返，未声明字段（含旧 validation）剥离', () => {
 		const flow = flowIO.parseFlow(baseFlow())
 		flow.variables = [
 			{
@@ -193,15 +194,11 @@ describe('新字段契约', () => {
 				defaultValue: 'abc',
 				secret: false,
 				required: true,
-				validation: {
-					caseMode: 'upper',
-					format: { preset: 'email' },
-					sign: 'positive',
-					condition: '客户名称 != ""',
-					formula: '',
-				},
+				rules: '必须是邮箱格式；提交日期自动填今天',
+				locator: '订单系统 · 客户名称输入框',
 				activities: ['g1', 'g2'],
 				source: 'input',
+				validation: { caseMode: 'upper' },
 				hackerField: 'should-be-stripped',
 			},
 		]
@@ -213,9 +210,10 @@ describe('新字段契约', () => {
 		const variable = reparsed.variables[0]
 		assert.equal(variable.label, '客户名称')
 		assert.equal(variable.required, true)
-		assert.equal(variable.validation.caseMode, 'upper')
-		assert.equal(variable.validation.format.preset, 'email')
+		assert.equal(variable.rules, '必须是邮箱格式；提交日期自动填今天')
+		assert.equal(variable.locator, '订单系统 · 客户名称输入框')
 		assert.deepEqual(variable.activities, ['g1', 'g2'])
+		assert.equal(variable.validation, undefined, '旧 validation 字段被剥离')
 		assert.equal(variable.hackerField, undefined, '未声明字段被剥离')
 		assert.equal(reparsed.referenceFiles[0].name, '附件.docx')
 		assert.equal(reparsed.referenceFiles[0].hackerField, undefined)
@@ -237,22 +235,60 @@ describe('新字段契约', () => {
 		]
 		assert.throws(() => flowIO.parseFlow(flow), /label "客户名称" 重复/)
 	})
+})
 
-	test('非法公式表达式在契约层拒绝（保存关口）', () => {
-		const flow = flowIO.parseFlow(baseFlow())
-		flow.variables = [
-			{ name: 'input_1', label: '合计', type: 'integer', secret: false, source: 'input', validation: { formula: '单价 +' } },
-		]
-		assert.throws(() => flowIO.parseFlow(flow, '<save>', { strict: true }), /表达式错误/)
+describe('v3 → v4 迁移（simplify-reference-rules）', () => {
+	const v3Input = () => baseFlow({
+		schemaVersion: 3,
+		variables: [
+			{
+				name: 'input_1', label: '客户名称', type: 'string', defaultValue: 'a@b.co',
+				secret: false, source: 'input', required: true,
+				validation: { caseMode: 'upper', format: { preset: 'email' }, formula: 'DATEADD(TODAY(), 7, "day")' },
+			},
+			{ name: 'url_1', label: '网址', type: 'url', defaultValue: 'https://erp.local/orders', secret: false, source: 'input' },
+		],
+		steps: [
+			{ kind: 'navigate', id: 's1', url: '{{url_1}}', systemName: '订单系统', pageUrl: 'https://erp.local/orders' },
+			{
+				kind: 'input', id: 's2', value: '{{input_1}}', clear: true,
+				systemName: '订单系统', pageUrl: 'https://erp.local/orders/list',
+				target: elementRef(),
+			},
+		],
 	})
 
-	test('公式循环引用在契约层拒绝', () => {
-		const flow = flowIO.parseFlow(baseFlow())
-		flow.variables = [
-			{ name: 'a', label: '甲', type: 'integer', secret: false, source: 'input', validation: { formula: '乙 + 1' } },
-			{ name: 'b', label: '乙', type: 'integer', secret: false, source: 'input', validation: { formula: '甲 + 1' } },
-		]
-		assert.throws(() => flowIO.parseFlow(flow), /循环引用/)
+	test('结构化校验转中文句子写入 rules，validation 移除，其余字段原样保留', () => {
+		const raw = v3Input()
+		const before = JSON.stringify(raw.steps)
+		const flow = flowIO.parseFlow(raw)
+		assert.equal(JSON.stringify(flowIO.migrateFlow(raw).steps), before, '迁移不改写步骤（逐字节）')
+		assert.equal(flow.schemaVersion, 4)
+		const input = flow.variables.find((item) => item.name === 'input_1')
+		assert.equal(input.rules, '自动转大写；必须是邮箱格式；值自动计算：今天+7 天')
+		assert.equal(input.validation, undefined)
+		assert.equal(input.required, true, 'required 原样保留')
+		assert.equal(input.label, '客户名称')
+		assert.equal(input.type, 'string')
+	})
+
+	test('locator 按「页面 · 控件」证据回填（url 变量取「地址栏 · 系统名」）', () => {
+		const flow = flowIO.parseFlow(v3Input())
+		const byName = Object.fromEntries(flow.variables.map((item) => [item.name, item]))
+		// input_1 首个引用步骤 systemName=订单系统；控件证据 = elementRef 的 placeholder「客户名称」
+		assert.equal(byName['input_1'].locator, '订单系统 · 客户名称')
+		assert.equal(byName['url_1'].locator, '地址栏 · 订单系统')
+	})
+
+	test('已有 locator 不被迁移覆盖；无步骤证据的变量 locator 留空', () => {
+		const raw = v3Input()
+		raw.variables[0].locator = '用户手填的定位'
+		const flow = flowIO.parseFlow(raw)
+		assert.equal(flow.variables[0].locator, '用户手填的定位')
+		const orphan = v3Input()
+		orphan.variables.push({ name: 'input_9', label: '孤儿', type: 'string', secret: false, source: 'input' })
+		const flow2 = flowIO.parseFlow(orphan)
+		assert.equal(flow2.variables.find((item) => item.name === 'input_9').locator, undefined)
 	})
 })
 

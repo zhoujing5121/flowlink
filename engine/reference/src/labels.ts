@@ -31,6 +31,8 @@ export interface LabelSeed {
 	key: string
 	evidence: LabelEvidence
 	kindHint?: LabelKindHint
+	/** 来源定位描述（「页面 · 控件」）：录制端在命名同点派生，applyRecordingLabels 原样写入 */
+	locator?: string
 }
 
 /** 证据文本的清洗：压空白、去首尾星号/冒号、限长。 */
@@ -39,6 +41,65 @@ function cleanEvidenceText(raw: string | undefined): string | undefined {
 	const text = raw.replace(/\s+/g, ' ').replace(/[*：:]\s*$/, '').trim()
 	if (!text) return undefined
 	return text.length > 30 ? text.slice(0, 30) : text
+}
+
+/* ------------------------------------------------------------------ */
+/* Locator 派生（录制端与 schema v3→v4 迁移共用）                        */
+/* ------------------------------------------------------------------ */
+
+/** 页面身份：systemName 优先，其次 URL 路径（去查询串与首尾斜杠），再退主机名 */
+export function pageIdentityOf(systemName: string | undefined, pageUrl: string | undefined): string {
+	if (systemName && systemName.trim()) return systemName.trim()
+	if (pageUrl && pageUrl.trim()) {
+		try {
+			const url = new URL(pageUrl)
+			const path = url.pathname.replace(/^\/+|\/+$/g, '')
+			if (path) return path
+			return url.host
+		} catch {
+			/* 非 URL 字符串：不编造页面身份 */
+		}
+	}
+	return ''
+}
+
+/** 控件名：文本证据优先，其次按输入类型/种类的语义名 */
+export function controlNameOf(evidence: LabelEvidence, kindHint?: LabelKindHint): string {
+	const textual =
+		cleanEvidenceText(evidence.labelText) ??
+		cleanEvidenceText(evidence.placeholder) ??
+		cleanEvidenceText(evidence.ariaLabel) ??
+		cleanEvidenceText(evidence.nameAttr)
+	if (textual) return textual
+	const inputType = evidence.inputType?.toLowerCase()
+	if (kindHint === 'select') return '下拉框'
+	if (kindHint === 'upload') return '文件选择'
+	if (kindHint === 'password' || inputType === 'password') return '密码框'
+	if (inputType === 'date' || inputType === 'datetime-local' || inputType === 'month' || inputType === 'week') return '日期选择框'
+	if (inputType === 'number' || inputType === 'range') return '数字输入框'
+	if (inputType === 'email') return '邮箱输入框'
+	if (inputType === 'tel') return '电话输入框'
+	if (inputType === 'search') return '搜索框'
+	return '输入框'
+}
+
+/**
+ * locator 派生：url 变量「地址栏 · 系统名」；其余「页面 · 控件」。
+ * 证据缺失（无页面身份）时返回空串，不编造。
+ */
+export function deriveLocator(
+	kindHint: LabelKindHint | undefined,
+	evidence: LabelEvidence,
+	systemName: string | undefined,
+	pageUrl: string | undefined,
+): string {
+	if (kindHint === 'url') {
+		const system = pageIdentityOf(systemName, pageUrl)
+		return system ? `地址栏 · ${system}` : ''
+	}
+	const page = pageIdentityOf(systemName, pageUrl)
+	if (!page) return ''
+	return `${page} · ${controlNameOf(evidence, kindHint)}`
 }
 
 /** 输入类型是否日期类（成对日期判定用） */

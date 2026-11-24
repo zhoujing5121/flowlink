@@ -14,10 +14,10 @@ import { describe, test } from 'node:test'
 import { applyRecordingLabels } from '../engine/recorder/src/record.js'
 import { parseFlow } from '../engine/schema/src/io.js'
 
-/** 模拟录制端五个抽取点产出的变量与种子（与 record.ts 同构） */
+/** 模拟录制端五个抽取点产出的变量与种子（与 record.ts 同构；locator 同点派生） */
 function recordedSet() {
 	const variables = [
-		{ name: 'url_1', type: 'url', defaultValue: 'https://example.local/a', secret: false, source: 'input' },
+		{ name: 'url_1', type: 'url', defaultValue: 'https://erp.local/orders', secret: false, source: 'input' },
 		{ name: 'password', type: 'secret', secret: true, source: 'input' },
 		{ name: 'input_1', type: 'string', defaultValue: '2026-01-01', secret: false, source: 'input' },
 		{ name: 'input_2', type: 'string', defaultValue: '2026-01-31', secret: false, source: 'input' },
@@ -26,29 +26,34 @@ function recordedSet() {
 		{ name: 'file_1', type: 'file', secret: false, source: 'input' },
 	]
 	const seeds = [
-		{ key: 'url_1', evidence: { pageIndex: 0 }, kindHint: 'url' },
-		{ key: 'password', evidence: { inputType: 'password', pageIndex: 0 }, kindHint: 'password' },
-		{ key: 'input_1', evidence: { labelText: '创建日期', inputType: 'date', pageIndex: 0 }, kindHint: 'input' },
-		{ key: 'input_2', evidence: { labelText: '创建日期', inputType: 'date', pageIndex: 0 }, kindHint: 'input' },
-		{ key: 'input_3', evidence: { placeholder: '客户名称', inputType: 'text', pageIndex: 0 }, kindHint: 'input' },
-		{ key: 'select_1', evidence: { labelText: '优先级', pageIndex: 0 }, kindHint: 'select' },
-		{ key: 'file_1', evidence: { inputType: 'file', pageIndex: 0 }, kindHint: 'upload' },
+		{ key: 'url_1', evidence: { pageIndex: 0 }, kindHint: 'url', locator: '地址栏 · 订单系统' },
+		{ key: 'password', evidence: { inputType: 'password', pageIndex: 0 }, kindHint: 'password', locator: '订单系统 · 密码框' },
+		{ key: 'input_1', evidence: { labelText: '创建日期', inputType: 'date', pageIndex: 0 }, kindHint: 'input', locator: '订单系统 · 创建日期' },
+		{ key: 'input_2', evidence: { labelText: '创建日期', inputType: 'date', pageIndex: 0 }, kindHint: 'input', locator: '订单系统 · 创建日期' },
+		{ key: 'input_3', evidence: { placeholder: '客户名称', inputType: 'text', pageIndex: 0 }, kindHint: 'input', locator: '订单系统 · 客户名称' },
+		{ key: 'select_1', evidence: { labelText: '优先级', pageIndex: 0 }, kindHint: 'select', locator: '订单系统 · 优先级' },
+		{ key: 'file_1', evidence: { inputType: 'file', pageIndex: 0 }, kindHint: 'upload', locator: '订单系统 · 文件选择' },
 	]
 	return { variables, seeds }
 }
 
-describe('3.1 录制端 label', () => {
-	test('新变量携带非机器风格 label，机器键与模板语义不变', () => {
+describe('3.1 录制端 label 与 locator', () => {
+	test('新变量同时携带非机器风格 label 与「页面 · 控件」locator，机器键与模板语义不变', () => {
 		const { variables, seeds } = recordedSet()
 		const labeled = applyRecordingLabels(variables, seeds)
 		const byName = Object.fromEntries(labeled.map((variable) => [variable.name, variable]))
 		assert.equal(byName['url_1'].label, '网址')
-		assert.equal(byName['password'].label, '密码')
 		assert.equal(byName['input_1'].label, '创建日期-开始', '同页成对日期加区间后缀')
 		assert.equal(byName['input_2'].label, '创建日期-结束')
 		assert.equal(byName['input_3'].label, '客户名称')
 		assert.equal(byName['select_1'].label, '优先级')
 		assert.equal(byName['file_1'].label, '文件')
+		// locator 同点写入（url 变量「地址栏 · 系统名」，其余「页面 · 控件」）
+		assert.equal(byName['url_1'].locator, '地址栏 · 订单系统')
+		assert.equal(byName['input_1'].locator, '订单系统 · 创建日期')
+		assert.equal(byName['select_1'].locator, '订单系统 · 优先级')
+		assert.equal(byName['file_1'].locator, '订单系统 · 文件选择')
+		assert.equal(byName['password'].locator, '订单系统 · 密码框')
 		for (const variable of labeled) {
 			assert.ok(variable.label, '每个录制变量都必须有 label')
 			assert.ok(!/^(input|url|select|file)_\d+$/.test(variable.label), 'label 不得是机器键风格')

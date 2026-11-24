@@ -29,13 +29,11 @@ import {
 	REFERENCE_TYPES,
 	REFERENCE_FILE_EXTENSIONS,
 	TYPE_DISPLAY,
-	decomposeValidation,
-	describeRules,
 	isInsideDirectory,
 	planReferenceFileTarget,
 	referenceTypeFromFileName,
+	resolveAttachmentPath,
 	validateReferences,
-	staticValidateExpressions,
 } from '../engine/reference/src/index.js'
 import { loadFlow, parseFlow, saveFlow, makeId, VariableSchema, type Assertion, type Candidate, type ElementRef } from '../engine/schema/src/index.js'
 import { attachRrwebPage, recordRrwebActivation, startRrwebRecording, stopRrwebRecording, type RrwebPageSeed } from './rrweb-capture.js'
@@ -2367,7 +2365,10 @@ function registerIpc(): void {
 		fileExtensions: REFERENCE_FILE_EXTENSIONS,
 	}))
 
-	/** 编辑对话框即时校验：单对象语法/未知名/循环检查（不落盘） */
+	/**
+	 * 编辑对话框即时校验（收缩版）：label 去重保留；表达式即时校验入口随结构化校验移除。
+	 * 返回 { ok, issues }（issues 仅 label 重复类）。
+	 */
 	ipcMain.handle(
 		'reference:validateObject',
 		(_event, opts: { objects: unknown[]; name: string }) => {
@@ -2378,12 +2379,22 @@ function registerIpc(): void {
 			if (!parsed.success) {
 				throw new Error(`变量定义无效：${parsed.error.issues[0]?.message ?? 'schema 校验失败'}`)
 			}
-			const issues = staticValidateExpressions(parsed.data).filter((issue) => issue.name === opts.name)
-			return { ok: issues.length === 0, issues }
+			const issues: Array<{ name: string; label: string; reason: string }> = []
+			const seen = new Map<string, string>()
+			for (const variable of parsed.data) {
+				const label = variable.label?.trim() || variable.name
+				const first = seen.get(label)
+				if (first && first !== variable.name) {
+					issues.push({ name: variable.name, label, reason: `label "${label}" 已被对象 ${first} 使用` })
+				} else if (!first) {
+					seen.set(label, variable.name)
+				}
+			}
+			return { ok: issues.length === 0, issues: issues.filter((issue) => issue.name === opts.name) }
 		},
 	)
 
-	/** 全量校验（回放前干跑 / 行级摘要）：返回违规与解析后值表 */
+	/** 全量校验（回放前干跑）：返回 Mandatory 缺失清单与解析后值表 */
 	ipcMain.handle(
 		'reference:validateAll',
 		(_event, opts: { objects: unknown[]; values?: Record<string, string> }) => {
@@ -2399,57 +2410,6 @@ function registerIpc(): void {
 			return validateReferences(parsed.data, values)
 		},
 	)
-
-	/**
-	 * 规则摘要 + 预设反编译（表格校验列与编辑对话框的默认视图共用）：
-	 * 返回 机器键 → { summary（中文业务短句）, custom, presets（扁平预设状态） }。
-	 */
-	ipcMain.handle('reference:describe', (_event, opts: { objects: unknown[] }) => {
-		if (!opts || !Array.isArray(opts.objects)) throw new Error('摘要请求无效')
-		const parsed = VariableSchema.array().safeParse(opts.objects)
-		if (!parsed.success) {
-			throw new Error(`变量定义无效：${parsed.error.issues[0]?.message ?? 'schema 校验失败'}`)
-		}
-		const names = parsed.data.map((variable) => variable.label?.trim() || variable.name)
-		const out: Record<
-			string,
-			{
-				summary: string
-				custom: boolean
-				presets: {
-					caseMode: string
-					format: string
-					sign: string
-					dateAutoMode: 'manual' | 'today' | 'todayPlus' | 'todayMinus' | 'custom'
-					dateAutoN: number
-					requiredWhen: string
-				}
-			}
-		> = {}
-		for (const variable of parsed.data) {
-			const { presets, custom } = decomposeValidation(variable.validation, names)
-			const dateAutoMode =
-				variable.validation?.formula && presets.dateAuto.mode === 'manual'
-					? 'custom'
-					: presets.dateAuto.mode
-			out[variable.name] = {
-				summary: describeRules(
-					{ required: variable.required, validation: variable.validation },
-					{ referenceNames: names },
-				),
-				custom,
-				presets: {
-					caseMode: presets.caseMode,
-					format: presets.format,
-					sign: presets.sign,
-					dateAutoMode,
-					dateAutoN: presets.dateAuto.mode === 'todayPlus' || presets.dateAuto.mode === 'todayMinus' ? presets.dateAuto.n : 0,
-					requiredWhen: presets.requiredWhen,
-				},
-			}
-		}
-		return out
-	})
 
 	/**
 	 * 上传 Reference 文件持久化：字节经渲染层读入传入，清洗命名后写入
@@ -2573,6 +2533,32 @@ function registerIpc(): void {
 				throw new Error(`Reference 文件不存在：${entry.name}`)
 			}
 			return `file:///${absolutePath.split(sep).map(encodeURIComponent).join('/')}`
+		},
+	)
+
+	/**
+	 * 读取 references/ 下的附件字节（Download 打包用）：按相对路径读取，
+	 * 防逃逸（必须落在 <artifactsDir>/references/ 内）。返回 Uint8Array。
+	 */
+	ipcMain.handle(
+		'reference:attachmentBytes',
+		async (
+			_event,
+			opts: { taskCode: string; recordingId: string; path: string },
+		): Promise<Uint8Array> => {
+			if (
+				!opts ||
+				typeof opts.taskCode !== 'string' ||
+				typeof opts.recordingId !== 'string' ||
+				typeof opts.path !== 'string' ||
+				!opts.path
+			) {
+				throw new Error('附件读取请求无效')
+			}
+			const recording = taskStore.get(opts.taskCode)?.recordings.find((item) => item.id === opts.recordingId)
+			if (!recording) throw new Error('找不到该录制')
+			const absolutePath = resolveAttachmentPath(recording.artifactsDir, opts.path)
+			return new Uint8Array(await readFile(absolutePath))
 		},
 	)
 	ipcMain.handle(

@@ -250,27 +250,47 @@ refine 表单中的已勾选预设 SHALL 以可移除的标签徽章（chips）�
 
 ### Requirement: The Reference tab SHALL present typed objects with business-language columns
 
-Reference 页 SHALL 以表格管理对象：勾选列 + Object（label 业务名）+ 类型（终端显示映射，不出现 "Variable" 包装）+ 值 + 必填 + 校验（中文业务短句摘要，如「必填 · 自动转大写 · 自动计算：今天+7 天」，不出现枚举值与表达式语法）+ 活动关联（多选 L1 分组，原始录制显示整段）+ 行操作。回放闸门拒绝时的违规文案同用业务短句；机器键不在任何用户可见处出现；文件上传支持 .xlsx/.xls/.csv/.md/.docx 并走工件持久化链路，保存经校验后的变量契约落盘并版本递增。
+Reference 页 SHALL 以表格管理对象，列序为：勾选列 + Object（label 业务名）+ 类型（终端显示映射，不出现 "Variable" 包装）+ Locator（来源定位描述）+ Mandatory（必填标记）+ Validation（规则文本列，列名保持 Validation，展示用户输入或 AI 生成的规则文本，单行截断、悬停提示全文）+ 活动关联（多选 L1 分组，原始录制显示整段）+ 值 + 行操作。表格区域 SHALL 支持横向滚动并采用加大的列宽；回放闸门拒绝时的违规文案为必填缺失清单；机器键不在任何用户可见处出现；文件上传支持 .xlsx/.xls/.csv/.md/.docx 并走工件持久化链路，保存经校验后的变量契约落盘并版本递增。
 
 #### Scenario: 新列呈现
 - **WHEN** 打开一份含变量与上传文件的录制的 Reference 页
-- **THEN** 表格呈现 Object/类型映射/值/必填/校验/活动列，变量行与文件行同表，类型列显示终端映射名
+- **THEN** 表格按 Object/类型/Locator/Mandatory/Validation/活动/值 列序呈现，Validation 列显示规则文本，宽列随横向滚动可达
 
 #### Scenario: 机器键不可见
 - **WHEN** 用户查看或编辑任一对象
 - **THEN** 界面只出现 label 业务名，机器键不显示
 
-### Requirement: The object editor dialog SHALL be wide and preset-first with an advanced fold
+### Requirement: Activity entries in the Reference table SHALL link to their Process group
 
-编辑/新建对话框 SHALL 宽度充足（约 720px、限高滚动、窄窗口不挤压）并按「基本 / 填写规则 / 活动关联 / 高级」分区。默认视图只呈现业务预设控件：label 去重、类型映射、必填开关、大小写/格式/正负选择、日期自动计算预设（今天 / 今天±N 天）、句子式条件必填（「当『某对象』已填写时本项必填」）；自定义正则与原始条件/公式表达式归入默认折叠的高级区，展开后保留即时语法校验与保存阻断；无法映射回预设的结构显示「自定义规则」。
+活动列中每个已选活动 SHALL 独立成行呈现（行间有间隔）；点击某个活动 SHALL 跳转到 Process 页并高亮该活动对应的 L1 分组（复用分组选中视觉，点击别处或返回 Reference 后取消）。未 Refine 录制的整段隐含活动 SHALL 不可点击。
 
-#### Scenario: 预设优先编辑
-- **WHEN** 业务用户打开编辑对话框且未展开高级区
-- **THEN** 只看到中文业务预设控件，无正则与表达式语法；展开高级区才出现原始表达式编辑
+#### Scenario: 点击跳转高亮
+- **WHEN** 用户在 Reference 页活动列点击某对象关联的「提交订单」活动
+- **THEN** 视图切到 Process 页，「提交订单」分组以选中态高亮
 
-#### Scenario: 编辑即时校验
-- **WHEN** 用户在高级区输入一条语法非法的公式并触发校验
-- **THEN** 对话框内即时报错并阻止保存，错误定位到表达式
+#### Scenario: 整段活动不可点击
+- **WHEN** 查看未 Refine 录制（活动列为整段录制）并点击该活动
+- **THEN** 不发生跳转
+
+### Requirement: The object editor dialog SHALL present basic fields, one rules text box, and activities
+
+编辑/新建对话框 SHALL 保持宽布局（约 720px、限高滚动），分区为「基本（label 去重、类型映射、Locator、值、Mandatory 开关）/ 规则 / 活动关联」：规则区为单个多行自由文本输入框（自然语言占位示例，如「必须是邮箱格式；提交日期自动填今天」），无预设控件、无高级折叠、无表达式即时校验；值栏对文件类类型保持上传控件、密钥保持掩码输入。
+
+#### Scenario: 单文本框规则
+- **WHEN** 业务用户打开编辑对话框
+- **THEN** 规则区只有一个多行文本框，任意自然语言可保存，无校验拦截
+
+#### Scenario: 旧规则还原
+- **WHEN** 打开一个经 v4 迁移、原携带结构化校验的对象
+- **THEN** 规则文本框显示迁移转换后的中文句子
+
+### Requirement: Reference placeholder exports SHALL not be generated
+
+录制完成与 Refine 生成 workflow 时 SHALL 不再自动产出步骤导出占位文件（.xls/.md）——Reference 页不再出现这两类自动文件行；Download 打包仅包含对象附件。既有会话级占位行为随生成代码移除而消失，无存量清理。
+
+#### Scenario: 新录制无占位文件
+- **WHEN** 完成一次录制并打开其 Reference 页
+- **THEN** 文件行只有用户主动上传/附件，没有自动生成的 .xls/.md 行
 
 ### Requirement: The Add action SHALL open the editor directly and file-typed values SHALL use an upload control
 

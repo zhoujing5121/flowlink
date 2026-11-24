@@ -168,8 +168,6 @@ describe('10.3 附件原子保存', () => {
 		assert.equal(outcome.ok, false)
 		const missing = outcome.issues.find((issue) => issue.name === 'file_2')
 		assert.ok(missing, '缺失附件必须有违规')
-		assert.equal(missing.rule, 'file')
-		assert.equal(missing.ruleLabel, '附件')
 		assert.match(missing.reason, /附件文件不存在/)
 		const injected = outcome.values['file_1']
 		assert.ok(injected.startsWith(artifactsDir) && injected.endsWith('存在.csv'), `注入绝对路径：${injected}`)

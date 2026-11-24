@@ -140,15 +140,12 @@ const api = {
 	reference: {
 		/** 类型目录 + 终端显示映射 + 上传扩展名（唯一来源，渲染层不复制） */
 		catalog: () => ipcRenderer.invoke('reference:catalog'),
-		/** 单对象静态校验（编辑对话框即时反馈，不落盘）：{ ok, issues } */
+		/** 单对象 label 去重检查（编辑对话框保存前）：{ ok, issues } */
 		validateObject: (opts: { objects: unknown[]; name: string }) =>
 			ipcRenderer.invoke('reference:validateObject', opts),
-		/** 全量校验（回放前干跑）：{ ok, issues, values, injectedEmpty } */
+		/** 全量校验（回放前干跑）：{ ok, issues, values, injectedEmpty }（Mandatory 缺失清单） */
 		validateAll: (opts: { objects: unknown[]; values?: Record<string, string> }) =>
 			ipcRenderer.invoke('reference:validateAll', opts),
-		/** 规则摘要 + 预设反编译（表格列与对话框默认视图共用）：机器键 → { summary, custom, presets } */
-		describe: (opts: { objects: unknown[] }) =>
-			ipcRenderer.invoke('reference:describe', opts),
 		/** 上传文件持久化进工件目录（字节由渲染层读入）；返回 { id, name, type, path } */
 		addFile: (opts: { taskCode: string; recordingId: string; name: string; data: Uint8Array }) =>
 			ipcRenderer.invoke('flow:addReferenceFile', opts),
@@ -158,6 +155,9 @@ const api = {
 		/** 持久化文件的下载 URL（路径校验在主进程） */
 		fileUrl: (opts: { taskCode: string; recordingId: string; fileId: string }) =>
 			ipcRenderer.invoke('reference:fileUrl', opts),
+		/** 读取 references/ 下的附件字节（Download 打包用；防逃逸在主进程） */
+		attachmentBytes: (opts: { taskCode: string; recordingId: string; path: string }) =>
+			ipcRenderer.invoke('reference:attachmentBytes', opts),
 	},
 
 	browser: {

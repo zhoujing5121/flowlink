@@ -549,6 +549,7 @@ export function mergeVariables(
 	flows: Flow[],
 	piVariables?: unknown,
 	piVariableLabels?: unknown,
+	piVariableRules?: unknown,
 ): Variable[] {
 	const merged = new Map<string, Variable>()
 	const add = (variable: Variable): void => {
@@ -600,6 +601,27 @@ export function mergeVariables(
 			}
 			if (typeof label === 'string' && label.trim()) {
 				merged.set(name, { ...target, label: label.trim() })
+			}
+		}
+	}
+	if (piVariableRules !== undefined) {
+		if (!Array.isArray(piVariableRules)) {
+			throw new Error('variableRules 必须是 [{name, rules}] 数组')
+		}
+		for (const entry of piVariableRules) {
+			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+				throw new Error('variableRules 条目必须是 {name, rules} 对象')
+			}
+			const { name, rules } = entry as Record<string, unknown>
+			if (typeof name !== 'string' || !VARIABLE_NAME_RE.test(name)) {
+				throw new Error(`variableRules 的变量名无效：${JSON.stringify(name)}`)
+			}
+			const target = merged.get(name)
+			if (!target) {
+				throw new Error(`生成的 variableRules 引用了不存在的变量 {{${name}}}；源流程未改动`)
+			}
+			if (typeof rules === 'string' && rules.trim()) {
+				merged.set(name, { ...target, rules: rules.trim() })
 			}
 		}
 	}
@@ -1118,7 +1140,7 @@ export async function generateRefinedFlow(options: GenerateFlowOptions): Promise
 		// 执行方式归一在 id 落定（再水化/重锚定）之后执行，sidecar 才能对上最终步骤。
 		stage = '执行方式归一'
 		const executionModes = normalizeExecutionModes(steps, parsed.executionDecisions)
-		const variables = mergeVariables(flows, parsed.variables, parsed.variableLabels)
+		const variables = mergeVariables(flows, parsed.variables, parsed.variableLabels, parsed.variableRules)
 		// 参数保护守卫（不依赖模型自觉）：
 		// 1) 引用了不存在的变量 → 整次生成失败（源流程不动，与现有错误路径一致）；
 		// 2) 源 Flow 的变量定义属于流程契约，不能因模型改写步骤或引用扫描范围而被删除；

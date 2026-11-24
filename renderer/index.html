@@ -1284,10 +1284,11 @@
                         <col class="reference-check-column" />
                         <col class="reference-name-column" />
                         <col class="reference-type-column" />
-                        <col class="reference-value-column" />
+                        <col class="reference-locator-column" />
                         <col class="reference-required-column" />
                         <col class="reference-validation-column" />
                         <col class="reference-activities-column" />
+                        <col class="reference-value-column" />
                         <col class="reference-actions-column" />
                       </colgroup>
                       <thead>
@@ -1302,10 +1303,11 @@
                           </th>
                           <th scope="col">Object</th>
                           <th scope="col">Type</th>
-                          <th scope="col">Value</th>
-                          <th scope="col">Required</th>
+                          <th scope="col">Locator</th>
+                          <th scope="col">Mandatory</th>
                           <th scope="col">Validation</th>
                           <th scope="col">Activities</th>
+                          <th scope="col">Value</th>
                           <th scope="col" aria-label="Reference actions"></th>
                         </tr>
                       </thead>
@@ -2067,10 +2069,11 @@
           <a class="reference-name" hidden></a>
         </td>
         <td data-slot="type"></td>
-        <td data-slot="value"></td>
+        <td data-slot="locator"></td>
         <td data-slot="required"></td>
         <td data-slot="validation"></td>
         <td data-slot="activities"></td>
+        <td data-slot="value"></td>
         <td class="reference-action-cell">
           <div class="reference-row-actions">
             <button type="button" class="icon-button" title="Update">

@@ -152,11 +152,10 @@ export async function gateReferenceVariables(
 			issues.push({
 				name: variable.name,
 				label: variable.label || variable.name,
-				rule: 'file',
-				ruleLabel: '附件',
-				reason: error instanceof Error && /越界/.test(error.message)
-					? error.message
-					: `附件文件不存在：${variable.file.name}`,
+				reason:
+					error instanceof Error && /越界/.test(error.message)
+						? error.message
+						: `附件文件不存在：${variable.file.name}`,
 			})
 		}
 	}

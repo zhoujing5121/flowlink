@@ -10,9 +10,8 @@
 import { z } from 'zod'
 
 import { REFERENCE_TYPES, isFileReferenceType } from '../../reference/src/type-catalog.js'
-import { staticValidateExpressions } from '../../reference/src/validate.js'
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /** 元素/视口矩形（相对 viewport 的 CSS 像素） */
 export const RectSchema = z.object({
@@ -122,27 +121,6 @@ export const ExpectSchema = z.discriminatedUnion('kind', [
 ])
 export type Expect = z.infer<typeof ExpectSchema>
 
-/** Reference 校验规则（大小写/格式/正负/条件必填/公式）；表达式为安全子集，见 engine/reference */
-export const VariableValidationSchema = z.object({
-	/** 注入前的大小写转换；preserve/缺省 = 原样 */
-	caseMode: z.enum(['preserve', 'upper', 'lower']).optional(),
-	format: z
-		.object({
-			/** 内置预设：email / URL / 手机号 */
-			preset: z.enum(['email', 'url', 'phone']).optional(),
-			/** 自定义正则（JS 正则语法，按整串匹配语义由校验器决定） */
-			pattern: z.string().max(500).optional(),
-		})
-		.optional(),
-	/** 正负规则（仅 integer/decimal 类型生效） */
-	sign: z.enum(['positive', 'negative', 'nonNegative', 'nonPositive']).optional(),
-	/** 条件必填表达式：为真时该对象必须有值 */
-	condition: z.string().max(2_000).optional(),
-	/** 公式表达式：对象的值由求值产生，用户不可手填 */
-	formula: z.string().max(2_000).optional(),
-})
-export type VariableValidation = z.infer<typeof VariableValidationSchema>
-
 /** 上传 Reference 文件的持久化元数据：path 相对录制工件根，必须落在 references/ 内 */
 export const ReferenceFileSchema = z.object({
 	id: z.string().min(1),
@@ -184,10 +162,12 @@ export const VariableSchema = z.object({
 	defaultValue: z.string().optional(),
 	/** secret 变量不会以明文出现在动作轨迹中；界面只显示 ****** */
 	secret: z.boolean().default(false),
-	/** 必填：回放启动前缺失则拒绝启动 */
+	/** 必填（显示名 Mandatory）：回放启动前缺失则拒绝启动 */
 	required: z.boolean().optional(),
-	/** 校验规则（大小写/格式/正负/条件必填/公式） */
-	validation: VariableValidationSchema.optional(),
+	/** 自由文本规则（自然语言填写/校验要求）：程序只存储与展示，不解析、不执行 */
+	rules: z.string().max(4_000).optional(),
+	/** 来源定位描述（「页面 · 控件」）：对象从哪个页面的哪个控件拍取；录制端与迁移自动产出，可编辑 */
+	locator: z.string().max(500).optional(),
 	/** 关联的 L1 活动分组 id（Refine 后顶层分组）；未 Refine 录制的隐含整段活动不入此数组 */
 	activities: z.array(z.string().min(1)).optional(),
 	/** 文件类对象的可选附件（值即文件）；回放时解析为工件内绝对路径注入 */
@@ -574,14 +554,13 @@ export interface FlowContractOptions {
 export function validateFlowContract(flow: Flow, opts: FlowContractOptions = {}): string[] {
 	const errors: string[] = []
 	// Reference 元数据契约（始终检查，不只 strict 模式）：
-	// 1) label 重复会让表达式引用歧义；2) 表达式必须静态合法（语法/未知名/循环）；
-	// 3) 上传文件路径必须留在 references/ 内（防逃逸）。
+	// 1) label 重复会让用户与 AI 建议指向歧义；2) 上传文件/附件路径必须留在 references/ 内（防逃逸）。
 	const labelSeen = new Set<string>()
 	for (const variable of flow.variables) {
 		const label = variable.label?.trim()
 		if (!label) continue
 		if (labelSeen.has(label)) {
-			errors.push(`variables[${variable.name}]: label "${label}" 重复（label 必须唯一，否则表达式引用歧义）`)
+			errors.push(`variables[${variable.name}]: label "${label}" 重复（label 必须唯一）`)
 		}
 		labelSeen.add(label)
 	}
@@ -594,9 +573,6 @@ export function validateFlowContract(flow: Flow, opts: FlowContractOptions = {})
 		if (!isSafeReferenceFilePath(variable.file.path)) {
 			errors.push(`variables[${variable.name}]: 附件 path "${variable.file.path}" 必须是 references/ 下的安全单段相对路径`)
 		}
-	}
-	for (const issue of staticValidateExpressions(flow.variables)) {
-		errors.push(`variables[${issue.name}]（${issue.label}）: ${issue.rule} — ${issue.reason}`)
 	}
 	for (const file of flow.referenceFiles) {
 		if (!isSafeReferenceFilePath(file.path)) {

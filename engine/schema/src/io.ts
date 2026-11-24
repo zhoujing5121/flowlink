@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 import { FlowSchema, SCHEMA_VERSION, validateFlowContract, type Flow, type FlowContractOptions } from './schema.js'
-import { assignLabels, mapLegacyType, type LabelEvidence, type LabelKindHint, type LabelSeed } from '../../reference/src/index.js'
+import { assignLabels, deriveLocator, mapLegacyType, validationToRulesText, type LabelEvidence, type LabelKindHint, type LabelSeed } from '../../reference/src/index.js'
 
 /**
  * Flow 文件边界上的校验错误。`issues` 保留可逐项展示的诊断文本，
@@ -64,6 +64,11 @@ export function migrateFlow(raw: unknown): unknown {
 		version = 3
 		migrateVariablesV2ToV3(doc)
 	}
+	if (version === 3) {
+		doc.schemaVersion = 4
+		version = 4
+		migrateVariablesV3ToV4(doc)
+	}
 	if (version === SCHEMA_VERSION) return doc
 	throw new Error(`未知的 flow 版本 ${version}`)
 }
@@ -113,18 +118,29 @@ function templateNamesOf(value: unknown): string[] {
 }
 
 /**
- * 遍历原始步骤，为每个被 {{name}} 引用的变量收集首个出现位置的命名证据。
- * 递归进入 group；不修改任何步骤数据。
+ * 遍历原始步骤，为每个被 {{name}} 引用的变量收集首个出现位置的命名证据与 locator
+ * 证据（首个引用步骤的 systemName/pageUrl）。递归进入 group；不修改任何步骤数据。
  */
-function collectVariableSeeds(steps: unknown): Map<string, LabelSeed> {
+function collectVariableSeeds(steps: unknown): {
+	seeds: Map<string, LabelSeed>
+	locators: Map<string, string>
+} {
 	const seeds = new Map<string, LabelSeed>()
-	const note = (name: string, target: unknown, pageIndex: number): void => {
+	const locators = new Map<string, string>()
+	const note = (name: string, target: unknown, pageIndex: number, step: Record<string, unknown>): void => {
 		if (seeds.has(name)) return
-		seeds.set(name, {
-			key: name,
-			evidence: evidenceFromTarget(target, pageIndex),
-			...(kindHintForName(name) ? { kindHint: kindHintForName(name)! } : {}),
-		})
+		const kindHint = kindHintForName(name)
+		const evidence = evidenceFromTarget(target, pageIndex)
+		seeds.set(name, { key: name, evidence, ...(kindHint ? { kindHint } : {}) })
+		locators.set(
+			name,
+			deriveLocator(
+				kindHint,
+				evidence,
+				typeof step['systemName'] === 'string' ? step['systemName'] : undefined,
+				typeof step['pageUrl'] === 'string' ? step['pageUrl'] : undefined,
+			),
+		)
 	}
 	const visitStep = (raw: unknown, pageIndex: number): void => {
 		const step = (raw ?? {}) as Record<string, unknown>
@@ -134,7 +150,7 @@ function collectVariableSeeds(steps: unknown): Map<string, LabelSeed> {
 		const effectivePage = typeof pageIndexOfStep === 'number' ? pageIndexOfStep : pageIndex
 		const target = step['target']
 		const noteAll = (value: unknown): void => {
-			for (const name of templateNamesOf(value)) note(name, target, effectivePage)
+			for (const name of templateNamesOf(value)) note(name, target, effectivePage, step)
 		}
 		noteAll(step['url'])
 		noteAll(step['value'])
@@ -155,7 +171,7 @@ function collectVariableSeeds(steps: unknown): Map<string, LabelSeed> {
 		if (Array.isArray(step['steps'])) for (const child of step['steps']) visitStep(child, effectivePage)
 	}
 	if (Array.isArray(steps)) for (const step of steps) visitStep(step, 0)
-	return seeds
+	return { seeds, locators }
 }
 
 /**
@@ -169,7 +185,7 @@ function collectVariableSeeds(steps: unknown): Map<string, LabelSeed> {
 function migrateVariablesV2ToV3(doc: Record<string, unknown>): void {
 	const rawVariables = Array.isArray(doc['variables']) ? doc['variables'] : []
 	if (!rawVariables.length) return
-	const seeds = collectVariableSeeds(doc['steps'])
+	const { seeds } = collectVariableSeeds(doc['steps'])
 	// 生成 label：按变量数组序组织 seeds（成对日期与去重依赖全量上下文）。
 	const orderedSeeds: LabelSeed[] = []
 	for (const raw of rawVariables) {
@@ -209,6 +225,36 @@ function migrateVariablesV2ToV3(doc: Record<string, unknown>): void {
 		return variable
 	})
 	doc['variables'] = migrated
+}
+
+/**
+ * v3 → v4 变量升级（就地改写 doc.variables）：
+ * - 结构化 `validation` 经 describe 语义转换为中文句子（多条「；」连接）写入 `rules` 后移除；
+ * - `locator` 按步骤证据以「页面 · 控件」回填（url 变量取「地址栏 · 系统名」，证据缺失留空）；
+ * - `required`/`label`/`type`/`activities`/`file` 原样保留。
+ * 不改写步骤与模板键。
+ */
+function migrateVariablesV3ToV4(doc: Record<string, unknown>): void {
+	const rawVariables = Array.isArray(doc['variables']) ? doc['variables'] : []
+	if (!rawVariables.length) return
+	const { locators } = collectVariableSeeds(doc['steps'])
+	// 句子式条件必填的还原需要对象 label 集合（v3 迁移已回填；v3 原生数据可能没有 → 回退机器名）
+	const referenceNames = rawVariables.map((raw) => {
+		const variable = raw as Record<string, unknown>
+		if (typeof variable['label'] === 'string' && variable['label'].trim()) return variable['label'].trim()
+		return typeof variable['name'] === 'string' ? variable['name'] : ''
+	})
+	for (const raw of rawVariables) {
+		const variable = raw as Record<string, unknown>
+		const rules = validationToRulesText(variable['validation'] as Parameters<typeof validationToRulesText>[0], referenceNames)
+		if (rules) variable['rules'] = rules
+		delete variable['validation']
+		const name = variable['name']
+		if (typeof name === 'string' && typeof variable['locator'] !== 'string') {
+			const locator = locators.get(name)
+			if (locator) variable['locator'] = locator
+		}
+	}
 }
 
 /** 读取 JSON 文本并走与内存输入相同的迁移和完整校验路径。 */

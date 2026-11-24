@@ -103,7 +103,7 @@ describe('5.1 mergeVariables 支持 variableLabels', () => {
 		)
 	})
 
-	test('其余 Reference 元数据按源保留（必填/校验/活动不来自模型）', () => {
+	test('其余 Reference 元数据按源保留（Mandatory/rules/locator/活动不来自模型）', () => {
 		const source = sourceFlow([
 			{
 				name: 'input_1',
@@ -111,17 +111,47 @@ describe('5.1 mergeVariables 支持 variableLabels', () => {
 				type: 'integer',
 				secret: false,
 				required: true,
-				validation: { sign: 'positive' },
+				rules: '必须是 6 位数字',
+				locator: '订单系统 · 客户编号输入框',
 				activities: ['g1'],
 				source: 'input',
 			},
 		])
-		const merged = aiRefine.mergeVariables([source], undefined, [{ name: 'input_1', label: '订单数量' }])
+		const merged = aiRefine.mergeVariables([source], undefined, [{ name: 'input_1', label: '订单数量' }], [{ name: 'input_1', rules: '必须是正整数' }])
 		const variable = merged[0]
 		assert.equal(variable.label, '订单数量')
-		assert.equal(variable.required, true)
-		assert.deepEqual(variable.validation, { sign: 'positive' })
+		assert.equal(variable.rules, '必须是正整数', 'variableRules 非空建议覆盖旧值')
+		assert.equal(variable.required, true, 'Mandatory 按源保留')
+		assert.equal(variable.locator, '订单系统 · 客户编号输入框', 'locator 不来自模型')
 		assert.deepEqual(variable.activities, ['g1'])
+	})
+
+	test('variableRules：未知机器键整次拒绝（与 variableLabels 同一报错面）', () => {
+		const source = sourceFlow([
+			{ name: 'input_1', label: '客户名称', type: 'string', secret: false, source: 'input' },
+		])
+		assert.throws(
+			() => aiRefine.mergeVariables([source], undefined, undefined, [{ name: 'ghost', rules: 'x' }]),
+			/variableRules 引用了不存在的变量 \{\{ghost\}\}/,
+		)
+		assert.throws(
+			() => aiRefine.mergeVariables([source], undefined, undefined, 'not-an-array'),
+			/variableRules 必须是/,
+		)
+		// 非字符串 rules 值按 variableLabels 同样口径静默忽略（只有未知键整次拒绝）
+		const tolerated = aiRefine.mergeVariables([source], undefined, undefined, [{ name: 'input_1', rules: 42 }])
+		assert.equal(tolerated[0].rules, undefined)
+	})
+
+	test('variableRules 空/空白建议不覆盖', () => {
+		const source = sourceFlow([
+			{ name: 'input_1', label: '客户名称', type: 'string', secret: false, source: 'input', rules: '原规则' },
+		])
+		const merged = aiRefine.mergeVariables([source], undefined, undefined, [
+			{ name: 'input_1', rules: '' },
+			{ name: 'input_1', rules: '   ' },
+		])
+		assert.equal(merged[0].rules, '原规则')
 	})
 
 	test('Pi 提议的旧类型变量归一到新目录', () => {
@@ -204,11 +234,11 @@ describe('8.4 活动关联默认值', () => {
 })
 
 describe('8.4 提示词 variableActivities 指引', () => {
-	test('systemPrompt 与 generation 模板包含 variableActivities 输出契约', () => {
-		assert.ok(templates.systemPrompt.includes('variableActivities'))
-		assert.ok(templates.generation.autoSanitize.includes('variableActivities'))
-		assert.ok(templates.generation.refine.includes('variableActivities'))
-		assert.ok(templates.systemPrompt.includes('usage evidence wins over suggestions'))
+	test('systemPrompt 与 generation 模板包含 variableRules 输出契约', () => {
+		assert.ok(templates.systemPrompt.includes('variableRules'))
+		assert.ok(templates.generation.autoSanitize.includes('variableRules'))
+		assert.ok(templates.generation.refine.includes('variableRules'))
+		assert.ok(templates.systemPrompt.includes('never invent requirements'), '证据不足留空指引')
 	})
 })
 

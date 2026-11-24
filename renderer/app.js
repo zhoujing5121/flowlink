@@ -4213,22 +4213,6 @@ function isFileClassType(type) {
   return ["excel", "word", "csv", "md", "file"].includes(type);
 }
 
-/** 校验列摘要：如「大写 · email 格式 · 公式」 */
-function referenceValidationSummary(reference) {
-  if (reference.kind !== "variable") return "";
-  const parts = [];
-  const validation = reference.validation || {};
-  if (validation.caseMode === "upper") parts.push("大写");
-  else if (validation.caseMode === "lower") parts.push("小写");
-  if (validation.format?.preset) parts.push(`${validation.format.preset} 格式`);
-  else if (validation.format?.pattern) parts.push("正则");
-  if (validation.sign)
-    parts.push({ positive: "正数", negative: "负数", nonNegative: "非负", nonPositive: "非正" }[validation.sign] || "");
-  if (validation.condition) parts.push("条件必填");
-  if (validation.formula) parts.push("公式");
-  return parts.filter(Boolean).join(" · ");
-}
-
 /** 活动关联选项：当前 Flow 顶层分组（Refine 后）；无分组 = 整段录制（隐含活动） */
 function referenceActivityOptions(item) {
   const groups = (item?.referenceFlow?.steps || []).filter(
@@ -4237,15 +4221,48 @@ function referenceActivityOptions(item) {
   return groups.map((group) => ({ id: group.id, label: group.label || group.id }));
 }
 
-function referenceActivitiesSummary(item, reference) {
-  if (reference.kind !== "variable") return "";
+/** 活动徽片点击：跳转 Process 页并触发对应 L1 分组的既有选中高亮（跨页签传分组 id） */
+function jumpToProcessGroup(item, groupId) {
+  if (!item || !groupId) return;
+  item.selectedGroup = groupId;
+  item.resultTab = "Process";
+  renderSummaryWorkspace();
+  requestAnimationFrame(() => {
+    const card = document.querySelector(
+      `[data-canvas-group="${CSS.escape(groupId)}"]`,
+    );
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+/** 活动列：每个已选活动一行徽片（可点击跳转 Process 高亮）；原始录制整段活动为纯文本 */
+function referenceActivityChips(item, reference) {
+  const container = document.createElement("div");
+  container.className = "reference-activity-chips";
+  if (reference.kind !== "variable") return container;
   const options = referenceActivityOptions(item);
-  if (!options.length) return item?.name || "";
-  if (!reference.activities?.length) return "—";
-  const labels = options
-    .filter((option) => reference.activities.includes(option.id))
-    .map((option) => option.label);
-  return labels.length ? labels.join("、") : "—";
+  if (!options.length) {
+    // 未 Refine 的原始录制：隐含整段活动，不可点击
+    const plain = document.createElement("span");
+    plain.className = "reference-activity-whole";
+    plain.textContent = item?.name || "";
+    container.append(plain);
+    return container;
+  }
+  for (const option of options) {
+    if (!reference.activities?.includes(option.id)) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "reference-activity-chip";
+    chip.textContent = option.label;
+    chip.title = `在 Process 页查看「${option.label}」`;
+    chip.onclick = (event) => {
+      event.stopPropagation();
+      jumpToProcessGroup(item, option.id);
+    };
+    container.append(chip);
+  }
+  return container;
 }
 
 function fillReferencePanel(panel, item) {
@@ -4259,15 +4276,10 @@ function fillReferencePanel(panel, item) {
     gateBlock.querySelector("ul").replaceChildren(
       ...gateIssues.map((issue) => {
         const li = document.createElement("li");
-        li.textContent = `${issue.label || issue.name} · ${issue.ruleLabel || issue.rule} — ${issue.reason}`;
+        li.textContent = `${issue.label || issue.name} — ${issue.reason}`;
         return li;
       }),
     );
-  }
-  if (gateIssues.length === 0 && item && item.referenceDescribe === undefined) {
-    void refreshReferenceDescribe(item).then(() => {
-      if (panel.isConnected && currentAssistantItem() === item) fillReferencePanel(panel, item);
-    });
   }
   const issueNames = new Set(gateIssues.map((issue) => issue.name));
   section.querySelector("#referenceSelectAll").disabled = !files.length;
@@ -4314,22 +4326,24 @@ function fillReferencePanel(panel, item) {
       row.querySelector('[data-slot="type"]').textContent = isVariable
         ? displayTypeOf(file.variableType || "string")
         : mappedFileType || rawFileType;
-      row.querySelector('[data-slot="value"]').textContent = isVariable
-        ? file.validation?.formula
-          ? "（公式）"
-          : isFileClassType(file.variableType)
-            ? file.attachment?.name || ""
-            : file.secret && file.value
-              ? "••••••"
-              : file.value || ""
+      row.querySelector('[data-slot="locator"]').textContent = isVariable
+        ? file.locator || ""
         : "";
       row.querySelector('[data-slot="required"]').textContent =
         isVariable && file.required ? "是" : "";
-      row.querySelector('[data-slot="validation"]').textContent = isVariable
-        ? (item.referenceDescribe?.[file.name]?.summary ?? referenceValidationSummary(file))
+      const rulesCell = row.querySelector('[data-slot="validation"]');
+      rulesCell.textContent = isVariable ? file.rules || "" : "";
+      if (isVariable && file.rules) rulesCell.title = file.rules;
+      row
+        .querySelector('[data-slot="activities"]')
+        .replaceChildren(referenceActivityChips(item, file));
+      row.querySelector('[data-slot="value"]').textContent = isVariable
+        ? isFileClassType(file.variableType)
+          ? file.attachment?.name || ""
+          : file.secret && file.value
+            ? "••••••"
+            : file.value || ""
         : "";
-      row.querySelector('[data-slot="activities"]').textContent =
-        referenceActivitiesSummary(item, file);
       const [edit, remove] = row.querySelectorAll(
         ".reference-row-actions .icon-button",
       );
@@ -8798,42 +8812,12 @@ function bindMetricPreferences() {
   sync();
 }
 
-// Reference 文件归当前查看的录制项所有；上传文件仅保留在本浏览器会话中。
+// Reference 对象归当前查看的录制项所有；占位导出（.xls/.md）已随 simplify-reference-rules 移除，
+// Download 打包仅含对象附件与持久化文件行。
 let referenceSequence = 0;
 function ensureReferenceFiles(item) {
-  // 每个录制项只生成一次 Reference。其对象 URL 在本浏览器会话中持续有效，
-  // 上传的文件也仅保存在本地。
   if (!item) return [];
-  if (!item.references) {
-    const steps = item.steps || [];
-    const xml =
-      '<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Steps"><Table><Row><Cell><Data ss:Type="String">Step</Data></Cell><Cell><Data ss:Type="String">Operation</Data></Cell></Row>' +
-      steps
-        .map(
-          (line, i) =>
-            `<Row><Cell><Data ss:Type="Number">${i + 1}</Data></Cell><Cell><Data ss:Type="String">${escapeHTML(line)}</Data></Cell></Row>`,
-        )
-        .join("") +
-      "</Table></Worksheet></Workbook>";
-    const markdown = steps.map((line, i) => `${i + 1}. ${line}`).join("\n");
-    item.references = [
-      {
-        name: item.name + ".xls",
-        type: "Excel",
-        file: new Blob([xml], { type: "application/vnd.ms-excel" }),
-      },
-      {
-        name: item.name + ".md",
-        type: "MD",
-        file: new Blob([markdown], { type: "text/markdown;charset=utf-8" }),
-      },
-    ].map((file) => ({
-      ...file,
-      id: "reference-" + ++referenceSequence,
-      kind: "file",
-      url: URL.createObjectURL(file.file),
-    }));
-  }
+  if (!item.references) item.references = [];
   return item.references;
 }
 
@@ -8880,7 +8864,8 @@ async function hydrateReferenceVariables(item) {
         variableType: variable.type || "string",
         secret: !!variable.secret,
         required: !!variable.required,
-        validation: variable.validation ? structuredClone(variable.validation) : undefined,
+        rules: variable.rules || "",
+        locator: variable.locator || "",
         activities: variable.activities ? [...variable.activities] : [],
         // 文件类对象的持久化附件（值即文件；保存后值列显示文件名，回放注入绝对路径）
         attachment: variable.file ? { name: variable.file.name, path: variable.file.path } : undefined,
@@ -8889,7 +8874,6 @@ async function hydrateReferenceVariables(item) {
       });
     }
     syncPersistedReferenceFileRows(item);
-    void refreshReferenceDescribe(item);
     item.referenceLoadError = "";
     item.referenceVariablesLoaded = true;
     return true;
@@ -8933,22 +8917,6 @@ async function refreshPersistedReferenceFiles(item) {
   }
 }
 
-/** 规则摘要 + 预设反编译缓存（表格校验列与编辑对话框默认视图共用，engine 侧单一实现） */
-async function refreshReferenceDescribe(item) {
-  if (!item || !window.flowlink?.reference?.describe) return;
-  const objects = referenceVariableDefinitions(ensureReferenceFiles(item));
-  if (!objects.length) {
-    item.referenceDescribe = {};
-    return;
-  }
-  try {
-    item.referenceDescribe = await window.flowlink.reference.describe({ objects });
-  } catch (error) {
-    console.error("[reference] Unable to describe rules:", error);
-    item.referenceDescribe = {};
-  }
-}
-
 function referenceVariableDefinitions(references) {
   return references
     .filter((reference) => reference.kind === "variable")
@@ -8959,7 +8927,8 @@ function referenceVariableDefinitions(references) {
       ...(!reference.secret ? { defaultValue: reference.value ?? "" } : {}),
       secret: !!reference.secret,
       required: reference.required || undefined,
-      validation: reference.validation || undefined,
+      rules: reference.rules || undefined,
+      locator: reference.locator || undefined,
       activities:
         reference.activities && reference.activities.length
           ? reference.activities
@@ -8994,7 +8963,7 @@ window.showReferenceGateIssues = function showReferenceGateIssues(item, issues) 
     showFlowlinkNotice(
       "回放启动前校验未通过：" +
         item.referenceGateIssues
-          .map((issue) => `${issue.label || issue.name}（${issue.rule}）${issue.reason}`)
+          .map((issue) => `${issue.label || issue.name}：${issue.reason}`)
           .join("；"),
       "warn",
     );
@@ -9194,31 +9163,16 @@ function bindReferenceFiles() {
     }
     form.elements.referenceLabel.setCustomValidity("");
     const variableType = form.elements.referenceType?.value || existing?.variableType || "string";
-    const hasFormula = !!(form.elements.referenceFormula?.value || "").trim();
-    const collectValidation = () => {
-      const caseMode = form.elements.referenceCaseMode?.value;
-      const preset = form.elements.referenceFormatPreset?.value;
-      const pattern = (form.elements.referenceFormatPattern?.value || "").trim();
-      const sign = form.elements.referenceSign?.value;
-      const condition = (form.elements.referenceCondition?.value || "").trim();
-      const formula = (form.elements.referenceFormula?.value || "").trim();
-      const validation = {};
-      if (caseMode && caseMode !== "preserve") validation.caseMode = caseMode;
-      if (preset || pattern)
-        validation.format = {
-          ...(preset ? { preset } : {}),
-          ...(pattern ? { pattern } : {}),
-        };
-      if (sign) validation.sign = sign;
-      if (condition) validation.condition = condition;
-      if (formula) validation.formula = formula;
-      return Object.keys(validation).length ? validation : undefined;
+    const attachmentState = dialog.__referenceAttachmentState || {
+      kept: reference?.attachment ?? null,
+      pending: null,
+      removed: false,
     };
     const activities = [...form.querySelectorAll("[name=referenceActivities]:checked")].map(
       (checkbox) => checkbox.value,
     );
     const isFileType = isFileClassType(variableType);
-    const value = hasFormula ? "" : isFileType ? "" : form.elements.referenceValue?.value ?? "";
+    const value = isFileType ? "" : form.elements.referenceValue?.value ?? "";
     const machineName =
       existing?.name ||
       nextFlowVariableName(item.referenceFlow || { variables: [] }, "var");
@@ -9230,23 +9184,24 @@ function bindReferenceFiles() {
       variableType,
       secret: variableType === "secret",
       required: form.elements.referenceRequired?.checked || false,
-      validation: collectValidation(),
+      rules: (form.elements.referenceRules?.value || "").trim() || "",
+      locator: (form.elements.referenceLocator?.value || "").trim() || "",
       activities,
       source: existing?.source || "input",
       // 保留既有附件（未删除且无新上传）；新上传由 attachments 通道原子写入，保存后从落盘结果回填
-      ...(isFileType && !attachmentRemoved && !pendingUpload && reference?.attachment
-        ? { attachment: { ...reference.attachment } }
+      ...(isFileType && !attachmentState.removed && !attachmentState.pending && attachmentState.kept
+        ? { attachment: { ...attachmentState.kept } }
         : {}),
       value,
     };
     const pendingAttachments =
-      isFileType && pendingUpload
-        ? [{ name: machineName, fileName: pendingUpload.fileName, data: pendingUpload.data }]
+      isFileType && attachmentState.pending
+        ? [{ name: machineName, fileName: attachmentState.pending.fileName, data: attachmentState.pending.data }]
         : [];
     const nextReferences = existing
       ? item.references.map((reference) => (reference.id === editingId ? draft : reference))
       : [...item.references, draft];
-    // 保存前经 preload 校验 IPC 做一次静态检查（语法/未知名/循环依赖），违规阻止保存
+    // 保存前经 preload 校验 IPC 做一次 label 去重检查，违规阻止保存
     if (window.flowlink?.reference?.validateObject) {
       try {
         const check = await window.flowlink.reference.validateObject({
@@ -9256,8 +9211,7 @@ function bindReferenceFiles() {
         if (!check.ok && check.issues?.length) {
           const issue = check.issues[0];
           const status = panel.querySelector("#referenceStatus");
-          if (status)
-            status.textContent = `${issue.label || issue.name} · ${issue.rule} — ${issue.reason}`;
+          if (status) status.textContent = `${issue.label || issue.name} — ${issue.reason}`;
           return;
         }
       } catch (error) {
@@ -9285,7 +9239,6 @@ function bindReferenceFiles() {
         /* 展示层刷新失败不阻塞对话框收起 */
       }
     }
-    void refreshReferenceDescribe(item);
     // 附件元数据以落盘结果为准（新上传的 path 由主进程清洗去重后分配）
     if (Array.isArray(savedVariables)) {
       const savedVariable = savedVariables.find((entry) => entry.name === machineName);
@@ -9317,7 +9270,6 @@ function showReferenceEditor(dialog, reference, item) {
   }
   const title = reference ? "Update object" : "Add object";
   const variableType = reference?.variableType || "string";
-  const validation = reference?.validation || {};
   const catalogTypes = Object.entries(referenceTypeDisplayMap || {});
   const typeOptions = catalogTypes.length
     ? catalogTypes
@@ -9326,38 +9278,7 @@ function showReferenceEditor(dialog, reference, item) {
         ["date", "日期"], ["secret", "密钥"], ["excel", "Excel"], ["word", "Word"],
         ["csv", "CSV"], ["md", "Markdown"], ["file", "文件"],
       ];
-  const hasFormula = !!validation.formula;
-  /** 公式是否生效：标记构建期用已落盘结构（此刻 dialog 里还是上一个表单，不能读实时 DOM）；
-   *  值栏重渲染发生在 innerHTML 就位之后，读高级区表达式的实时值。 */
-  const formulaActive = (fromLive = true) => {
-    if (!fromLive) return hasFormula;
-    const live = dialog.querySelector("[name=referenceFormula]");
-    return !!((live ? live.value : validation.formula) || "").trim();
-  };
   const activities = reference?.activities || [];
-  // 附件状态：保留的既有附件 / 待上传的新附件（保存时经 attachments 原子写入）/ 已删除
-  let attachmentState = reference?.attachment ? { ...reference.attachment } : null;
-  let pendingUpload = null;
-  let attachmentRemoved = false;
-  const currentAttachmentName = () =>
-    pendingUpload?.fileName ??
-    (attachmentRemoved || !attachmentState ? "" : attachmentState.name);
-  const ATTACHMENT_ACCEPT = {
-    excel: ".xlsx,.xls",
-    word: ".docx",
-    csv: ".csv",
-    md: ".md,.markdown",
-    file: "",
-  };
-  const valueControlMarkup = (type) => {
-    if (isFileClassType(type)) {
-      const name = currentAttachmentName();
-      return `<div class="reference-upload-control"><button type="button" class="reference-upload-trigger" data-reference-upload-trigger${formulaActive(!markupBuilding) ? " disabled" : ""}>${name ? escapeHTML(name) : "点击选择文件"}</button>${name ? '<button type="button" class="reference-upload-remove icon-button" data-reference-upload-remove title="删除附件" aria-label="删除附件"><span aria-hidden="true">✕</span></button>' : ""}<input type="file" name="referenceAttachmentInput" hidden${ATTACHMENT_ACCEPT[type] ? ` accept="${ATTACHMENT_ACCEPT[type]}"` : ""}></div>`;
-    }
-    return `<input name="referenceValue" type="${type === "secret" ? "password" : "text"}" value="${escapeHTML(reference?.value || "")}"${formulaActive(!markupBuilding) ? ' disabled title="公式对象的值由表达式求值产生"' : ""}>`;
-  };
-  /** 标记构建期（dialog.innerHTML 赋值前）禁止读实时 DOM */
-  let markupBuilding = true;
   const options = referenceActivityOptions(item);
   const activityMarkup = options.length
     ? options
@@ -9368,61 +9289,39 @@ function showReferenceEditor(dialog, reference, item) {
         .join("")
     : `<p class="reference-activity-note">未 Refine 的原始录制只有一个隐含活动（整段录制「${escapeHTML(item?.name || "")}」），全部对象默认关联它。</p>`;
 
-  // 其他对象的 label（句子式条件必填的可选引用；机器键不出现在用户视野）
-  const otherLabels = (item?.references || [])
-    .filter((entry) => entry.kind === "variable" && entry.id !== reference?.id)
-    .map((entry) => entry.label || entry.name);
-
-  // 预设状态：优先取主进程 describe 反编译（权威），缺失时按原始结构客户端兜底
-  const described = reference?.name ? item?.referenceDescribe?.[reference.name] : undefined;
-  const matchDateAuto = (formula) => {
-    const text = (formula || "").trim();
-    if (!text) return { mode: "manual", n: 0 };
-    if (text === "TODAY()") return { mode: "today", n: 0 };
-    let match = /^DATEADD\(TODAY\(\),\s*(\d+),\s*"day"\)$/.exec(text);
-    if (match) return { mode: "todayPlus", n: Number(match[1]) };
-    match = /^DATEADD\(TODAY\(\),\s*-(\d+),\s*"day"\)$/.exec(text);
-    if (match) return { mode: "todayMinus", n: Number(match[1]) };
-    return { mode: "custom", n: 0 };
+  // 附件状态挂在 dialog 上（onsubmit 在 bindReferenceFiles 作用域，跨闭包传状态）：
+  // kept = 保留的既有附件；pending = 待上传新附件；removed = 已删除。
+  const attachmentState = {
+    kept: reference?.attachment ? { ...reference.attachment } : null,
+    pending: null,
+    removed: false,
   };
-  const matchRequiredWhen = (condition) => {
-    const text = (condition || "").trim();
-    if (!text) return "";
-    const match = /^NOT\(ISEMPTY\((.+)\)\)$/.exec(text);
-    const referenced = match?.[1]?.trim();
-    return referenced && otherLabels.includes(referenced) ? referenced : "custom";
+  dialog.__referenceAttachmentState = attachmentState;
+  const currentAttachmentName = () =>
+    attachmentState.pending?.fileName ??
+    (attachmentState.removed || !attachmentState.kept ? "" : attachmentState.kept.name);
+  const ATTACHMENT_ACCEPT = {
+    excel: ".xlsx,.xls",
+    word: ".docx",
+    csv: ".csv",
+    md: ".md,.markdown",
+    file: "",
   };
-  const presetState = described?.presets || {
-    caseMode: validation.caseMode === "upper" || validation.caseMode === "lower" ? validation.caseMode : "preserve",
-    format: validation.format?.preset || "",
-    sign: validation.sign || "",
-    ...matchDateAuto(validation.formula),
-    requiredWhen: matchRequiredWhen(validation.condition),
+  /** 值栏控件：文件类 = 上传控件（选择/覆盖/删除）；密钥 = 掩码；其余 = 文本输入 */
+  const valueControlMarkup = (type) => {
+    if (isFileClassType(type)) {
+      const name = currentAttachmentName();
+      return `<div class="reference-upload-control"><button type="button" class="reference-upload-trigger" data-reference-upload-trigger>${name ? escapeHTML(name) : "点击选择文件"}</button>${name ? '<button type="button" class="reference-upload-remove icon-button" data-reference-upload-remove title="删除附件" aria-label="删除附件"><span aria-hidden="true">✕</span></button>' : ""}<input type="file" name="referenceAttachmentInput" hidden${ATTACHMENT_ACCEPT[type] ? ` accept="${ATTACHMENT_ACCEPT[type]}"` : ""}></div>`;
+    }
+    return `<input name="referenceValue" type="${type === "secret" ? "password" : "text"}" value="${escapeHTML(reference?.value || "")}">`;
   };
-  const isCustom = described ? described.custom : !!(validation.format?.pattern) || matchDateAuto(validation.formula).mode === "custom" || matchRequiredWhen(validation.condition) === "custom";
 
-  const dateAutoValue =
-    presetState.dateAutoMode || (presetState.mode ?? "manual");
-  const dateAutoOptions = [
-    ["manual", "手动填写"],
-    ["today", "自动填：今天"],
-    ["todayPlus", "自动填：今天 + N 天"],
-    ["todayMinus", "自动填：今天 − N 天"],
-    ...(dateAutoValue === "custom" ? [["custom", "自定义公式（在高级区编辑）"]] : []),
-  ];
-  const requiredWhenValue = presetState.requiredWhen ?? matchRequiredWhen(validation.condition);
-  const requiredWhenOptions = [
-    ["", "不需要"],
-    ...otherLabels.map((label) => [label, `当『${label}』已填写时本项必填`]),
-    ...(requiredWhenValue === "custom" ? [["custom", "自定义条件（在高级区编辑）"]] : []),
-  ];
-
-  dialog.innerHTML = `<form class="reference-editor reference-object-editor" data-reference-id="${escapeHTML(reference?.id || "")}" data-reference-kind="variable"><h2 id="referenceDialogTitle">${title}</h2><p class="reference-section-title">基本</p><div class="reference-basic-grid"><label>Object<input name="referenceLabel" value="${escapeHTML(reference?.label || reference?.name || "")}" maxlength="200" required></label><label>Type<select name="referenceType">${typeOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === variableType ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select></label><label class="reference-basic-full">Value<span class="reference-value-slot" data-value-slot>${valueControlMarkup(variableType)}</span></label><label class="reference-inline-check"><input type="checkbox" name="referenceRequired" ${reference?.required ? "checked" : ""}><span>必填</span></label></div><p class="reference-section-title">填写规则</p><div class="reference-presets-grid"><label>大小写<select name="referenceCaseMode"><option value="preserve" ${presetState.caseMode !== "upper" && presetState.caseMode !== "lower" ? "selected" : ""}>保持原样</option><option value="upper" ${presetState.caseMode === "upper" ? "selected" : ""}>全部大写</option><option value="lower" ${presetState.caseMode === "lower" ? "selected" : ""}>全部小写</option></select></label><label>格式<select name="referenceFormatPreset"><option value="" ${!presetState.format ? "selected" : ""}>不限制</option><option value="email" ${presetState.format === "email" ? "selected" : ""}>邮箱</option><option value="url" ${presetState.format === "url" ? "selected" : ""}>网址</option><option value="phone" ${presetState.format === "phone" ? "selected" : ""}>手机号</option></select></label><label>正负<select name="referenceSign"><option value="" ${!presetState.sign ? "selected" : ""}>不限制</option><option value="positive" ${presetState.sign === "positive" ? "selected" : ""}>必须为正数</option><option value="negative" ${presetState.sign === "negative" ? "selected" : ""}>必须为负数</option><option value="nonNegative" ${presetState.sign === "nonNegative" ? "selected" : ""}>不能为负数</option><option value="nonPositive" ${presetState.sign === "nonPositive" ? "selected" : ""}>不能为正数</option></select></label><label>条件必填<select name="referenceRequiredWhen">${requiredWhenOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === requiredWhenValue ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select></label><div class="reference-date-auto"><label class="reference-date-auto-label" for="referenceDateAutoSelect">日期自动计算</label><div class="reference-date-auto-row"><select name="referenceDateAuto" id="referenceDateAutoSelect">${dateAutoOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === dateAutoValue ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select><span class="reference-date-auto-n" hidden><input type="number" name="referenceDateAutoDays" min="1" max="3650" value="${Number(presetState.dateAutoN || presetState.n || 1)}" aria-label="天数 N"><span>天</span></span>${isCustom ? '<span class="reference-custom-badge">含自定义规则（见高级区）</span>' : ""}</div></div></div><fieldset class="reference-activities-editor"><legend>活动关联</legend>${activityMarkup}</fieldset><details class="reference-advanced"${isCustom ? " open" : ""}><summary>高级（自定义正则与表达式）</summary><div class="reference-advanced-body"><label>自定义正则<input name="referenceFormatPattern" value="${escapeHTML(validation.format?.pattern || "")}" maxlength="500" placeholder="^ORD-\\d+$"></label><label>条件表达式（高级）<textarea name="referenceCondition" rows="2" placeholder="如：NOT(ISEMPTY(客户类型))">${escapeHTML(validation.condition || "")}</textarea></label><div class="reference-expression-error" data-expression-error="condition" hidden></div><label>公式表达式（高级）<textarea name="referenceFormula" rows="2" placeholder="如：DATEADD(TODAY(), 7, &quot;day&quot;)">${escapeHTML(validation.formula || "")}</textarea></label><div class="reference-expression-error" data-expression-error="formula" hidden></div><p class="reference-activity-note">上方预设选择会同步写这里的表达式；直接编辑的表达式保存时优先。</p></div></details><div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
+  dialog.innerHTML = `<form class="reference-editor reference-object-editor" data-reference-id="${escapeHTML(reference?.id || "")}" data-reference-kind="variable"><h2 id="referenceDialogTitle">${title}</h2><p class="reference-section-title">基本</p><div class="reference-basic-grid"><label>Object<input name="referenceLabel" value="${escapeHTML(reference?.label || reference?.name || "")}" maxlength="200" required></label><label>Type<select name="referenceType">${typeOptions.map(([value, display]) => `<option value="${escapeHTML(value)}" ${value === variableType ? "selected" : ""}>${escapeHTML(display)}</option>`).join("")}</select></label><label>Locator<input name="referenceLocator" value="${escapeHTML(reference?.locator || "")}" maxlength="500" placeholder="如：订单列表 · 筛选面板『创建日期』输入框"></label><label class="reference-inline-check"><input type="checkbox" name="referenceRequired" ${reference?.required ? "checked" : ""}><span>Mandatory</span></label><label class="reference-basic-full">Value<span class="reference-value-slot" data-value-slot>${valueControlMarkup(variableType)}</span></label></div><p class="reference-section-title">规则</p><label class="reference-rules-field">Rules<textarea name="referenceRules" rows="4" placeholder="用自然语言描述填写/校验要求，如：必须是邮箱格式；提交日期自动填今天">${escapeHTML(reference?.rules || "")}</textarea></label><fieldset class="reference-activities-editor"><legend>活动关联</legend>${activityMarkup}</fieldset><div class="reference-dialog-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn secondary" data-reference-dialog-close>Cancel</button></div></form>`;
   dialog.showModal();
-  markupBuilding = false;
   dialog.querySelector("[name=referenceLabel]").focus();
 
-  // ---- 值栏控件（修订轮 3）：文件类 = 上传控件（选择/覆盖/删除），随类型切换重渲染 ----
+  // ---- 值栏控件：文件类 = 上传控件（选择/覆盖/删除），随类型切换重渲染（文本值保留） ----
+  const form0 = () => dialog.querySelector("form");
   const renderValueControl = (type) => {
     const slot = form0().querySelector("[data-value-slot]");
     if (!slot) return;
@@ -9433,7 +9332,6 @@ function showReferenceEditor(dialog, reference, item) {
       form0().elements.referenceValue.value = previousValue;
     bindUploadEvents();
   };
-  const form0 = () => dialog.querySelector("form");
   const bindUploadEvents = () => {
     const form = form0();
     const trigger = form.querySelector("[data-reference-upload-trigger]");
@@ -9441,7 +9339,6 @@ function showReferenceEditor(dialog, reference, item) {
     const fileInput = form.elements.referenceAttachmentInput;
     if (!trigger || !fileInput) return;
     trigger.onclick = () => {
-      if (trigger.disabled) return;
       // 原生文件选择器打开期间抑制抽屉 Escape（与旧上传入口同机制）
       fileInput.oncancel = (event) => {
         event.stopPropagation();
@@ -9452,8 +9349,8 @@ function showReferenceEditor(dialog, reference, item) {
     };
     if (removeButton)
       removeButton.onclick = () => {
-        attachmentRemoved = true;
-        pendingUpload = null;
+        attachmentState.removed = true;
+        attachmentState.pending = null;
         renderValueControl(form.elements.referenceType.value);
       };
     fileInput.onchange = async () => {
@@ -9461,155 +9358,17 @@ function showReferenceEditor(dialog, reference, item) {
       const picked = fileInput.files?.[0];
       fileInput.value = "";
       if (!picked) return;
-      pendingUpload = {
+      attachmentState.pending = {
         fileName: picked.name,
         data: new Uint8Array(await picked.arrayBuffer()),
       };
-      attachmentRemoved = false;
+      attachmentState.removed = false;
       renderValueControl(form.elements.referenceType.value);
     };
   };
   bindUploadEvents();
   form0().elements.referenceType?.addEventListener("change", () => {
     renderValueControl(form0().elements.referenceType.value);
-  });
-
-  // 即时校验（高级区表达式 + label）：经 preload 校验 IPC 报错并阻止保存
-  const form = dialog.querySelector("form");
-  const saveButton = form.querySelector("button[type=submit]");
-  const collectDraftValidation = () => {
-    const caseMode = form.elements.referenceCaseMode?.value;
-    const preset = form.elements.referenceFormatPreset?.value;
-    const pattern = (form.elements.referenceFormatPattern?.value || "").trim();
-    const sign = form.elements.referenceSign?.value;
-    const condition = (form.elements.referenceCondition?.value || "").trim();
-    const formula = (form.elements.referenceFormula?.value || "").trim();
-    const collected = {};
-    if (caseMode && caseMode !== "preserve") collected.caseMode = caseMode;
-    if (preset || pattern)
-      collected.format = { ...(preset ? { preset } : {}), ...(pattern ? { pattern } : {}) };
-    if (sign) collected.sign = sign;
-    if (condition) collected.condition = condition;
-    if (formula) collected.formula = formula;
-    return Object.keys(collected).length ? collected : undefined;
-  };
-  const runImmediateCheck = async () => {
-    if (!window.flowlink?.reference?.validateObject) return;
-    const errorBoxes = {
-      condition: form.querySelector('[data-expression-error="condition"]'),
-      formula: form.querySelector('[data-expression-error="formula"]'),
-    };
-    const objects = referenceVariableDefinitions(
-      item.references
-        .filter((entry) => entry.kind === "variable")
-        .map((entry) =>
-          entry.id === reference?.id
-            ? { ...entry, validation: collectDraftValidation() }
-            : entry,
-        ),
-    );
-    let blocked = false;
-    try {
-      const check = await window.flowlink.reference.validateObject({
-        objects,
-        name: reference?.name || "__draft__",
-      });
-      const issues = (check && check.ok ? [] : check.issues || []).filter(
-        (issue) =>
-          issue.rule === "formula-expression" ||
-          issue.rule === "condition-expression" ||
-          issue.rule === "label",
-      );
-      for (const field of ["condition", "formula"]) {
-        const box = errorBoxes[field];
-        if (!box) continue;
-        const hit = issues.find((issue) => issue.rule === `${field}-expression`);
-        box.hidden = !hit;
-        box.textContent = hit ? hit.reason : "";
-        if (hit) blocked = true;
-      }
-      if (issues.some((issue) => issue.rule === "label")) blocked = true;
-    } catch {
-      /* 校验 IPC 异常不阻塞输入；保存关口会再拦一次 */
-    }
-    saveButton.disabled = blocked;
-  };
-
-  // 预设 → 高级区表达式同步（高级区文本是保存时的唯一事实源）
-  const syncFormulaFromPreset = () => {
-    const mode = form.elements.referenceDateAuto.value;
-    const days = Math.min(3650, Math.max(1, Number(form.elements.referenceDateAutoDays?.value || 1)));
-    let formula = "";
-    if (mode === "today") formula = "TODAY()";
-    else if (mode === "todayPlus") formula = `DATEADD(TODAY(), ${days}, "day")`;
-    else if (mode === "todayMinus") formula = `DATEADD(TODAY(), -${days}, "day")`;
-    if (mode !== "custom") {
-      form.elements.referenceFormula.value = formula;
-      renderValueControl(form.elements.referenceType.value);
-      void runImmediateCheck();
-    }
-  };
-  const syncConditionFromPreset = () => {
-    const value = form.elements.referenceRequiredWhen.value;
-    if (value !== "custom") {
-      form.elements.referenceCondition.value = value ? `NOT(ISEMPTY(${value}))` : "";
-      void runImmediateCheck();
-    }
-  };
-  const syncDateAutoDaysVisibility = () => {
-    const mode = form.elements.referenceDateAuto.value;
-    const wrapper = form.querySelector(".reference-date-auto-n");
-    if (wrapper) wrapper.hidden = mode !== "todayPlus" && mode !== "todayMinus";
-  };
-  form.elements.referenceDateAuto?.addEventListener("change", () => {
-    syncDateAutoDaysVisibility();
-    syncFormulaFromPreset();
-  });
-  form.elements.referenceDateAutoDays?.addEventListener("change", syncFormulaFromPreset);
-  syncDateAutoDaysVisibility();
-  form.elements.referenceRequiredWhen?.addEventListener("change", syncConditionFromPreset);
-
-  // 高级区表达式 → 预设下拉回同步（编辑为非预设形式时显示「自定义」项）
-  const resyncPresetSelects = () => {
-    const matched = matchDateAuto(form.elements.referenceFormula.value);
-    const select = form.elements.referenceDateAuto;
-    if (matched.mode === "custom") {
-      if (![...select.options].some((option) => option.value === "custom")) {
-        const option = document.createElement("option");
-        option.value = "custom";
-        option.textContent = "自定义公式（在高级区编辑）";
-        select.append(option);
-      }
-      select.value = "custom";
-    } else {
-      select.value = matched.mode;
-      if (matched.n) form.elements.referenceDateAutoDays.value = String(matched.n);
-    }
-    const conditionMatch = matchRequiredWhen(form.elements.referenceCondition.value);
-    const conditionSelect = form.elements.referenceRequiredWhen;
-    if (conditionMatch === "custom") {
-      if (![...conditionSelect.options].some((option) => option.value === "custom")) {
-        const option = document.createElement("option");
-        option.value = "custom";
-        option.textContent = "自定义条件（在高级区编辑）";
-        conditionSelect.append(option);
-      }
-      conditionSelect.value = "custom";
-    } else {
-      conditionSelect.value = conditionMatch;
-    }
-    // 下拉值被程序改写不会触发 change，显隐必须在这里同步跟上
-    syncDateAutoDaysVisibility();
-  };
-  for (const field of ["referenceCondition", "referenceFormula", "referenceLabel"]) {
-    form.elements[field]?.addEventListener("input", () => {
-      if (field !== "referenceLabel") resyncPresetSelects();
-      void runImmediateCheck();
-    });
-  }
-  // 公式变化（预设同步或高级区手写）→ 值栏重建为锁定/解锁形态（文本值保留）
-  form.elements.referenceFormula?.addEventListener("input", () => {
-    renderValueControl(form.elements.referenceType.value);
   });
 }
 
@@ -10919,15 +10678,50 @@ async function mergeProcessGroupIntoNext(item, groupId) {
 
 // 以不压缩方式下载 ZIP，保留每个原始文件的字节内容和文件名。
 async function downloadReferenceArchive(item) {
-  const files = ensureReferenceFiles(item)
-    .filter((reference) => reference.selected)
-    .map((reference) => ({
-      name: reference.kind === "variable" ? `${reference.name}.txt` : reference.name,
-      file:
-        reference.kind === "variable"
-          ? new Blob([`Name: ${reference.name}\r\nType: ${reference.variableType || "string"}\r\nValue: ${reference.value || ""}\r\n`], { type: "text/plain;charset=utf-8" })
-          : reference.file,
-    }));
+  // Download 打包仅含附件（simplify-reference-rules）：对象附件 + 持久化文件行；
+  // 占位导出已移除，无附件的变量行不再导出 .txt。
+  const code = currentFlow?.code || activeFlowKey;
+  const canRead = !!(
+    item?.recordingId &&
+    window.flowlink?.reference?.attachmentBytes &&
+    currentFlow
+  );
+  const files = [];
+  const readBytes = async (path) =>
+    new Uint8Array(
+      await window.flowlink.reference.attachmentBytes({
+        taskCode: code,
+        recordingId: item.recordingId,
+        path,
+      }),
+    );
+  for (const reference of ensureReferenceFiles(item).filter((entry) => entry.selected)) {
+    if (reference.kind === "variable") {
+      if (!canRead || !reference.attachment?.path) continue;
+      try {
+        files.push({
+          name: reference.attachment.name,
+          file: new Blob([await readBytes(reference.attachment.path)]),
+        });
+      } catch (error) {
+        console.error("[reference] Unable to read attachment:", error);
+      }
+      continue;
+    }
+    if (reference.persistedId && canRead) {
+      const entry = (item.referenceFlow?.referenceFiles || []).find(
+        (candidate) => candidate.id === reference.persistedId,
+      );
+      if (!entry?.path) continue;
+      try {
+        files.push({ name: reference.name, file: new Blob([await readBytes(entry.path)]) });
+      } catch (error) {
+        console.error("[reference] Unable to read persisted file:", error);
+      }
+      continue;
+    }
+    if (reference.file) files.push({ name: reference.name, file: reference.file });
+  }
   if (!files.length) return;
   const parts = [],
     central = [];
