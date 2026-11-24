@@ -2,7 +2,7 @@
 
 ## Purpose
 
-把用户在嵌入式浏览器中的交互录制为经过校验的 Flow 与证据：事件合并、元素事实、导航/标签页/认证分类、系统识别、rrweb 影像与 FlowForge sidecar。会话的容错与可观测性也属于本能力。
+把用户在嵌入式浏览器中的交互录制为经过校验的 Flow 与证据：事件合并、元素事实、导航/标签页/认证分类、系统识别、参数业务命名、rrweb 影像、步骤整页截图与 FlowForge sidecar。会话的容错与可观测性也属于本能力。
 
 ## Requirements
 
@@ -86,7 +86,7 @@ Stopping the recorder SHALL flush pending coalesced actions and either persist a
 
 Recording sessions SHALL stream a replayable rrweb capture per tab to disk as events happen, instead of taking periodic screenshots.
 
-旧 800ms `capturePage` 截图管线与渲染层 webm 合成已删除；列表缩略图来自启动后单张 poster 截图；元素 crop 经单帧 CDP screencast + 边车 JSON 采集（证据查看器在客户端裁剪），不再逐步整页截图。快照做瘦身（注释、空白、不可见 head 元数据剔除，可见 DOM 不变）以降低重页面 CPU 峰值。回放呈现见 renderer-ui 的 Record 页签。
+旧 800ms `capturePage` 周期截图管线与渲染层 webm 合成已删除；列表缩略图来自启动后单张 poster 截图；元素 crop 与步骤整页截图均经单帧 CDP screencast 非破坏性采集（见下两条 requirement），不再有周期性整页截图。快照做瘦身（注释、空白、不可见 head 元数据剔除，可见 DOM 不变）以降低重页面 CPU 峰值。回放呈现见 renderer-ui 的 Record 页签。
 
 #### Scenario: 录制不闪屏
 - **WHEN** 录制进行中
@@ -101,3 +101,31 @@ Recording sessions SHALL tolerate page faults and end with exactly one instrumen
 #### Scenario: 页面崩溃
 - **WHEN** 录制中某标签页崩溃
 - **THEN** 该页动作被跳过并告警，会话继续，停止时 Flow 正常落盘
+
+### Requirement: Recording sessions SHALL capture full-page step screenshots non-disruptively
+
+录制会话 SHALL 为每个动作步骤采集一张整页截图，采集机制 SHALL 不干扰页面呈现与用户输入（CDP screencast 单帧，与元素裁剪同机制）；截图写入录制产物的 `record/screenshots/` 目录并按步骤序号命名，停止时随录制元数据（`stepScreenshots`）暴露。环境开关 SHALL 能整体跳过步骤截图采集（诊断用途，跳过时截图缺省且录制流程不受影响）。
+
+#### Scenario: 步骤截图产出
+- **WHEN** 一次录制包含 5 个动作步骤并正常停止
+- **THEN** 产物目录含 5 张按步骤序号命名的整页截图，且录制元数据 stepScreenshots 指向它们
+
+#### Scenario: 采集不干扰操作
+- **WHEN** 录制期间用户连续点击与输入
+- **THEN** 页面无截图引起的闪烁，用户操作全部生效
+
+#### Scenario: 诊断开关跳过采集
+- **WHEN** 以步骤截图禁用开关启动录制
+- **THEN** 录制正常完成，产物无步骤截图且 UI 呈现相应空态
+
+### Requirement: Recorded parameters SHALL be extracted as Reference objects with business labels
+
+录制端抽取的参数对象（导航地址 `url_N`、文本输入 `input_N`、下拉取值 `select_N`、上传占位 `file_N`、密码 `password`）SHALL 在保持机器键与模板语义不变的同时，逐个携带业务 label：优先取元素关联 label 文本，其次 placeholder、aria-label、name 属性；无文本证据时按输入类型给语义化名称（日期、数字、文本输入等）；同屏成对的日期输入（如开始/结束区间）在共同基础名后缀「-开始」「-结束」；同名冲突追加序号。任何兜底命名都使用业务化措辞，不得把机器键风格名（`input_1` 等）暴露为显示名。
+
+#### Scenario: 成对日期命名
+- **WHEN** 录制中用户在同一页面先后填写「创建日期」区间的开始与结束两个日期框
+- **THEN** 两个对象的 label 分别为「创建日期-开始」与「创建日期-结束」
+
+#### Scenario: 语义化兜底
+- **WHEN** 某文本输入框没有任何 label/placeholder/aria 证据
+- **THEN** 该对象获得按输入类型合成的中文业务名（含去重序号），而非机器键风格名

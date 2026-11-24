@@ -2,7 +2,7 @@
 
 ## Purpose
 
-执行器契约：串行执行已校验 Flow、条件分支与循环上限、可选步骤自适应、等待/断言预算、settle 约定、Pending/Skipped 状态语义、自愈写回、前缀回放与批量回放（引擎能力）。
+执行器契约：串行执行已校验 Flow、条件分支与循环上限、可选步骤自适应、manual 步骤人工确认、等待/断言预算、settle 约定、Pending/Skipped 状态语义、回放前 Reference 校验闸门、自愈写回、前缀回放与批量回放（引擎能力）。
 
 ## Requirements
 
@@ -18,17 +18,29 @@ The executor SHALL execute a validated Flow serially and write per-step evidence
 
 ### Requirement: Condition steps SHALL route to existing groups under a three-visit loop limit
 
-Condition steps SHALL route execution to existing groups, bounded by a three-visit loop limit per top-level group.
+Condition steps SHALL route execution to any existing step or fall through sequentially, bounded by a three-visit loop limit per top-level group.
 
-条件步骤把断言求值为布尔（`EXPECT_MISMATCH` 视为 false，其余错误照常抛出）并跳转扁平游标到目标分组开头；无目的地则结束该分支；每个分组每次运行最多进入 3 次，第 4 次以 `FLOW_LOOP_LIMIT` 失败终止（即使 stopOnFailure 关闭）。被跳过的步骤以 `skip` 结果上报；条件步骤保持瞬时求值。
+条件步骤可在组内任意位置出现（不限于组末）。求值为有界重试：在默认 4 秒窗口内每 300ms 重评一次（步骤 `timeout` 可覆盖并钳制到 [1000, 30000]），任一次匹配即判定为真；断言错误中 `EXPECT_MISMATCH` 视为 false，其余错误照常抛出。分支目标存在时把扁平游标跳到**目标步骤**（同 Flow 内任意已存在步骤，不再限于组开头）；分支缺省（未指定目标）时**顺序继续**（不跳转、执行组内下一步，两分支都缺省时仅记录判定结果后继续）；被跳过的步骤以 `skip` 结果上报；防环护栏沿用：每个顶层分组每次运行最多进入 3 次，第 4 次以 `FLOW_LOOP_LIMIT` 失败终止（即使 stopOnFailure 关闭）。
 
 #### Scenario: 循环上限
 - **WHEN** 分支组合使同一分组第 4 次进入
 - **THEN** 运行以 FLOW_LOOP_LIMIT 失败终止
 
 #### Scenario: 分支跳过上报
-- **WHEN** 条件跳转到后置分组
+- **WHEN** 条件跳转到后置目标步骤
 - **THEN** 被跳过区间的步骤在报告中为 skip 状态
+
+#### Scenario: 缺省分支顺序继续
+- **WHEN** 组内条件判定为 false 且 false 分支未指定目标
+- **THEN** 执行继续该条件的下一步骤（如组内容忍式登录步骤），运行不终止
+
+#### Scenario: 慢页面判定容忍
+- **WHEN** 网关条件在导航后立刻求值而目标元素尚未渲染
+- **THEN** 求值在窗口内重试，元素出现后判定为真，不因瞬时缺失误判为 false
+
+#### Scenario: 任意步骤目标
+- **WHEN** 条件步骤的目标指向另一组内的某个具体步骤（非该组开头）
+- **THEN** 游标跳到该步骤继续执行，目标之前的该组步骤上报 skip
 
 ### Requirement: isOptional steps SHALL adapt to replay-time state and report skip instead of failing
 
@@ -113,3 +125,31 @@ Batch replay SHALL run one Flow across isolated per-row contexts under one brows
 #### Scenario: 单行变量缺失
 - **WHEN** 某行缺少必需变量
 - **THEN** 仅该行失败，其余行继续执行
+
+### Requirement: Manual-execution steps SHALL pause replay for user confirmation
+
+`execution: "manual"` 的步骤 SHALL 不由引擎代执行：回放到该步骤时暂停，经宿主确认回调（复用 userOperation 通道）等待用户完成该步骤后继续，提示语用步骤 label；宿主未提供确认回调的环境以 `NOT_ACTIONABLE` 失败。录制与手动添加的动作步骤默认 `manual`（导航、等待等非动作类型除外），Refine 由 AI 按业务逐步判定，用户可在 Instruction 技术抽屉手动改执行方式；省略字段 = `automated`（历史 Flow 的隐式默认）。
+
+#### Scenario: 人工步骤暂停
+- **WHEN** 回放进行到一个 execution 为 manual 的步骤
+- **THEN** 回放暂停并显示该步骤的提示，用户确认完成后继续下一步
+
+#### Scenario: 录制默认人工
+- **WHEN** 停止一次新录制并查看动作步骤
+- **THEN** 动作步骤的执行方式默认为 manual，用户可改回 automated
+
+### Requirement: Replay SHALL gate on Reference validation and resolve values before startup
+
+回放启动前 SHALL 对全部 Reference 对象统一执行一次校验与求值，并一次性报告全部违规（对象 label + 规则 + 原因），存在任何违规则不启动回放。校验范围：必填缺失（含条件必填表达式为真时的缺失）、格式预设与自定义正则、正负规则、公式与条件表达式的求值错误。求值与注入语义：公式对象的值由表达式求值产生；大小写规则在注入前应用；非必填且无值、无默认、无公式的对象以空串注入（替代旧的缺失即失败语义）；密钥对象沿用只进当次回放、不落盘的既有行为。
+
+#### Scenario: 必填缺失阻止启动
+- **WHEN** 用户在两个必填对象留空时点击回放
+- **THEN** 启动被阻止，一次性列出两个对象的必填违规，回放不开始
+
+#### Scenario: 非必填空串继续
+- **WHEN** 某非必填对象无值无默认无公式
+- **THEN** 回放正常启动，该对象以空串注入模板，不再因缺失失败
+
+#### Scenario: 公式回放期求值
+- **WHEN** 某日期对象公式为 `DATEADD(TODAY(), 7, "day")`
+- **THEN** 每次回放启动时重新求值，注入的值为当天加 7 天
