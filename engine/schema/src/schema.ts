@@ -43,7 +43,7 @@ export const FingerprintSchema = z.object({
 	role: z.string().optional(),
 	accessibleName: z.string().optional(),
 	/** 属性白名单（id、name、type、placeholder、aria- 与 data- 前缀属性等），已剔除动态 class */
-	attrs: z.record(z.string()).default({}),
+	attrs: z.record(z.string(), z.string()).default({}),
 		/** 由 sha1(tag + role + name + 稳定属性) 得到的摘要。 */
 	stableHash: z.string(),
 	/** 从 frame 文档到元素的子节点索引链，仅作最后手段。 */
@@ -56,7 +56,7 @@ export type Fingerprint = z.infer<typeof FingerprintSchema>
 /** 录制时的原始事实（不可变） */
 export const ObservedFactsSchema = z.object({
 	tag: z.string(),
-	attributes: z.record(z.string()).default({}),
+	attributes: z.record(z.string(), z.string()).default({}),
 	text: z.string().optional(),
 	rect: RectSchema,
 	scroll: z.object({ x: z.number(), y: z.number() }).default({ x: 0, y: 0 }),
@@ -409,7 +409,7 @@ export type Step =
  * 步骤递归通过 lazy schema 表达嵌套 group；判别字段 `kind` 决定具体动作结构。
  * group 的递归成员同样经过 StepSchema 解析，从而让嵌套内容使用一致的数据约定。
  */
-export const StepSchema: z.ZodType<Step, z.ZodTypeDef, unknown> = z.lazy(() =>
+export const StepSchema: z.ZodType<Step, unknown> = z.lazy(() =>
 	z.union([
 		navigateStep,
 		clickStep,

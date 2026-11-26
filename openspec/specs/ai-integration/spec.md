@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Pi 编码代理集成契约：worker 会话与受限环境（内置 Skills、AGENTS.md 领域知识注入）、prompts.json 模板、细化生成管线（投影/提示/重水化/校验）、生成意图判定与传输失败重试、失败后的 AI 接管（全量/单步续跑/自由降级）、接管证据与自动修复回跑、代理与自定义端点。
+Pi 编码代理集成契约：worker 会话与受限环境（内置 Skills、AGENTS.md 领域知识注入）、prompts.json 模板、细化生成管线（投影/提示/重水化/校验）、生成意图判定与传输失败重试、失败后的 AI 单步接管续跑（同一步两败即停）、接管证据与自动修复回跑、代理与自定义端点。
 
 ## Requirements
 
@@ -211,35 +211,35 @@ AI takeover SHALL attach a browser-use agent to the embedded Chromium only on ex
 - **WHEN** 代理试图导航到 Flow 录制域之外的地址
 - **THEN** 导航被护栏拒绝
 
-### Requirement: Takeover SHALL select steps branch-aware and handle unsupported step kinds explicitly
+### Requirement: Takeover SHALL scope itself to the failed step and handle unsupported step kinds explicitly
 
-Takeover SHALL select its step subsequence branch-aware before the agent starts and SHALL handle each step kind explicitly.
+Takeover SHALL scope itself to the step the program replay failed on and SHALL handle each step kind explicitly.
 
-门条件用执行器自身断言逻辑本地评估以挑选步骤子序列（跳过的组在 Test 列表显示 Skipped，决策写进代理任务与接管摘要），`condition` 步骤不交给代理「使其为真」。`openTab`/`switchTab`/`closeTab` 经代理执行（仅 `upload`/`script` 以明确原因终止接管）；`manual` 步骤经回放同款面板等待用户确认；需要 Reference 页从未保存的密钥变量时拒绝启动并明确报错。
+单步接管不挑选步骤子序列，也不在代理启动前评估门条件：交给代理的只有程序回放失败的那一步。分支路由不是接管的职责——续跑段遇到的门条件由执行器按自身语义求值，未走的分支照常显示 Skipped（见 replay-execution）。步骤类型逐类明确处理：`openTab`/`switchTab`/`closeTab` 与其余可自动化步骤经代理执行；`upload`/`script` 与等待用户操作的 `wait` 步骤以明确原因终止接管；`manual` 步骤经回放同款面板等待用户确认，确认后记为通过且不带 AI 徽章；需要 Reference 页从未保存的密钥变量时拒绝启动并明确报错。
 
 #### Scenario: 缺密钥拒绝启动
-- **WHEN** 剩余步骤需要 Reference 页从未保存的密钥变量
+- **WHEN** 待接管的失败步骤需要 Reference 页从未保存的密钥变量
 - **THEN** 接管以明确错误拒绝开始
 
-### Requirement: Takeover SHALL degrade to free-run when a step defeats the agent twice
+### Requirement: Takeover SHALL stop when a step defeats the agent twice
 
-Takeover SHALL degrade to free-run when the same step defeats the agent twice, completing the remaining steps as one goal task with per-step reporting.
+Takeover SHALL stop the AI-assisted run when the same step defeats the agent twice, without falling back to a full takeover or degrading to free-run.
 
-剩余步骤成为单一目标任务由代理自主完成并逐步上报（Test 列表同样带 AI 徽章，摘要注明自由运行完成情况）。进度经 `playback:aiStep`（带 stepId）/`playback:aiDone` 上报。
+单步接管对同一步至多尝试两次（首次加一次重试）；两次均未完成时该次接管以失败结束，AI 辅助循环随即停止（循环由「AI Continue」启动，见下条）并在 AI 面板说明该步与原因——不回退全量接管、不降级自由运行。接管全部剩余步骤的全量模式没有界面入口，自由运行降级随之不是可达行为。停止后该步保持失败、其后未执行的步骤保持 Pending；若 AI 此前成功完成过其它步骤，循环结束后的自动修复照常触发一次。进度经 `playback:aiStep`（带 stepId）/`playback:aiDone` 上报。
 
-#### Scenario: 两败降级
-- **WHEN** 同一步骤连续两次未被代理完成
-- **THEN** 接管降级为自由运行模式继续完成剩余目标
+#### Scenario: 两败即停
+- **WHEN** 同一步骤的两次尝试均未被代理完成
+- **THEN** AI 辅助循环停止并说明原因，不回退全量接管、不进入自由运行，其余未执行步骤保持 Pending
 
 ### Requirement: Single-step AI continue SHALL resume program replay after the failed step
 
 Single-step AI continue SHALL let the AI perform only the failed step and then resume program replay from the next step in the preserved browser state.
 
-已执行前缀保留原结果，执行器把被绕过段上报为 skipped；每次测试运行至多 6 次单步介入；同一步两次击败 AI 时一次性回退到全量接管；「AI: 运行全部剩余步骤」保留旧的全接管路径；末次运行摘要与自动修复在整个循环结束后触发一次（而非按段触发）。
+「AI Continue」启动 AI 辅助循环：先从头运行程序回放，某步失败时只把该步交给单步接管，AI 完成后从下一步续跑，再失败再单步，直到整段通过、异常结束、用户停止或触及界限。已执行前缀保留原结果（含 AI 徽章），执行器把被绕过段上报为 skipped；每次测试运行至多 6 次单步介入，同一步两败即停（见上条），没有全量接管入口；运行摘要（`lastRun`）不被循环中间段的失败覆盖——首次运行照常记录，续跑段仅成功时改写为最终结果；AI 曾成功完成至少一步时，自动修复在整个循环结束后触发一次（而非按段触发）。
 
 #### Scenario: 单步续跑
-- **WHEN** 用户在某失败步骤点击 AI Continue
-- **THEN** 仅该步由 AI 完成，程序回放从下一步继续，前缀结果保留
+- **WHEN** Test 存在失败步骤且用户在 AI 面板点击 AI Continue
+- **THEN** 循环重跑程序回放，失败的那一步由 AI 完成，程序回放从下一步继续，前缀结果保留
 
 ### Requirement: Completed takeover steps SHALL capture structured element evidence for automatic repair
 

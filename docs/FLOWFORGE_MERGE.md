@@ -31,7 +31,7 @@
 | `engine/recorder/src/coalesce.ts` | Keeps supplemental evidence events out of executable action coalescing while retaining them in the raw stream. |
 | `engine/recorder/src/record.ts` | Assigns event IDs, stable tab/system identity, before/after DOM signatures, locator provenance and dynamic-page capture. |
 | `engine/schema/src/schema.ts` | Extends executable step schema with FlowForge provenance metadata. |
-| `engine/recorder/src/flowforge-capture-schema.ts` | Zod 3 schema for the FlowForge-compatible event/archive contract. |
+| `engine/recorder/src/flowforge-capture-schema.ts` | Zod schema for the FlowForge-compatible event/archive contract. |
 | `engine/recorder/src/flowforge-archive.ts` | Converts FlowLink raw capture + Electron tab events into `flowforge.recording.v1`. |
 | `engine/recorder/src/index.ts` | Exports archive writer and capture schema. |
 | `src/main.ts` | Supplies native tab IDs, enables raw evidence retention and writes the sidecar at stop. |

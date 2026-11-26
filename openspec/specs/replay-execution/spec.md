@@ -100,7 +100,7 @@ Step results SHALL preserve the distinction between unreached Pending steps and 
 
 Self-healing SHALL stay separate from observed facts and write back only when explicitly enabled.
 
-自愈只更新 resolution 数据；`writeBack=true` 且提供 flow 路径时才写回，成功写回创建 `.bak` 副本并递增 flow 版本。L4（AI 修复）保持为执行器侧钩子，桌面端不注入——失败步骤结束运行，剩余步骤由用户手动交给 AI 接管（见 ai-integration）。
+自愈只更新 resolution 数据；`writeBack=true` 且提供 flow 路径时才写回，成功写回创建 `.bak` 副本并递增 flow 版本。L4（AI 修复）保持为执行器侧钩子，桌面端不注入——失败步骤结束运行，用户可手动把失败的那一步交给 AI 单步接管，程序回放从下一步续跑（见 ai-integration）。
 
 #### Scenario: 写回开关
 - **WHEN** 未提供 flow 路径或 writeBack 未开启

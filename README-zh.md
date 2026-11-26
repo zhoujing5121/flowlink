@@ -137,4 +137,4 @@ FlowLink 按需加载 Pi SDK，不会在应用启动时初始化。Pi 的服务�
 
 启动时可以为 Pi 配置代理：打包版使用 `FlowLink.exe --pi-system-proxy` 解析 Windows 系统代理/PAC，或使用 `FlowLink.exe --pi-proxy=http://127.0.0.1:7890` 指定代理。开发环境可运行 `npm start -- --pi-system-proxy` 或 `npm start -- --pi-proxy "http://127.0.0.1:7890"`（PowerShell 拼写 `-PiSystemProxy`/`-PiProxy` 同样可用）。显式代理优先于系统代理；支持 `http`、`https` 和 `socks5`。也可继续使用 `HTTPS_PROXY`、`HTTP_PROXY` 和 `NO_PROXY` 环境变量。以上设置只影响 Pi 请求，不会配置内嵌 Chromium 浏览器的网络代理。不要提交带认证信息的代理 URL。
 
-AI 助手面板提供录制后建议、回放失败诊断，并支持用 `@` 提及当前任务的录制来发起请求。选中已分析的录制并点击 Refine，可选择预设优化项并补充说明后生成细化材料；录制停止后也会自动生成一份 `REFINED…` 孪生录制（在 `config/pi-settings.json` 中设置 `autoRefine: false` 可关闭）。所有细化结果都以新录制保存，原始录制保持不变。Test 运行失败后，AI 面板还提供「Run remaining steps with AI」：browser-use agent 附着内嵌浏览器原地完成剩余步骤（步骤带 AI 徽标、密钥全程脱敏、域名受录制证据约束、随时可停），不修改源录制。
+AI 助手面板提供录制后建议、回放失败诊断，并支持用 `@` 提及当前任务的录制来发起请求。选中已分析的录制并点击 Refine，可选择预设优化项并补充说明后生成细化材料；录制停止后也会自动生成一份 `REFINED…` 孪生录制（在 `config/pi-settings.json` 中设置 `autoRefine: false` 可关闭）。所有细化结果都以新录制保存，原始录制保持不变。Test 运行失败后，AI 面板还提供「AI Continue」：辅助循环重跑程序回放，失败时只把失败的那一步交给附着在内嵌浏览器上的 browser-use agent（保留失败现场，步骤带 AI 徽标、密钥全程脱敏、域名受录制证据约束、随时可停），完成后从下一步续跑程序回放；每次测试至多 6 次单步介入，同一步两次未完成即停止，没有全量接管入口。接管本身不修改源录制。

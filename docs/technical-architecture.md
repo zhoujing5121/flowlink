@@ -251,7 +251,7 @@ Chromium via its CDP endpoint and never owns it. Secret replay variables
 flow only through the SDK's redacting `sensitiveData` channel, navigation
 is bounded by a domain allowlist derived from the flow's recorded URLs,
 anonymous SDK telemetry is disabled (`telemetry: false`, `DO_NOT_TRACK=1`),
-and runs are bounded by per-step retries, a 10-minute budget, and the
+and runs are bounded by per-step retries, a 15-minute budget, and the
 shared playback stop control. The SDK's JavaScript worker is explicitly
 not a sandbox: takeover runs only on explicit user action, and its
 artifacts (`ai-takeover.json`) record notes, evidence, and usage — never

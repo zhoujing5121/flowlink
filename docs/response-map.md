@@ -88,7 +88,7 @@
 | `src/engine-bridge.ts` | WebContentsView ↔ Playwright Page 映射（`pageFor`） |
 | `src/pi-agent.ts` / `pi-agent-worker.ts` | Pi SDK（worker 线程）：advice / 生成管线 / 预热 |
 | `src/ai-refine.ts` | 细化生成管线：投影 → Pi → $ref 再水化 → parseFlow 校验 |
-| `src/ai-takeover.ts` | browser-use 接管：失败后续跑剩余步骤 |
+| `src/ai-takeover.ts` | browser-use 单步接管：AI 辅助循环中只执行程序回放失败的那一步 |
 | `src/prompts.ts` | `config/prompts.json` 模板加载校验（`{{key}}` 填充） |
 | `renderer/app.js` | UI 控制器、会话/草稿状态、各结果面板渲染 |
 | `renderer/bridge.js` | Electron 覆盖层 + 全部 IPC 事件订阅 |
@@ -524,9 +524,9 @@ Record（`fillRecordPanel`，app.js:1917）：webm（`file:///` 协议，需 `re
 主进程 `playback:run`：
 
 1. 守卫：`playPromise` 占用 → "已有回放正在进行"；engine 就绪；录制存在；变量名/类型校验（`/^[A-Za-z_][A-Za-z0-9_]*$/`）。
-2. `loadFlow(recording.flowFile)` → **`resetBrowserTabs(flow.meta.env.startUrl)`**（每次完整测试从录制声明的起始 URL 重建）→ `attachPlaybackPages()`（逐标签 `engine.pageFor`）→ 显式恢复浏览器可见（`browserSurfaceVisible=true; ensureBrowserBounds(); syncBrowserVisibility()`，防 reset 隐藏后几何去重不再上报导致整场白屏）。
+2. `loadFlow(recording.flowFile)` → **`resetBrowserTabs(flow.meta.env.startUrl)`**（每次完整测试从录制声明的起始 URL 重建；AI 续跑段 `resumeFromStepIndex>0` 时不重置，保留接管后的浏览器现场）→ `attachPlaybackPages()`（逐标签 `engine.pageFor`）→ 显式恢复浏览器可见（`browserSurfaceVisible=true; ensureBrowserBounds(); syncBrowserVisibility()`，防 reset 隐藏后几何去重不再上报导致整场白屏）。
 3. `playAbortController`；`playPromise = playOnPage({...})`（`engine/executor/src/index.ts:81` → `executeRunOnPage`（`run.ts:1118`）→ `runFlowInBrowserContext`（`run.ts:257`）），参数：`timeoutMs:15000, stepDelayMs:350, highlightSteps:true, stopOnFailure:true, variables, abortSignal, waitForUserOperation`（token 挂 `pendingUserOperationWaits` + 推 `playback:userOperation`），`openPage:createNativePlaybackPage(true)`（**Electron 回放禁用 Playwright `Target.createTarget`，开页=建原生标签页再附着**，`src/main.ts:373`），`onStep` → 推 `playback:step`。
-4. `await playPromise` → 推 `playback:done result` → `TaskStore.patchRecording lastRun` → 返回。异常 → 推 `playback:error` + 返回 `{ok:false,error}`（事件与返回值双通道）。
+4. `await playPromise` → 推 `playback:done result` → `TaskStore.patchRecording lastRun`（AI 续跑段仅在成功时写，中间段失败不覆盖，见 E6）→ 返回。异常 → 推 `playback:error` + 返回 `{ok:false,error}`（事件与返回值双通道）。
 
 ### E3. 执行内核逐步流程（`runFlowInBrowserContext`，`engine/executor/src/run.ts:257`）
 
@@ -593,56 +593,88 @@ playback:done（renderer/bridge.js:1735）
   → 归属校验失败 → clearStaleRunFlag（把发起录制的 testRunning 就地清掉）
   → 以 result.steps 按 stepId 建映射**覆盖**流式暂存（最终结果权威）
   → 本 run 没有结果的步骤保持 Pending；skip 仅来自引擎 skip 事件
-  → !ok → startFlowLinkAIAdvice({mode:'replay-failure', failureContext:{…全部结果}})
+  → AI 辅助循环进行中：段结果只是中间态——仅刷新视图，结果并入与收尾由循环统一做（见 E6）
+  → 失败后不自动发 AI 消息：分析与接管改由快捷区预设项「Analyze last failure」/「AI Continue」按需触发
 
-playback:error（renderer/bridge.js:1860）→ running 步骤标 fail + 自动失败诊断
+playback:error（renderer/bridge.js:2106）→ running 步骤标 fail（异常终止同样不自动发 AI 消息；辅助循环中的异常经返回值交给循环收尾）
 ```
 
 ### E5. 停止回放
 
-Test 运行中 AI 面板的发送键变 Stop（`renderAIPanel`）→ `stopFlowlinkTest`（`renderer/bridge.js:1325`）→ `F.playback.stop` → `playback:stop`（`src/main.ts:1479`）：AI 接管进行中 → `abortAiTakeover`；否则 `playAbortController.abort()` + 等 playPromise 收尾（内核对剩余步骤补报 skip）。渲染层把 running 步骤标 'Stopped by user'。
+Test 运行中 AI 面板的发送键变 Stop（`renderAIPanel`）→ `stopFlowlinkTest`（`renderer/bridge.js:1245`）：AI 辅助循环进行中 → 置 `assistedLoop.stopRequested` 并中止当前段/接管，收尾交给循环（中途不清运行标记）；→ `F.playback.stop` → `playback:stop`（`src/main.ts:2065`）：AI 接管进行中 → `abortAiTakeover`；否则 `playAbortController.abort()` + 等 playPromise 收尾（内核对剩余步骤补报 skip）。渲染层把 running 步骤标 'Stopped by user'（循环内由 `finalize` 统一做）。
 
-### E6. AI 接管（Run remaining steps with AI）
+### E6. AI 单步接管（AI Continue 辅助循环）
 
-**入口**：Test 有失败步骤且无运行中回放时，AI 面板快捷区出现 `#aiContinueTest`（`renderer/app.js:3632`）。
+**入口**：Test 有失败结果、且无运行中的回放/辅助循环/修复时，AI 面板快捷区显示预设项「Analyze last failure」与「AI Continue」（模板 `renderer/index.html` 的 `data-quick-block="failure"`；显隐条件 `canAssist` 在 `renderAIPanel`，`renderer/app.js:7033`）。Test 失败后**不**自动发 AI 消息，也没有独立的全量接管按钮；点击「AI Continue」才触发（`data-ai-failure="continue"` → `window.runAiAssistedTest(recording)`，`renderer/app.js:7077`）。
 
 ```
-window.aiContinueFlowlinkTest(item)（renderer/bridge.js:1340）
-  → fromStepIndex = 第一个 fail 的下标；testRunning=true；referenceVariablesForReplay
-  → F.playback.aiContinue({...fromStepIndex, variables, failureSummary})
-      → playback:aiContinue（src/main.ts:1494）
-          守卫：无回放/无录制会话/无进行中接管/engine 就绪 → loadFlow →
-          fire-and-forget startAiTakeover({...})，进度走事件：
-            deps.cdpUrl = engine.cdpHttpEndpoint()（附着同一个内嵌浏览器）
-            modelConfig = getTakeoverModelConfig()（pi-settings 的 provider/model
-              + pi-auth 的 key；provider=custom 时 baseUrl 取 config/models.json）
-            proxy = getPiProxyOptions()；resolveSystemProxy = session.resolveProxy
-            onStep → 推 playback:aiStep；onDone → 推 playback:aiDone
-              + patchRecording lastRun{aiAssisted:true, summary}
+window.runAiAssistedTest(item)（renderer/bridge.js:1312）——AI 辅助循环
+  → 守卫：item 属于当前会话；无 playbackInFlight / assistedLoop / repairInFlight
+  → 重建 testFlowSteps / testFlowIndexById，testResults 全 pending；assistedLoop 置位
+  → runPhase(0)：F.playback.run（从头跑程序回放）
+  → 循环（每段结果并入 testResults 后取第一个 fail 步 failIndex）：
+      无 fail 步 → 结束（段异常结束且无可接管的失败步骤时提示后结束）
+      同一步第 2 次作为失败步出现（上一次单步接管未成功）→ 两败即停，聊天说明该步与原因
+      单步介入已满 6 次（MAX_SINGLE_INTERVENTIONS）→ 停止并提示
+      否则 takeoverPhase(failIndex, 'single', failureSummary)：
+        F.playback.aiContinue({taskCode, recordingId, fromStepIndex, mode:'single',
+                               variables, failureSummary})
+          → playback:aiContinue（src/main.ts:2080）
+              守卫：入参/mode/变量名校验 → 无回放（playPromise）/无录制会话/无进行中接管/engine 就绪
+              → loadFlow → gateReferenceVariables（与 playback:run 同源闸门，违规拒绝启动）
+              → fire-and-forget startAiTakeover({flow, fromStepIndex, mode, variables, failureSummary, deps})，
+                进度走事件：
+                  deps.cdpUrl = engine.cdpHttpEndpoint()（附着同一个内嵌浏览器）
+                  modelConfig = getTakeoverModelConfig()（pi-settings 的 provider/model
+                    + pi-auth 的 key；provider=custom 时 baseUrl 取 config/models.json）
+                  proxy = getPiProxyOptions()；resolveSystemProxy = session.resolveProxy
+                  captureEvidence = captureTakeoverEvidence；waitForUserOperation = hostWaitForUserOperation
+                  onStep → 推 playback:aiStep；onDone → 推 playback:aiDone（single 模式不写 lastRun）
+              启动失败（如缺未保存的密钥变量）→ 推 playback:aiDone{ok:false, summary:"AI takeover failed to start: …"}
+        渲染层 await 下一次 playback:aiDone（assistedLoop.aiDoneResolve）
+      aiDone.ok → runPhase(failIndex + 1)：F.playback.run({…, resumeFromStepIndex})
+          → playback:run 以 startCursor 续跑：不重置标签页（保留浏览器现场），
+            前 failIndex+1 步逐个报 bypassed skip（其中 condition 不再求值）
+  → 结束：finalize（running 残留步归位、清运行标记与归属域）
+      → AI 完成过 ≥1 步（aiAssistedAny 且 lastTakeover.aiCompleted>0）→ 一次性触发 aiRepairFlowAfterTakeover（见 E7）
 ```
 
-**startAiTakeover**（`src/ai-takeover.ts:358`）要点：
+**startAiTakeover**（`src/ai-takeover.ts:561`，主体 `runTakeover`）要点（以界面可达的 single 模式为准）：
 
-- 展平剩余步骤；secret 变量进 `sensitiveData`（SDK 脱敏 + 域名限定 `allowedDomains`=Flow 证据里的全部主机名）；总预算 10 分钟、每步最多 14 个 agent 步、150s 超时、失败重试 1 次。
+- `mode='single'`：不做门条件路由，交给 agent 的只有 `flattened[fromStepIndex]` 这一步（`mode='remaining'` 的全量接管、分支感知路由与 free-run 降级代码仍在，但已无界面调用方）。secret 变量进 `sensitiveData`（SDK 脱敏 + 域名限定 `allowedDomains`=Flow 证据里的全部主机名）；该步引用了 Reference 页从未保存的密钥变量 → 启动前报错。总预算 15 分钟、每步最多 14 个 agent 步、150s 超时、失败重试 1 次。
 - `preferSystemNodeWorker`（Electron 里优先用系统 Node ≥22.19 跑 SDK 的 REPL worker）→ `applyProxyDispatcher`（undici 全局代理）→ `BrowserUse.create`（模型集合用嵌套 `@browser_use/pi/node_modules/@earendil-works/pi-ai` 的 openai-completions API 构建）。
 - 每步任务 = `templates.stepTask`（config/prompts.json）填充的投影文本（`projectStepText`，secret 显示占位指令）；**完成判定双门槛**：agent 调 `mark_step_done` 工具（stepIndex 必须匹配）且 typed 结果 `done===true`。
-- 遇到 `upload/switchTab/openTab/closeTab/script` 或 `wait userOperation` → 中止接管（剩余保持 pending）；单步两次失败 → 中止。
-- 产物：`artifacts/<flowId>/runs/<runId>/ai-takeover.json`。**绝不写回源 Flow。**
+- 步骤类型：`wait userOperation`、`upload`/`script` → 以明确原因终止接管；`execution:'manual'` → 经 `playback:userOperation` 面板等用户确认（上报 `manual:true`，不带 AI 徽章）；其余（含 `openTab`/`switchTab`/`closeTab`）交给 agent。
+- 两次尝试都未完成 → 不降级（`enterFreeRun = mode === 'remaining'`），以 `aiDone{ok:false, mode:'single'}` 交回循环，循环据此两败即停。
+- 产物：`artifacts/<flowId>/runs/<runId>/ai-takeover.json`（每步成功后附元素证据 `evidencePages`）。**绝不写回源 Flow。**
 
-**渲染层**（`renderer/bridge.js:1775/1817`）：`aiStep` 只写 pending/running 槽位（防迟到事件覆盖已定状态），带 `ai:true` 徽标；`aiDone` → running 重置回 pending、记录 `item.lastTakeover`、聊天写总结；**aiCompleted>0 时自动触发** `window.aiRepairFlowAfterTakeover(item)`。
+**渲染层**（`playback:aiStep` `renderer/bridge.js:1979` / `playback:aiDone` `renderer/bridge.js:2041`）：`aiStep` 的 ok 事件把 pending/running/fail 槽位写成 pass+`ai:true`（manual 为 pass+`manual:true`），!ok 只写 pending/running 槽（已定状态不被迟到事件覆盖）；`aiDone` → resolve 循环的等待器 → running 重置回 pending、记录 `item.lastTakeover`、聊天写结果。**循环内的 single 中间态不触发修复**：`aiCompleted>0` 的自动修复由循环结束后统一触发一次（只有循环外路径才在 `aiDone` 里直接触发）。
 
-### E7. 接管后的自动流程修复
+### E7. 接管后的自动流程修复（AI 辅助循环结束后触发一次）
 
 ```
-aiRepairFlowAfterTakeover（renderer/bridge.js:1375）
-  → 汇总 failedSteps（stepId/label/error）与 aiSteps（AI 实际完成的证据）
-  → F.pi.repairFlow({taskCode, recordingId, takeover:{ok,summary,aiCompleted,failedSteps,aiSteps}})
-      → pi:repairFlow（src/main.ts:1064）
+aiRepairFlowAfterTakeover（renderer/bridge.js:1508；守卫：lastTakeover.aiCompleted>0、
+                          无回放/接管在跑、无 repairInFlight）
+  → 汇总 failedSteps（stepId/label/error）与 aiSteps（带 AI 徽章且通过的步骤标签）
+  → F.pi.repairFlow({taskCode, recordingId,
+        takeover:{ok, summary, aiCompleted, failedSteps, aiSteps, artifactDir}})
+      → pi:repairFlow（src/main.ts:1555）
+          → buildRepairEvidence（src/main.ts:1175）：artifactDir 必须在 artifacts 根内 →
+            读 ai-takeover.json 的元素证据，与源流程步骤的 target/from/to/expect.target 匹配
+            → 命中：证据行（"=> library eN"）+ 重锚候选（testid / role+name / text）
           → 组装修复指令（最小改动原则：调校验目标、加 settle/timeout、
              不发明选择器/URL、保留元素引用与 isOptional/登录组结构）
-          → generateRefinedFlow（同 F4 管线）
-  → 成功 → F.recording.persistMerged 另存 REPAIRED-MMDD-HHmm（原始不动）
-      → loadTaskDetails(force) 刷新 → 聊天写结果与风险
+          → generateRefinedFlow（同 F4 管线）；applyReanchor（src/ai-refine.ts:508）把
+            source:'ai' 候选前插到录制候选链之前，observed 不动
+  → 成功后按目标分流：
+      已有 REFINED 记录（item.summary 非空）→ F.flow.directUpdate（flow:directUpdate）
+          直接 version+1 落盘 + 生效前历史快照 → 重载该录制 Flow（hydrateProcessFlow /
+          rebuildItemTestFlow）→ 聊天写版本号、摘要与风险；不产生 REPAIRED- 新录制
+      原始 Record → F.recording.persistMerged 另存 REPAIRED-MMDD-HHmm（原始不动）
+          → loadTaskDetails(force) 刷新 → 聊天写结果与风险
+          → 自动回跑：newItem.autoVerifyRound = 发起修复的录制的轮次+1；≤2 轮时
+             window.runFlowlinkTest(newItem)（Test 进度头「· 自动回跑 N/2」徽章，
+             renderer/app.js:6972），超轮次只提示、不再自动运行
 ```
 
 ---
@@ -804,7 +836,7 @@ Stop/窗口关闭 → signal abort → 等待以"用户操作等待已取消"失
 | 症状 | 先查 | 说明 |
 |---|---|---|
 | 进入 Test 不自动跑 | ① `resetTestBrowser` 是否完成（testResetPromise）② `autoRunTest` 的会话守卫（切过 taskflow 会放弃）③ item.testRunning / playbackInFlight | |
-| 步骤报 ELEMENT_NOT_FOUND | 该步骤 `log.txt` 里的 `  resolve: L1/L2 失败（AMBIGUOUS/HIDDEN/NO_MATCH）：…` 逐级明细（resolver 经 log 回调写入步骤日志）；snapshot.json 存归类后的 code 与摘要。再看 `.raw.json` 证据与页面改版 | 桌面版 L4 恒关闭；修复路径：AI 接管 → 自动 REPAIRED，或人工编辑候选 |
+| 步骤报 ELEMENT_NOT_FOUND | 该步骤 `log.txt` 里的 `  resolve: L1/L2 失败（AMBIGUOUS/HIDDEN/NO_MATCH）：…` 逐级明细（resolver 经 log 回调写入步骤日志）；snapshot.json 存归类后的 code 与摘要。再看 `.raw.json` 证据与页面改版 | 桌面版 L4 恒关闭；修复路径：AI Continue → 辅助循环结束后的自动修复（原始 Record 另存 REPAIRED-，已有 REFINED 直接 version+1），或人工编辑候选 |
 | 步骤报 NO_EFFECT | assertEffect 日志（effect: …） | 七类副作用信号全静默才判；focus ring 变化已排除 |
 | 登录段在已登录时失败 | isOptional 机制（录制时认证跳转自动带 isOptional；AI 细化的"门条件+容忍登录组"结构） | 可选元素 2s 不出现=skip；可选导航 800ms 后按 sameSitePath 判 |
 | 回放中浏览器空白 | `playback:run` 的显式恢复（browserSurfaceVisible/ensureBrowserBounds）没执行或 bounds 丢失 | reset 会隐藏视图且几何去重可能不重报——主进程特意显式恢复 |
@@ -822,9 +854,9 @@ Stop/窗口关闭 → signal abort → 等待以"用户操作等待已取消"失
 | 生成细化失败 "not valid JSON" | 模型输出未含 JSON 对象（extractJsonObject 三级兜底后仍失败） | 重试或换模型；源流程保证未动 |
 | 生成失败 "element library/steps too large" | 超预算（10k/60k 字符） | 拆分流程再细化 |
 | 生成失败 "引用了不存在的变量" | 模型发明了变量名 | 参数保护守卫，属预期行为 |
-| AI 接管按钮不出现 | 需 Test 有 fail 且无运行中回放/接管 | `#aiContinueTest` 的 canContinue 条件 |
+| AI 面板不出现「AI Continue」 | 需 Test 有 fail 结果，且 `testRunning` / `assistedLoopActive` / `playbackInFlight` 均未置位（回放、辅助循环、修复进行中都会隐藏） | `renderAIPanel` 中 `data-quick-block="failure"` 的 `canAssist` 条件；点击入口 `data-ai-failure="continue"` |
 | 接管启动报 baseUrl | provider=custom 必须在 `config/models.json` 配 baseUrl | `getTakeoverModelConfig` |
-| 接管中途停止 | ① 遇不支持步骤（upload/switchTab/openTab/closeTab/script）或 userOperation ② 单步两次失败 ③ 10 分钟总预算 ④ Stop | 摘要在 aiDone 事件与 ai-takeover.json |
+| AI 辅助执行中途停止 | ① 同一步两次尝试都未完成（两败即停，不回退全量接管、不降级 free-run）② 失败步是 `upload`/`script` 或等待用户操作的 `wait`（接管以明确原因终止）③ 单步介入满 6 次 ④ 15 分钟总预算 ⑤ Stop | 原因在 AI 面板聊天（`aiDone` 摘要与循环提示）与 `ai-takeover.json` |
 
 ---
 

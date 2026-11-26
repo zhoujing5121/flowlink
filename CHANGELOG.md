@@ -198,3 +198,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) prin
 
 - **Recording:** Password inputs are always masked in the rrweb capture (`maskInputOptions`), matching the product's secret-handling policy.
 - Storage-state handling preserves raw or wrapped profile shapes and treats credentials as sensitive data.
+- **Dependencies:** The vulnerable `undici` 8.9.0 (high) and `minimatch` 10.2.5 (moderate) copies pinned inside `@browser_use/pi` — the source of every remaining `npm audit` finding — are overridden to the versions the rest of the app already uses (8.12.3 and 11.0.3), so packaged builds stop shipping them; AI takeover behavior is unchanged.
