@@ -43,8 +43,10 @@
   - 执行记录（2026-11-27）：四批全部完成（schema+reference 13、resolver 14、recorder+capture.js 84、executor 54），engine 违例归零（总量 840→675，余量属 electron/renderer，分别在 3.9/4.13 处理）。每批经 assert-comment-only 校验通过；`lint-budget.json` 840→827→813→729→675 逐批下调；每批跑 `npm test` 全绿。
   - 工具增强：`assert-comment-only.mjs` 支持 `index` 基线（对照暂存区），供结构改动已暂存、未提交时的批次校验（已在文件头注明）。
   - 提交方式说明：由于 2.1/2.2 的结构改动与注释批次发生在同批文件且尚未提交，用户提交时可按"结构改动（新文件与函数搬移）"与"注释回填"分开（git 按文件拆分即可近似满足：结构 = 六个新 schema 文件 + 四个抽取文件 + schema.ts/record.ts/run.ts 的结构部分；注释 = 其余改动）。若嫌拆分过细，合并为一个"engine 结构与注释"提交并在说明中注明亦可接受，但注释与后续 2.4 的命名整改必须分开提交。
-- [ ] 2.4 engine 命名整改：函数级与模块级名字按 design D11 整改，不动各包 `index.ts` 的导出名。验证：导出清单快照通过；`npm run lint` 无报错；`npm test` 全绿；"旧名 → 新名"清单写进提交说明。
+- [x] 2.4 engine 命名整改：函数级与模块级名字按 design D11 整改，不动各包 `index.ts` 的导出名。验证：导出清单快照通过；`npm run lint` 无报错；`npm test` 全绿；"旧名 → 新名"清单写进提交说明。
+  - 执行记录（2026-11-27）：全量审计 engine 五包的模块级/函数级名字后，仅一处违例——record.ts 的 `newURLSafeHost`（"URLSafe"暗示 URL 编码，实际是取 URL 小写 host）与冗余别名 `const URLSafeHost = newURLSafeHost`。改名：`newURLSafeHost` → `hostOfUrl`，别名删除，唯一调用点同步（函数模块私有，无外部引用）。其余短名（clamp/round2/slug/factsOf 等）均见名知义，判合规。导出快照、tsc、lint（675=预算）、159 用例全绿。
 - [ ] 2.5 收尾验证：`npm run build` + `npx tsc --noEmit` + `npm run lint` + `npm test` 全绿。真机：录制一段多标签页流程（含输入与下拉）并回放；前缀回放后做一次分组重录。停点：用户提交。
+  - 自动化部分（2026-11-27）：build/tsc/lint/test 全绿。真机待用户；提交待用户（命名整改单独提交，附旧名→新名清单：`newURLSafeHost`/`URLSafeHost` → `hostOfUrl`）。
 
 ## 3. electron：主进程拆分
 

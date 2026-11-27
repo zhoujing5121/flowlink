@@ -111,8 +111,7 @@ import { clamp, round2, settleFrameStability, sleep, waitForSilence } from './re
 export { applyRecordingLabels } from './recording-labels.js'
 
 /** URL → 小写 host；解析失败返回空串（title 兜底、系统归属判断用）。 */
-function newURLSafeHost(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
-const URLSafeHost = newURLSafeHost
+function hostOfUrl(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
 
 /** 正常结束但没有任何可回放步骤：调用方应静默取消，而不是写一份非法的空 flow。 */
 export class EmptyRecordingError extends Error {
@@ -588,7 +587,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 					} catch {}
 				}
 				if (navigationType === 'unknown_navigation' && isAuthUrl(url, authMatchers)) { navigationType = isAuthUrl(previousUrl || '', authMatchers) ? 'login_redirect' : 'sso_redirect'; evidence.push('authentication-url-heuristic') }
-				if (navigationType === 'unknown_navigation' && previousUrl && URLSafeHost(previousUrl) !== URLSafeHost(url)) evidence.push('cross-host-navigation-without-matched-user-click')
+				if (navigationType === 'unknown_navigation' && previousUrl && hostOfUrl(previousUrl) !== hostOfUrl(url)) evidence.push('cross-host-navigation-without-matched-user-click')
 				if (navigationType === 'unknown_navigation') evidence.push('cause-not-observable-from-page-event')
 				// 认证类重定向同样入队：observed 证据不可丢。可执行侧由 processBatch 在
 				// coalesceEvents 之前把 AUTO_NAVIGATION_TYPES 事件单独合成为 isOptional
