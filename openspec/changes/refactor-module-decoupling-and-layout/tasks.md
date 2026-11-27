@@ -4,23 +4,34 @@
 
 ## 0. 基线与工具（不改产品代码）
 
-- [ ] 0.1 ESLint 接入：新增 devDependencies `eslint`、`eslint-plugin-jsdoc`、`typescript-eslint`、`globals`（锁定小版本）与 `eslint.config.js`，范围按 design D12；新增 `npm run lint`。规则名与选项以所装版本为准。验证：`npm run lint` 可运行并输出统计；`git diff package-lock.json` 只含 lint 相关条目，没有 `@browser_use/pi` 相关条目变化；`npm run build` + `npx tsc --noEmit` + `npm test` 仍全绿；全程未执行 `npm dedupe`。
-- [ ] 0.2 JSDoc 棘轮：jsdoc 规则以 `warn` 接入生产代码范围（`src/`、`engine/`（含 `engine/recorder/capture/capture.js`）、`renderer/`；`tests/` 与构建脚本豁免）；新增 `scripts/lint-budget.mjs` 与 `lint-budget.json`，`npm run lint` 末尾比对 jsdoc 违例数与预算。验证：预算设为当前实际值时通过；把预算调低 1 时失败。
-- [ ] 0.3 编码规范入文档：按 design D11 把注释、命名、类型标签、示例与禁改清单写入 `AGENTS.md`；`CONTRIBUTING.md` 更正"没有 lint、测试脚本"的过时描述，Style 段改为指向该规范并补上 `npm run lint`。验证：条文与 D11 一致，且与现有 Invariants 不冲突。
-- [ ] 0.4 engine 基线测试：新增 `tests/helpers/bundle.mjs`（唯一的 esbuild 打包辅助函数）与 `tests/architecture/engine-boundaries.test.mjs`、`engine-exports.test.mjs` + `snapshots/engine-exports.json`（design D3、D13）。验证：新增测试通过；临时在 `engine/resolver` 加一条对 `executor` 的导入时边界测试失败，还原后通过；快照记录五个包 `index.ts` 的当前导出名单。
-- [ ] 0.5 IPC 契约快照：`tests/architecture/ipc-contract.test.mjs` 从 `src/preload.ts` 提取 invoke 通道（50）、事件白名单（14）与 API 分组形状，与 `snapshots/ipc-channels.json` 比对。验证：测试通过；临时改一个通道字面量时测试失败。
-- [ ] 0.6 CSS 计算样式快照工具：`scripts/css-style-snapshot.mjs`（design D13）与使用说明；界面状态清单覆盖列表页、Profile、Design 的六个页签、AI 面板开与关、确认对话框、Test 运行态、Record 回放。验证：真机生成基线快照两次，同一状态的输出一致；基线保存在本地 `scratch-css-snapshot/baseline/`（不入库）。
+- [x] 0.1 ESLint 接入：新增 devDependencies `eslint`、`eslint-plugin-jsdoc`、`typescript-eslint`、`globals`（锁定小版本）与 `eslint.config.js`，范围按 design D12；新增 `npm run lint`。规则名与选项以所装版本为准。验证：`npm run lint` 可运行并输出统计；`git diff package-lock.json` 只含 lint 相关条目，没有 `@browser_use/pi` 相关条目变化；`npm run build` + `npx tsc --noEmit` + `npm test` 仍全绿；全程未执行 `npm dedupe`。
+  - 执行记录（2026-11-26）：typescript-eslint 因项目 typescript@7 原生编译器无 JS API 而不可用（见 design D12 执行期修正），改为 `@babel/eslint-parser` + `@babel/core`；pi 相关 lockfile 条目内容逐字节比对一致。
+- [x] 0.2 JSDoc 棘轮：jsdoc 规则以 `warn` 接入生产代码范围（`src/`、`engine/`（含 `engine/recorder/capture/capture.js`）、`renderer/`；`tests/` 与构建脚本豁免）；新增 `scripts/lint-budget.mjs` 与 `lint-budget.json`，`npm run lint` 末尾比对 jsdoc 违例数与预算。验证：预算设为当前实际值时通过；把预算调低 1 时失败。
+  - 执行记录：当前基线违例 840（require-jsdoc 638、require-param 149、require-returns 53）；预算 840 通过、839 失败，实测确认。
+- [x] 0.3 编码规范入文档：按 design D11 把注释、命名、类型标签、示例与禁改清单写入 `AGENTS.md`；`CONTRIBUTING.md` 更正"没有 lint、测试脚本"的过时描述，Style 段改为指向该规范并补上 `npm run lint`。验证：条文与 D11 一致，且与现有 Invariants 不冲突。
+- [x] 0.4 engine 基线测试：新增 `tests/helpers/bundle.mjs`（唯一的 esbuild 打包辅助函数）与 `tests/architecture/engine-boundaries.test.mjs`、`engine-exports.test.mjs` + `snapshots/engine-exports.json`（design D3、D13）。验证：新增测试通过；临时在 `engine/resolver` 加一条对 `executor` 的导入时边界测试失败，还原后通过；快照记录五个包 `index.ts` 的当前导出名单。
+  - 执行记录：破坏性验证通过（resolver→executor 边被拦截），已还原；快照值 schema=29 reference=21 resolver=35 recorder=57 executor=59。
+- [x] 0.5 IPC 契约快照：`tests/architecture/ipc-contract.test.mjs` 从 `src/preload.ts` 提取 invoke 通道（50）、事件白名单（14）与 API 分组形状，与 `snapshots/ipc-channels.json` 比对。验证：测试通过；临时改一个通道字面量时测试失败。
+  - 执行记录：50 invoke / 14 events 确认；改动通道字面量 → 失败，还原 → 通过。
+- [x] 0.6 CSS 计算样式快照工具：`scripts/css-style-snapshot.mjs`（design D13）与使用说明；界面状态清单覆盖列表页、Profile、Design 的六个页签、AI 面板开与关、确认对话框、Test 运行态、Record 回放。验证：真机生成基线快照两次，同一状态的输出一致；基线保存在本地 `scratch-css-snapshot/baseline/`（不入库）。
+  - 执行记录：真机两轮 capture 全部 11 个自动状态一致（compare 0 差异）；状态间确有差异（drawer display none→flex 等）；Test 运行态、Record 回放为 manual 状态（capture-current），基线待真机数据下补充。
 - [ ] 0.7 "仅注释提交"校验脚本：`scripts/assert-comment-only.mjs <基线提交> <路径…>`，把基线与工作区的文件分别去掉注释和空白后比较。验证：对只改注释的文件报告一致；再改动一个标识符后报告不一致。
 - [ ] 0.8 收尾验证：`npm run build` + `npx tsc --noEmit` + `npm run lint` + `npm test` 全绿。真机：应用启动、录制一段（导航 + 点击 + 输入）、回放一段，确认工具接入不影响运行。停点：用户提交。
 
 ## 1. 纯搬迁：`src/` → `electron/`
 
-- [ ] 1.1 主进程文件搬迁：`git mv` 按 design D1 落位（`store.ts` 同时改名 `task-store.ts`），只修改路径字面量——文件内相对导入说明符（含 `ai-takeover.ts` 嵌套 pi-ai 的 `../node_modules/…` 改为 `../../node_modules/…`、Pi worker 对 `perf`/`app-logger` 的引用）、`build.mjs` 的 entryPoints 与 external 字面量、`tsconfig.json` 的 include（`electron/**/*.ts`；并试纳入 `engine/**/*.ts`，零新增错误才纳入，否则保持现状并在 design D15 记录）。验证：`git diff --cached -M --stat` 全部显示为 rename，除导入说明符外无内容差异；`npm run build` 产物清单与搬迁前一致（`dist/main.js`、`preload.cjs`、`pi-agent-worker.js`、`renderer-vendor.js`、`renderer-vendor.css`、`rrweb-inject.js`、`rrweb-replay.css`）；`npx tsc --noEmit` 通过。
-- [ ] 1.2 测试入口路径：更新 `tests/` 中的 bundle 入口、`import` 路径、源码文本读取路径，以及 IPC 契约测试的读取目标（`electron/preload.ts`）。验证：`npm test` 全绿且用例数不变（152）；IPC 快照文件未改动。
-- [ ] 1.3 `tests/` 归类：按 design D14 把测试文件移入域目录；8 份复制的 bundle 辅助函数替换为 `tests/helpers/bundle.mjs`。验证：`npm test` 发现的用例数不变且全绿；`tests/` 下只有 helper 定义了 bundle 函数。
-- [ ] 1.4 `flow-graph.js` 整体移动到 `renderer/panels/process/graph/flow-graph.js`；`index.html` 的脚本路径与 `swimlane-levels` 测试入口同步。验证：整文件 rename；`npm test` 全绿；真机 Process 页签渲染与移动前一致。
-- [ ] 1.5 `AGENTS.md` 路径同步：Start here 与 Implementation patterns 中的 `src/` 路径改为 `electron/` 下的新路径。验证：`AGENTS.md` 中不再有指向 `src/` 的路径（`engine/*/src/` 除外）。
+- [x] 1.1 主进程文件搬迁：`git mv` 按 design D1 落位（`store.ts` 同时改名 `task-store.ts`），只修改路径字面量——文件内相对导入说明符（含 `ai-takeover.ts` 嵌套 pi-ai 的 `../node_modules/…` 改为 `../../node_modules/…`、Pi worker 对 `perf`/`app-logger` 的引用）、`build.mjs` 的 entryPoints 与 external 字面量、`tsconfig.json` 的 include（`electron/**/*.ts`；并试纳入 `engine/**/*.ts`，零新增错误才纳入，否则保持现状并在 design D15 记录）。验证：`git diff --cached -M --stat` 全部显示为 rename，除导入说明符外无内容差异；`npm run build` 产物清单与搬迁前一致（`dist/main.js`、`preload.cjs`、`pi-agent-worker.js`、`renderer-vendor.js`、`renderer-vendor.css`、`rrweb-inject.js`、`rrweb-replay.css`）；`npx tsc --noEmit` 通过。
+  - 执行记录（2026-11-27）：18 个文件全部 rename；内容改动仅 7 个文件的导入说明符；`engine/**/*.ts` 纳入 tsc 零新增错误，已保留在 include；`eslint.config.js` 顺带移除已失效的 `src/**` 模式；`rrweb-capture.ts` 一处注释里的旧路径同步。
+  - 启动失败修正（2026-11-27）：嵌套 pi-ai 的 external 说明符按 D15 原处方改为 `../../` 后运行时无法解析（见 design D15 执行期修正）。新增 `electron/pi-ai-nested.ts` 再导出垫片（electron/ 根深度），ai-takeover.ts 改从垫片导入，external 字面量保持 `../node_modules/…`；产物说明符与搬迁前一致，真机启动验证通过（whenReady → shown → 引擎桥连接）。
+- [x] 1.2 测试入口路径：更新 `tests/` 中的 bundle 入口、`import` 路径、源码文本读取路径，以及 IPC 契约测试的读取目标（`electron/preload.ts`）。验证：`npm test` 全绿且用例数不变（152）；IPC 快照文件未改动。
+  - 执行记录：IPC 快照文件未改动且比对通过（现在从 `electron/preload.ts` 提取）；pi-knowledge 的"skills 只在生成入口传递"源码读取改指 `electron/main.ts`、`electron/ai/pi-agent.ts`、`electron/ai/pi-agent-worker.ts`。
+- [x] 1.3 `tests/` 归类：按 design D14 把测试文件移入域目录；8 份复制的 bundle 辅助函数替换为 `tests/helpers/bundle.mjs`。验证：`npm test` 发现的用例数不变且全绿；`tests/` 下只有 helper 定义了 bundle 函数。
+  - 执行记录：10 个测试文件按 D14 归位；8 份本地 bundle 函数全部替换为共享 helper（`after()` 里释放共享临时目录）；全仓只有 `tests/helpers/bundle.mjs` 定义 bundle 函数。
+- [x] 1.4 `flow-graph.js` 整体移动到 `renderer/panels/process/graph/flow-graph.js`；`index.html` 的脚本路径与 `swimlane-levels` 测试入口同步。验证：整文件 rename；`npm test` 全绿；真机 Process 页签渲染与移动前一致。
+  - 执行记录：整文件 rename（无内容差异）；`index.html` 与 `swimlane-levels`、`nested-grouping` 两个测试的 bundle 入口同步（真机项待停点验证）。
+- [x] 1.5 `AGENTS.md` 路径同步：Start here 与 Implementation patterns 中的 `src/` 路径改为 `electron/` 下的新路径。验证：`AGENTS.md` 中不再有指向 `src/` 的路径（`engine/*/src/` 除外）。
 - [ ] 1.6 收尾验证：`npm run build` + `npx tsc --noEmit` + `npm run lint` + `npm test` 全绿。真机冒烟：启动；Pi 问答一次（worker 与嵌套 pi-ai 路径）；录制一段含新开标签页的流程并回放（`capture.js`、rrweb 注入）；Record 页签回放录屏；AI Continue 一次。停点：用户提交（搬迁与路径修改为一个提交，`tests/` 与 `flow-graph.js` 归类为另一个提交）。
+  - 自动化部分（2026-11-27）：build 产物清单一致（12 项 + `rrweb-replay.css`）；tsc 通过；lint 840=预算；test 159 用例全绿（与搬迁前一致）。真机冒烟与提交待用户。
 
 ## 2. engine：文件级拆分与注释
 

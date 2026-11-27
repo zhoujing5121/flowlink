@@ -13,8 +13,8 @@ Make precise, end-to-end changes while preserving the recorder/executor contract
 - For Flow changes, read `engine/schema/src/schema.ts` and `engine/schema/src/io.ts`.
 - For recording changes, start at `engine/recorder/src/record.ts`, `capture-client.ts`, and `types.ts`.
 - For replay changes, start at `engine/executor/src/run.ts`, `actions.ts`, and `verify.ts`.
-- For desktop integration, start at `src/main.ts`, `src/preload.ts`, and `renderer/bridge.js`.
-- For task persistence, start at `src/store.ts`.
+- For desktop integration, start at `electron/main.ts`, `electron/preload.ts`, and `renderer/bridge.js`.
+- For task persistence, start at `electron/tasks/task-store.ts`.
 
 ## OpenSpec workflow
 
@@ -65,9 +65,56 @@ first line of the body.
 - Put browser-side event facts in `engine/recorder/src/capture-client.ts` and planning logic in the recorder modules.
 - Put element resolution in `engine/resolver/src/`; executor action execution should use resolver APIs rather than ad hoc locators.
 - Put replay artifact files through `ArtifactWriter`.
-- Add IPC channels in `src/main.ts` and expose them only through `src/preload.ts`.
+- Add IPC channels in `electron/main.ts` and expose them only through `electron/preload.ts`.
 - Keep long-lived rendering state synchronized in `renderer/bridge.js`.
 - Define UI structure in `renderer/index.html`, including `<template>` elements for repeated items (e.g. `recordingLayoutTemplate`); generate HTML from JavaScript only when the structure genuinely depends on runtime data — fill templates, do not author static markup in JS.
+
+## 编码规范（JS/TS）
+
+适用于 `engine/`、`electron/`、`renderer/` 与注入脚本 `engine/recorder/capture/capture.js`。
+`tests/` 与构建脚本不强制，特别复杂处适当添加。
+
+### 注释
+- 每个具名函数、类方法、对象方法、赋给具名常量的函数表达式或箭头函数，必须有紧邻其上的
+  JSDoc 块注释（`/** ... */`）。行内匿名回调不要求，其意图由所在函数的注释说明。
+- 注释是解释型的：说明这段代码为什么存在、解决什么问题、依赖什么前提、有什么约束、
+  副作用或失败方式、什么情况下不该用。不要复述代码在做什么——"做什么"由代码本身表达。
+- 方法内的关键代码可以加行内注释，同样必须是解释型（为什么这样写、有什么坑、什么不能改）。
+- 每个模块文件顶部有 JSDoc 文件头：职责边界、不负责什么、主要使用方。
+- 注释内容必须有依据（spec、调用方、文档、提交历史）。查不到依据时写已知的约束、契约
+  或副作用，不编造意图。
+- 改动代码时同步修正或删除相关注释；与代码不一致的注释按缺陷处理。
+- 注释用中文，标识符用英文。
+
+### 命名
+- 函数名、模块级变量名、类名、文件名必须直接说明用途；不使用单字母、无信息量的缩写、
+  与用途不符的名字。
+- 函数内的泛称参数与局部变量（`item`、`value`、`data`）可以保留，但必须在 JSDoc 的
+  `@param` 里说明它是什么。
+- 改名必须在整个作用域内成套完成（声明与全部引用），并留意同名遮蔽。
+
+### 类型标签
+- `renderer/` 下的 JS：JSDoc 必须写 `@param {类型} 名字` 与 `@returns {类型}`。
+- TS 文件不强制类型标签：类型由类型系统表达，JSDoc 只写意图与约束。
+
+### 示例
+```js
+// ✗ 描述型：复述代码，名字没说清用途
+/** 获取数据 */
+function getData(id) { … }
+
+// ✓ 解释型 + 见名知义
+/**
+ * 只取录制元数据，不读 Flow 本体：Flow 要等任务抽屉打开才水合，
+ * 否则任务多时启动会把全部录制读进内存。
+ * @param {string} taskCode 任务编码
+ * @returns {RecordingMeta[]}
+ */
+function listRecordingMetadata(taskCode) { … }
+```
+
+命名整改不触及：Flow JSON 字段、IPC 通道名、`window.flowlink.*` 形状、`index.html`
+的 `id`/`data-*` 钩子、engine 各包 `index.ts` 的导出名。
 
 ## Validation
 
@@ -76,6 +123,7 @@ Minimum validation:
 ```powershell
 npm run build
 npx tsc --noEmit
+npm run lint
 ```
 
 When the work belongs to an OpenSpec change, `openspec validate --change <name>`

@@ -397,9 +397,11 @@ function listRecordingMetadata(taskCode) { … }
 | `engine/recorder/capture/capture.js` | 浏览器全局 + jsdoc 存在性规则 |
 | `tests/**`、`scripts/**`、`build.mjs`、`package.mjs` | 只做语法解析与 `no-undef` |
 
+- **执行期修正（2026-11-26）**：项目的 `typescript` 已是 7.x 原生编译器，npm 包只含原生二进制启动器、没有 JS 编译 API，typescript-eslint（8.x，要求 `typescript >=4.8.4 <6.1.0`）无法使用，且没有任何已发布版本支持原生 TS。D12 从不要求 type-aware 规则，jsdoc 存在性规则只需语法解析，故 TS 文件改用 `@babel/eslint-parser`（+ `@babel/core`）以 `typescript` parser 插件解析；devDependencies 相应改为 `eslint`、`eslint-plugin-jsdoc`、`globals`、`@babel/core`、`@babel/eslint-parser`，不含 `typescript-eslint`。规则集按 D11 的构造清单配置 `jsdoc/require-jsdoc` 的 contexts（具名函数声明、类方法、对象方法、const 箭头/函数表达式）；当前基线违例 840（require-jsdoc 638、require-param 149、require-returns 53）。
+
 - **棘轮**：jsdoc 规则先是 `warn`；`scripts/lint-budget.mjs` 统计 jsdoc 违例数并与 `lint-budget.json` 里的预算比较，超出即 `npm run lint` 失败。每个回填批次把预算下调到新的实际值；全部回填完成后规则改为 `error`，预算脚本移除。
 - **"解释型"无法机检**：靠 AGENTS.md 条文与评审。仅注释的提交另有机器校验：`scripts/assert-comment-only.mjs` 把提交前后的文件分别去掉注释与空白后比较，必须逐字节一致。
-- **依赖安装**：新增 `eslint`、`eslint-plugin-jsdoc`、`typescript-eslint`、`globals` 为 devDependencies，具体小版本在 spike 中锁定。安装后核对 `package-lock.json` 的差异只含 lint 相关条目，不得触碰 `@browser_use/pi` 的 overrides 相关条目；本仓库禁止 `npm dedupe`。
+- **依赖安装**：devDependencies 为 `eslint`、`eslint-plugin-jsdoc`、`globals`、`@babel/core`、`@babel/eslint-parser`（typescript-eslint 因 TS 7 原生编译器无 JS API 而不可用，见上）。安装后核对 `package-lock.json` 的差异只含 lint 相关条目，不得触碰 `@browser_use/pi` 的 overrides 相关条目；本仓库禁止 `npm dedupe`。
 
 ### D13 结构性基线
 
@@ -431,7 +433,7 @@ IPC 契约基线最初从 `preload.ts` 源码提取通道字面量；通道常�
 | 位置 | 约束 |
 |---|---|
 | `build.mjs` entryPoints | 改为 `electron/` 下的新路径；输出（`dist/main.js`、`dist/preload.cjs`、`dist/pi-agent-worker.js`、`dist/renderer-vendor.js`、`dist/rrweb-inject.js` 等）的位置与名称不变 |
-| `build.mjs` external | 含 `'../node_modules/@browser_use/pi/node_modules/@earendil-works/pi-ai/…'` 字面量，与 `ai-takeover.ts` 的 import 说明符逐字对应；文件下沉一层后两处同步修改 |
+| `build.mjs` external | 含 pi-ai 嵌套路径字面量，与导入说明符逐字对应。**执行期修正（2026-11-27）**：external 的说明符由 esbuild 按字面量保留、运行时从 `dist/main.js` 解析，因此必须恒为 `../node_modules/…`（dist 深度），不随源文件下沉而改为 `../../…`——按原处方改为 `../../` 后应用启动即 ERR_MODULE_NOT_FOUND（`E:\node_modules\…`）。构建期 tsc/esbuild 的解析深度要求与运行期相反，由 `electron/pi-ai-nested.ts` 再导出垫片化解：垫片位于 electron/ 根（与 src/ 时代同深度，tsc/esbuild 可解析），ai-takeover.ts 改从垫片导入，external 字面量与垫片说明符逐字对应 |
 | `CAPTURE_SCRIPT_PATH`（`capture-client.ts`） | 相对 `dist/main.js` 解析 `../engine/recorder/capture/capture.js`；`capture.js` 与 `dist/main.js` 都不动，常量不动 |
 | `INJECT_JS_PATH`、Pi worker 的 `new URL("./pi-agent-worker.js", import.meta.url)` | 相对 `dist/main.js`，不动 |
 | `app.getAppPath()` 相对资源（`renderer/index.html`、`dist/preload.cjs`、`resources/`、`config/`、`process_landscape/`） | 不动 |

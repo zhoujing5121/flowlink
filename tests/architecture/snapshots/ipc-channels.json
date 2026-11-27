@@ -1,0 +1,154 @@
+{
+  "invokeChannels": {
+    "tasks": [
+      "tasks:list",
+      "tasks:saveProfile",
+      "tasks:delete",
+      "tasks:getRecordings",
+      "tasks:removeRecording"
+    ],
+    "processLandscape": [
+      "processLandscape:load"
+    ],
+    "recording": [
+      "recording:start",
+      "recording:stop",
+      "recording:navigate",
+      "recording:goBack",
+      "recording:goForward",
+      "recording:reload",
+      "recording:currentUrl",
+      "recording:loadRrweb",
+      "recording:artifactsPath",
+      "recording:persistMerged"
+    ],
+    "playback": [
+      "playback:run",
+      "playback:continueUserOperation",
+      "playback:runPrefix",
+      "playback:aiContinue",
+      "playback:stop"
+    ],
+    "pi": [
+      "pi:status",
+      "pi:prewarm",
+      "pi:stop",
+      "pi:prompt",
+      "ai:logChat",
+      "pi:promptTemplates",
+      "pi:generateFlow",
+      "pi:repairFlow"
+    ],
+    "flow": [
+      "flow:load",
+      "flow:updateVariables",
+      "flow:updateSteps",
+      "flow:stagePending",
+      "flow:loadPending",
+      "flow:confirmPending",
+      "flow:discardPending",
+      "flow:directUpdate"
+    ],
+    "reference": [
+      "reference:catalog",
+      "reference:validateObject",
+      "reference:validateAll",
+      "flow:addReferenceFile",
+      "flow:removeReferenceFile",
+      "reference:fileUrl",
+      "reference:attachmentBytes"
+    ],
+    "browser": [
+      "browser:setBounds",
+      "browser:hide",
+      "browser:restart",
+      "browser:createTab",
+      "browser:switchTab",
+      "browser:closeTab"
+    ]
+  },
+  "apiShape": {
+    "tasks": [
+      "list",
+      "saveProfile",
+      "remove",
+      "getRecordings",
+      "removeRecording"
+    ],
+    "processLandscape": [
+      "load"
+    ],
+    "recording": [
+      "start",
+      "stop",
+      "navigate",
+      "goBack",
+      "goForward",
+      "reload",
+      "currentUrl",
+      "loadRrweb",
+      "artifactsPath",
+      "persistMerged"
+    ],
+    "playback": [
+      "run",
+      "continueUserOperation",
+      "runPrefix",
+      "aiContinue",
+      "stop"
+    ],
+    "pi": [
+      "status",
+      "prewarm",
+      "stop",
+      "prompt",
+      "logChat",
+      "promptTemplates",
+      "generateFlow",
+      "repairFlow"
+    ],
+    "flow": [
+      "load",
+      "updateVariables",
+      "updateSteps",
+      "stagePending",
+      "loadPending",
+      "confirmPending",
+      "discardPending",
+      "directUpdate"
+    ],
+    "reference": [
+      "catalog",
+      "validateObject",
+      "validateAll",
+      "addFile",
+      "removeFile",
+      "fileUrl",
+      "attachmentBytes"
+    ],
+    "browser": [
+      "setBounds",
+      "hide",
+      "restart",
+      "createTab",
+      "switchTab",
+      "closeTab"
+    ]
+  },
+  "events": [
+    "recording:step",
+    "recording:done",
+    "recording:error",
+    "browser:error",
+    "playback:step",
+    "playback:done",
+    "playback:error",
+    "playback:userOperation",
+    "playback:aiStep",
+    "playback:aiDone",
+    "browser:urlChanged",
+    "browser:loading",
+    "browser:tabOpened",
+    "ai:pending"
+  ]
+}
