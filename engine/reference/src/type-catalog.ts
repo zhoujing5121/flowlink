@@ -40,6 +40,7 @@ export const TYPE_DISPLAY: Readonly<Record<ReferenceType, string>> = {
 	file: '文件',
 }
 
+/** 运行时类型守卫：判断任意值是否为目录内的合法 Reference 类型（迁移与输入校验共用）。 */
 export function isReferenceType(value: unknown): value is ReferenceType {
 	return typeof value === 'string' && (REFERENCE_TYPES as readonly string[]).includes(value)
 }
@@ -47,6 +48,7 @@ export function isReferenceType(value: unknown): value is ReferenceType {
 /** 文件类类型（值 = 持久化附件；编辑对话框值栏为上传控件，回放注入工件内绝对路径） */
 export const FILE_REFERENCE_TYPES = ['excel', 'word', 'csv', 'md', 'file'] as const
 
+/** 运行时守卫：该类型是否允许携带持久化附件（附件路径契约见 schema 的 isSafeReferenceFilePath）。 */
 export function isFileReferenceType(value: unknown): boolean {
 	return typeof value === 'string' && (FILE_REFERENCE_TYPES as readonly string[]).includes(value)
 }

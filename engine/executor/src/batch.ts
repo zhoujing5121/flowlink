@@ -197,6 +197,7 @@ export async function runBatchRows(input: BatchRowLoopInput): Promise<BatchResul
 /* playBatch：一次浏览器 + 每行一个 context                             */
 /* ------------------------------------------------------------------ */
 
+/** 失败行的 after 截图（存在时）的工件相对路径；拼进批量报告供逐行查看。 */
 function failedStepScreenshot(
 	root: string,
 	rowArtifacts: ArtifactWriter,
@@ -210,16 +211,22 @@ function failedStepScreenshot(
 	return artifactRelativePath(root, candidate)
 }
 
+/** 轻量启动封装：批量场景只起一个 Chromium（每行一个 context，避免状态串联）。 */
 async function launchBrowser(headless: boolean): Promise<Browser> {
 	const { chromium } = await import('playwright-core')
 	return chromium.launch({ headless })
 }
 
+/**
+ * 批量回放主入口：启动一次浏览器、每行数据独立 context 跑一遍 flow，
+ * 按行落工件并汇总批次结果；空输入不启动浏览器（零行也是合法批次）。
+ */
 export async function playBatch(opts: BatchOptions): Promise<BatchResult> {
 	const flow = opts.flow
 	const batchId = opts.batchId ?? makeId('batch')
 	const artifactsRoot = opts.artifactsRoot ?? './artifacts'
 	const batchDir = ArtifactWriter.batchRoot(artifactsRoot, flow.id, batchId)
+	/** 批次级日志：带 batchId 前缀透传 onLog（行级日志走 pushLog）。 */
 	const log = (msg: string): void => opts.onLog?.(`[batch ${batchId}] ${msg}`)
 
 	// 空输入是合法的无操作：不启动 Chromium，同时仍返回稳定的批次标识和 artifacts 目录，
@@ -251,6 +258,7 @@ export async function playBatch(opts: BatchOptions): Promise<BatchResult> {
 				})
 				const rowStart = Date.now()
 				const logLines: string[] = []
+				/** 行内日志：进该行的工件报告（onRow 结果里可见），同时透传给 batch 日志。 */
 				const pushLog = (msg: string): void => {
 					logLines.push(msg)
 					opts.onLog?.(`[row ${row.index}] ${msg}`)

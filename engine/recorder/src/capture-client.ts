@@ -59,6 +59,10 @@ export type EmitHandler = (sourcePage: Page, frame: Frame, payload: unknown) => 
 const emitHandlers = new WeakMap<BrowserContext, EmitHandler>()
 const boundContexts = new WeakSet<BrowserContext>()
 
+/**
+ * 把采集脚本的 emit 回调绑定到浏览器上下文（exposeBinding，每 context 一次）。
+ * onEmit 存入 WeakMap 供换绑；同一 context 重复绑定时只更新回调、不再 expose。
+ */
 async function ensureEmitBinding(context: BrowserContext, onEmit: EmitHandler): Promise<void> {
 	emitHandlers.set(context, onEmit)
 	if (boundContexts.has(context)) return
@@ -97,11 +101,16 @@ export async function installCaptureOnPage(page: Page, onEmit: EmitHandler): Pro
  * capture.js 自身有 document 级幂等守卫，重复注入不会重复挂监听。
  */
 let captureSourcePromise: Promise<string> | undefined
+/** 读一次 capture.js 源码并缓存（体积不小，整场录制只读一次磁盘）。 */
 export function captureScriptSource(): Promise<string> {
 	captureSourcePromise ??= readFile(CAPTURE_SCRIPT_PATH, 'utf8')
 	return captureSourcePromise
 }
 
+/**
+ * 确保采集脚本已注入页面全部 frame（主 frame 除外可用 page.evaluate 的常规路径）。
+ * 返回主 frame 是否注入成功；单 frame 失败不中断（采集尽力而为，失败记诊断）。
+ */
 export async function ensureCaptureInPage(page: Page): Promise<boolean> {
 	try {
 		const source = await captureScriptSource()
@@ -227,6 +236,7 @@ export async function readFactsFromHandle(
 	}
 }
 
+/** 按 uid 取回元素的原始事实（录制端成步用）；uid 失效/页面跳走时返回 undefined。 */
 export async function readFactsByUid(
 	frame: Frame,
 	uid: string,
@@ -268,6 +278,10 @@ export interface ElementDescription {
 /** 空描述（拿不到 ariaSnapshot 时的兜底） */
 export const EMPTY_DESCRIPTION: ElementDescription = {}
 
+/**
+ * 元素的自然语言描述（ariaSnapshot YAML 精简后使用）：AI 兜底提示词与
+ * 产品界面展示共用；拿不到快照时返回 EMPTY_DESCRIPTION。
+ */
 export async function describeElement(locator: Locator): Promise<ElementDescription> {
 	let yaml: string
 	try {
@@ -285,6 +299,7 @@ export async function describeElement(locator: Locator): Promise<ElementDescript
 	return { role, name: name || undefined }
 }
 
+/** 还原 ariaSnapshot YAML 里的转义（`\"` `\\` 与 \uXXXX），得到用户看到的原始文本。 */
 function unescapeYamlString(value: string): string {
 	return value
 		.replace(/\\(["\\])/g, '$1')
@@ -497,6 +512,11 @@ interface ScreencastFrameMetadata {
 /** screencast 首帧等待上限：超时说明该环境不支持/帧不来了，走旧回退路径。 */
 const SCREENCAST_FIRST_FRAME_TIMEOUT_MS = 1500
 
+/**
+ * 用 CDP screencast 抓一帧页面画面（元素步骤截图）：比 screenshot() 少一次
+ * 合成，且能拿到"用户当时所见"的滚动状态。返回 false = 该环境不支持，调用方
+ * 走 screenshot() 回退。
+ */
 async function captureScreencastFrame(
 	page: Page,
 	rect: { x: number; y: number; width: number; height: number } | undefined,
@@ -509,6 +529,7 @@ async function captureScreencastFrame(
 		const firstFrame = await new Promise<{ data?: string; metadata?: ScreencastFrameMetadata } | undefined>(
 			(resolveFrame) => {
 				let settled = false
+				/** 单次结算入口：超时与首帧都走这里，保证监听与定时器恰好清理一次。 */
 				const finish = (value?: { data?: string; metadata?: ScreencastFrameMetadata }) => {
 					if (settled) return
 					settled = true
@@ -517,6 +538,7 @@ async function captureScreencastFrame(
 					resolveFrame(value)
 				}
 				const timer = setTimeout(() => finish(undefined), SCREENCAST_FIRST_FRAME_TIMEOUT_MS)
+				/** 首帧回调：先 ack 再结算——不 ack 的话 Chromium 停发后续帧。 */
 				const onFrame = (params: { data?: string; sessionId?: number; metadata?: ScreencastFrameMetadata }) => {
 					// 收到即回 ack 并停止，保持会话按动作短开短关。
 					if (params.sessionId !== undefined)
@@ -546,6 +568,7 @@ async function captureScreencastFrame(
 		const viewport = page.viewportSize()
 		const cssWidth = firstFrame.metadata?.deviceWidth || viewport?.width || frameWidth
 		const scale = frameWidth / cssWidth
+		/** 把文档坐标夹进帧内（元素滚出视口的部分不画进证据截图）。 */
 		const clamp = (value: number, min: number, max: number) =>
 			Math.min(max, Math.max(min, value))
 		// 文档坐标（rect + 滚动偏移）→ 帧内像素坐标；超出视口的部分被夹取，
@@ -605,6 +628,7 @@ async function captureFallbackScreenshot(
 	}
 }
 
+/** 属性值转 HTML 属性字面量（反斜杠与双引号转义）：注入 marker 属性时防破坏标记语法。 */
 export function escapeAttrValue(value: string): string {
 	return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }

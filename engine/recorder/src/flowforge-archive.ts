@@ -30,6 +30,10 @@ export interface FlowForgeArchiveOptions {
   aliases?: Record<string, string>
 }
 
+/**
+ * 把一条原始采集事件规范化为证据档案条目：补全 URL/系统归属/元素事实，
+ * 并剔除用户输入值（证据档案不得复制个人数据；可执行 Flow 才保留必要值）。
+ */
 function safeEvent(event: RawEvent, sequence: number, tabs: CaptureTab[], aliases?: Record<string, string>) {
   const tab = tabs.find(item => item.pageIndex === (event.pageIndex ?? 0))
   const url = event.frameUrl || event.url || tab?.url || ''
@@ -94,6 +98,10 @@ function safeEvent(event: RawEvent, sequence: number, tabs: CaptureTab[], aliase
   }
 }
 
+/**
+ * 把规范化事件流压缩为"语义动作"条目：丢弃中间态（指针/悬停/焦点、导航请求类），
+ * 把 copy→paste 串成剪贴板来源链，给每条动作生成人类可读标题。
+ */
 function semanticize(events: ReturnType<typeof safeEvent>[]) {
   let lastCopy: (typeof events)[number] | undefined
   return events.flatMap(event => {
@@ -125,6 +133,11 @@ function semanticize(events: ReturnType<typeof safeEvent>[]) {
   })
 }
 
+/**
+ * 生成 FlowForge 兼容的证据档案（flowforge-recording.json，record/ 子目录）。
+ * 读取采集器原始事件流，用宿主事件校正导航分类后走 safeEvent/semanticize 管道；
+ * 写盘前过 FlowForgeRecordingSchema 校验。rawPath 缺省 = 无采集数据，静默不产出。
+ */
 export async function writeFlowForgeArchive(rawPath: string | undefined, flow: Flow, tabs: CaptureTab[], outputDir: string, hostEvents: HostCaptureEvent[] = [], options: FlowForgeArchiveOptions = {}): Promise<string | undefined> {
   if (!rawPath) return undefined
   const matchers = options.matchers ?? compileAuthMatchers()
@@ -138,6 +151,7 @@ export async function writeFlowForgeArchive(rawPath: string | undefined, flow: F
     if (!hostIntent) return event
     if (hostIntent.action === 'userNavigateRequested') return { ...event, navigationType: 'user_navigate' as const, directNavigation: true, navigationEvidence: [...(event.navigationEvidence || []), 'electron-address-bar-navigation-request'] }
     if (hostIntent.action === 'autoRedirect') {
+      /** 认证归属判定：目的 URL 是认证页 → SSO 跳转；来源 URL 是认证页 → 登录后回跳；否则普通自动重定向。 */
       const isAuth = (value = ''): boolean => isAuthUrl(value, matchers)
       const type = isAuth(hostIntent.url || event.url || '') ? 'sso_redirect' : isAuth(hostIntent.previousUrl || event.previousUrl || '') ? 'login_redirect' : 'auto_redirect'
       return { ...event, navigationType: type as RawEvent['navigationType'], directNavigation: false, previousUrl: hostIntent.previousUrl || event.previousUrl, navigationEvidence: [...(event.navigationEvidence || []), 'electron-will-redirect-event'] }

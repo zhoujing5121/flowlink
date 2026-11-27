@@ -34,6 +34,7 @@ export function defaultVariables(
 	return out
 }
 
+/** 可选字段的模板渲染：undefined 原样跳过，有值才走 {{}} 解析（缺变量显式失败）。 */
 function renderMaybe(value: string | undefined, vars: Record<string, string>): string | undefined {
 	if (value === undefined) return undefined
 	return renderTemplateValue(value, vars)

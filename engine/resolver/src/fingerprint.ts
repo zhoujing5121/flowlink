@@ -62,6 +62,7 @@ export async function resolveL2(
 	const fingerprint = target.fingerprint
 	let candidates: InPageCandidate[] = []
 
+	/** 清除页面内残留的命中标记：上次运行的标记会让本次 L2 误判命中（失败可容忍）。 */
 	const strip = async (): Promise<void> => {
 		try {
 			await scope.evaluate(removeFingerprintMarkers, { marker: L2_MARKER })

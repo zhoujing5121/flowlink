@@ -48,6 +48,7 @@ export interface ActionResult {
 
 type ActionStep = Exclude<Step, { kind: 'group' }>
 
+/** 从解析结果提取要写进动作结果/报告的元数据（level/score 等，不含业务值）。 */
 function metaOf(
 	hit: ResolveResult,
 ): Pick<ActionResult, 'level' | 'score' | 'ambiguous' | 'resolveReason'> {
@@ -91,6 +92,10 @@ export async function waitForCondition(
 	}
 }
 
+/**
+ * 尽力而为的网络空闲等待：页面长轮询导致 networkidle 超时不算失败
+ * （普通 load 已在导航处等过），这里只是给动态渲染多一次机会。
+ */
 async function bestEffortNetworkIdle(page: Page, timeoutMs: number): Promise<void> {
 	try {
 		await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 3_000) })
@@ -125,6 +130,10 @@ export function sameSitePath(a: string, b: string): boolean {
 	return left.origin === right.origin && left.pathname === right.pathname
 }
 
+/**
+ * 动作执行分发器：按 step.kind 执行对应 Playwright 操作（导航/点击/输入/选择/
+ * 上传/拖拽等），统一接入解析超时、错误分类与结果元数据。
+ */
 export async function runAction(deps: ActionDeps, step: ActionStep): Promise<ActionResult> {
 	const timeout = deps.timeoutMs
 

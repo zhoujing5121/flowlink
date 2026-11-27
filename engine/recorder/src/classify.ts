@@ -38,6 +38,10 @@ export const AUTO_NAVIGATION_TYPES: ReadonlySet<string> = new Set([
 	'auto_redirect',
 ])
 
+/**
+ * 把配置里的 URL 模式编译为正则（i 标志）。坏正则跳过并记入 warnings，
+ * 不中断录制；调用方把 warnings 透传给诊断日志。
+ */
 function compilePatterns(patterns: string[], label: string, warnings: string[]): RegExp[] {
 	const compiled: RegExp[] = []
 	for (const pattern of patterns) {

@@ -94,10 +94,6 @@ const RECORDER_VERSION = '0.1.0'
 const DEFAULT_VIEWPORT = { width: 1440, height: 900 }
 const DEFAULT_BUFFER_MS = 500
 const DEFAULT_SETTLE_SILENCE_MS = 300
-/** 稳定判定：连续多少帧布局不变 */
-const STABLE_FRAMES = 2
-/** 稳定等待上限：页面永远在动也要往下走，绝不把录制卡死 */
-const MAX_SETTLE_MS = 5000
 /** 每多少毫秒检查一次 buffer 是否可以冲 */
 const TICK_MS = 100
 /** 动作进行中周期性采样页面签名（用于把 expect 正确归因到动作） */
@@ -107,34 +103,20 @@ const HOVER_LOOKBACK_MS = 600
 /** 采样上限，防止长录制把内存吃掉 */
 const MAX_SIGNATURE_SAMPLES = 600
 
-/**
- * 录制收尾：按种子给变量统一生成业务 label（成对日期/同名去重/业务化兜底）。
- * 导出供单测使用；机器键与模板语义不变（label 只是显示层元数据）。
- */
-export function applyRecordingLabels(
-	variables: ReadonlyArray<Variable>,
-	seeds: ReadonlyArray<LabelSeed>,
-): Variable[] {
-	const labels = assignLabels(seeds)
-	const entryByKey = new Map(
-		seeds.map((seed, index) => [seed.key, { label: labels[index]!, seed }] as const),
-	)
-	return variables.map((variable) => {
-		const entry = entryByKey.get(variable.name)
-		if (!entry) return { ...variable }
-		return {
-			...variable,
-			label: entry.label ?? variable.label,
-			locator: entry.seed.locator || variable.locator,
-		}
-	})
-}
+// 录制收尾的变量 label 生成与稳定点/静默原语已抽到子模块；此处导入并再导出
+// applyRecordingLabels（深层导入 record.js 的单测与既有使用方不受影响）。
+import { applyRecordingLabels } from './recording-labels.js'
+import { clamp, round2, settleFrameStability, sleep, waitForSilence } from './recording-stability.js'
 
+export { applyRecordingLabels } from './recording-labels.js'
+
+/** URL → 小写 host；解析失败返回空串（title 兜底、系统归属判断用）。 */
 function newURLSafeHost(value: string): string { try { return new URL(value).host.toLowerCase() } catch { return '' } }
 const URLSafeHost = newURLSafeHost
 
 /** 正常结束但没有任何可回放步骤：调用方应静默取消，而不是写一份非法的空 flow。 */
 export class EmptyRecordingError extends Error {
+	/** 统一消息与名字，调用方以 name 识别这一可恢复取消路径。 */
 	constructor() {
 		super('录制未捕获任何步骤，未生成 recording')
 		this.name = 'EmptyRecordingError'
@@ -146,7 +128,9 @@ function withRecordingStop<T>(promise: Promise<T>, signal: AbortSignal | undefin
 	if (!signal) return promise
 	if (signal.aborted) return Promise.reject(new EmptyRecordingError())
 	return new Promise<T>((resolve, reject) => {
+		/** 竞速清理：无论先到的是 promise 还是 Stop 信号，都恰好移除一次监听。 */
 		const cleanup = () => signal.removeEventListener('abort', onAbort)
+		/** Stop 触发：以 EmptyRecordingError 拒绝（可恢复取消路径）。 */
 		const onAbort = () => {
 			cleanup()
 			reject(new EmptyRecordingError())
@@ -172,6 +156,13 @@ function withRecordingStop<T>(promise: Promise<T>, signal: AbortSignal | undefin
  */
 export type RecordResultWithStepShots = RecordResult & { stepScreenshots?: string[] }
 
+/**
+ * 录制主函数：启动浏览器/附着 CDP，安装采集脚本，消费事件流并合成步骤，
+ * 收尾产出 Flow + 证据工件。Stop（opts.stopSignal）可在任何阶段打断录制——
+ * 初始化、导航、等待用户操作中的打断统一以 EmptyRecordingError 结束。
+ * 本函数体量大：状态机（页面/帧索引、缓冲、标签页采集）都在闭包里，
+ * 内部辅助函数的契约见各自注释。
+ */
 export async function record(opts: RecordOptions): Promise<RecordResultWithStepShots> {
 	const viewport = opts.viewport ?? DEFAULT_VIEWPORT
 	const headless = opts.headless ?? false
@@ -185,6 +176,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 	const elementsDir = join(artifactsDir, 'record', 'elements')
 	/** 懒创建：录制失败或 0 步时不该留下空目录 */
 	let elementsDirReady = false
+	/** 首次写元素截图前建 record/elements/（存在性由布尔标记记忆，避免反复 stat）。 */
 	const ensureElementsDir = async (): Promise<void> => {
 		if (elementsDirReady) return
 		await mkdir(elementsDir, { recursive: true })
@@ -192,6 +184,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 	}
 	const screenshotsDir = join(artifactsDir, 'record', 'screenshots')
 	let screenshotsDirReady = false
+	/** 首次写步骤截图前建 record/screenshots/（同上，懒创建）。 */
 	const ensureScreenshotsDir = async (): Promise<void> => {
 		if (screenshotsDirReady) return
 		await mkdir(screenshotsDir, { recursive: true })
@@ -223,6 +216,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		pagesAttached: 0,
 		pagesDetached: 0,
 	}
+	/** 录制收尾打印一次会话级统计（事件吞吐/批处理失败/重注入失败），供真机排障。 */
 	const logSessionStats = (): void => {
 		console.log(
 			`[perf] recording-session: events=${sessionStats.rawEventsReceived} batchFailures=${sessionStats.processBatchFailures} requeued=${sessionStats.eventsRequeued} droppedAfterRetry=${sessionStats.eventsDroppedAfterRetry} reinjectFailed=${sessionStats.captureReinjectFailed}/${sessionStats.captureReinjectAttempts} popupsNeverCaptured=${sessionStats.popupsNeverCaptured} pagesAttached=${sessionStats.pagesAttached} pagesDetached=${sessionStats.pagesDetached}`,
@@ -233,6 +227,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 	const pageIndexes = new WeakMap<Page, number>()
 	const pagesByIndex = new Map<number, Page>()
 	let pageSeq = 0
+	/** 首次见到的 Page 分配递增序号（steps.page.index 与 UI 标签页视角共用）。 */
 	const ensurePageIndex = (target: Page): number => {
 		const existing = pageIndexes.get(target)
 		if (existing !== undefined) return existing
@@ -251,6 +246,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 	const frameIndexes = new WeakMap<Frame, number>()
 	const framesByIndex = new Map<number, Frame>()
 	let frameSeq = 0
+	/** 首次见到的 Frame 分配递增序号（IR 的 frame.path 与跨 frame 证据定位用）。 */
 	const ensureFrameIndex = (frame: Frame): number => {
 		const existing = frameIndexes.get(frame)
 		if (existing !== undefined) return existing
@@ -268,6 +264,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 	const variables = new Map<string, Variable>()
 	/** 变量业务命名种子（机器键 → 页面证据）；录制收尾统一 assignLabels 生成 label */
 	const labelSeeds = new Map<string, LabelSeed>()
+	/** 首次引用定名：同一变量的证据只取首次出现位置（与 io.ts 迁移端约定一致）。 */
 	const noteVariableLabel = (name: string, seed: Omit<LabelSeed, 'key'>): void => {
 		if (!labelSeeds.has(name)) labelSeeds.set(name, { key: name, ...seed })
 	}
@@ -333,6 +330,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		}
 	}
 
+	/**
+	 * 预登记页面的导航基线（urlPattern 型 expect 的"前一 URL"）：
+	 * 新页面一出现就记录，避免首个动作的导航证据缺失。
+	 */
 	const primeNavigation = (target: Page): void => {
 		navigationReadyByPage.add(target)
 		lastNavigationUrlByPage.set(target, target.url())
@@ -412,6 +413,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		else warnings.push(`保存登录态失败（${opts.saveStorageStatePath}）：${result.error}`)
 	}
 
+	/** 采集事件入队：同步确定 frame/page 归属与标签页序号，交给异步合流循环。 */
 	const enqueueRawEvent = (sourcePage: Page, frame: Frame, event: RawEvent): void => {
 		// 先在同步回调内确定 frame/page 归属并入队；之后的异步 DOM 处理不再推测事件来源。
 		event.frameIndex = ensureFrameIndex(frame)
@@ -432,6 +434,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		else if (allEvents.length === 100_000) warnings.push('Raw evidence archive reached 100,000 events; later raw events are omitted from the sidecar.')
 	}
 
+	/**
+	 * 采集脚本 emit 绑定入口：规范化载荷 → 计数 → 入队。页面内脚本与录制
+	 * 状态机之间的唯一通道；载荷非法时静默丢弃（诊断靠统计计数暴露）。
+	 */
 	const onEmit = (sourcePage: Page, frame: Frame, payload: unknown): void => {
 		const event = normalizeEmitPayload(payload)
 		if (!event) return
@@ -506,8 +512,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		const wiredPages = new WeakSet<Page>()
 		/** 渲染进程崩溃的页面：事件采不到了，成步/稳定等待都要跳过它，但不终止整场录制。 */
 		const crashedPages = new WeakSet<Page>()
+		/** 页面可用判别：已关闭或渲染进程崩溃的页面不参与事件与稳定等待。 */
 		const pageAlive = (target: Page | undefined): boolean =>
 			target !== undefined && !target.isClosed() && !crashedPages.has(target)
+		/** 为页面挂 dialog/download/popup 三类监听；wiredPages 去重防双重挂接。 */
 		const attachPageListeners = (target: Page): void => {
 			// context.on('page') 对 context.newPage() 也会触发，必须去重：
 			// 否则 dialog 会被 accept 两次、记录成两条 dialog 步骤（实测踩过）
@@ -695,6 +703,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			if (target.isClosed()) continue
 			primeNavigation(target)
 		}
+		/** 把当前所有标签页的 frame 全量登记序号（新 frame 出现即编号，供证据与 IR 引用）。 */
 		const syncFrames = () => {
 			for (const target of pagesByIndex.values()) {
 				if (!target.isClosed()) for (const frame of target.frames()) ensureFrameIndex(frame)
@@ -715,6 +724,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		 */
 		/** 每个标签页一份 CDP session（DOM 查询是 per-document 的） */
 		const cdpByPage = new WeakMap<Page, { session: CDPSession; rootNodeId?: number }>()
+		/** 懒建并复用该页的 CDP session（closed-shadow 判定走 DOM 域，需要 DOM.enable）。 */
 		const ensureCdp = async (
 			target: Page,
 		): Promise<{ session: CDPSession; rootNodeId?: number }> => {
@@ -727,6 +737,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			}
 			return entry
 		}
+		/** CDP 判定 uid 对应元素是否在 closed shadow 内（决定录制为 host+innerOffset 形态）。 */
 		const hasClosedShadowRoot = async (target: Page, uid: string): Promise<boolean> => {
 			try {
 				const entry = await ensureCdp(target)
@@ -761,6 +772,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 
 		/* ---------- 单个动作 → Step ---------- */
 
+		/** 为动作的目标元素构建 ElementRef：uid 实时链优先，失败退回快照事实重建。 */
 		const buildRefFor = async (
 			action: CoalescedAction,
 			elementKey: number | string,
@@ -954,6 +966,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			return { kind: 'upload', id, target, files: [`{{${name}}}`] }
 		}
 
+		/**
+		 * 单个合流动作 → Step 的分发器：按 kind 构造对应步骤（元素类动作补
+		 * ElementRef、上传类动作建文件变量），返回 undefined = 该动作不成步（噪声）。
+		 */
 		const buildStep = async (action: CoalescedAction): Promise<Step | undefined> => {
 			const stepIndex = steps.length
 			const id = `s${++stepSeq}`
@@ -1134,6 +1150,11 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 
 		/* ---------- expect 推断：把「新出现的元素」变回 ElementRef ---------- */
 
+		/**
+		 * 从「动作前 / 动作后」两帧签名推断 expect：优先把新出现元素经 uid 找回
+		 * 生成已校验的 ElementRef；元素已消失（瞬态 UI）则退回快照事实重建，
+		 * 保证悬停菜单这类瞬时元素也能推出可用的 expect。
+		 */
 		const takeExpect = async (
 			before: PageSignature,
 			after: PageSignature,
@@ -1155,6 +1176,7 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			return inferExpect(before, after)
 		}
 
+		/** 用 uid 把元素找回来走完整 ElementRef 构建（候选已实时校验，最可靠）。 */
 		const buildRefFromUid = async (frame: Frame, uid: string): Promise<ElementRef | undefined> => {
 			const locator = await locateByUid(frame, uid)
 			if (!locator) return undefined
@@ -1281,6 +1303,10 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 
 		let flushChain: Promise<void> = Promise.resolve()
 		let hostEventCursor = 0
+		/**
+		 * 冲洗 pending 事件并成步：定时器与 Stop 可能同时触发，全部接入同一条
+		 * Promise 链保证单消费者；force=true（收尾）冲掉不足一个时间窗的尾批。
+		 */
 		const flush = (force: boolean): Promise<void> => {
 			// 定时器与 Stop 可能同时触发冲洗。所有批次都接入同一条 Promise 链，
 			// 确保同一时刻只有一个消费者从 pending 拆批；最终强制冲洗会排在旧批次之后，
@@ -1323,12 +1349,18 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 		const pendingHovers: CoalescedAction[] = []
 		const pendingDragSlot: PendingDragSlot = { current: undefined }
 
+		/** 下一个规划条目的时间戳（hover 意义判定要往回看"它是否被后续动作消费"）。 */
 		const nextTsOf = (items: PlannedItem[], index: number): number | undefined => {
 			const next = items[index + 1]
 			if (!next) return undefined
 			return next.kind === 'action' ? next.action.ts : next.ts
 		}
 
+		/**
+		 * 处理一批原始事件：合流 → 规划（对话框/下载插入、hover 意义过滤、
+		 * 拖拽配对、refine 合并）→ 逐步骤推断 expect 并产出。单批失败重试一次，
+		 * 仍失败则放弃该批并把原始事件留在证据流（诊断可见，录制继续）。
+		 */
 		const processBatch = async (
 			batch: RawEvent[],
 			hostBatch: NonNullable<RecordOptions['hostEvents']>[number][],
@@ -1549,12 +1581,14 @@ export async function record(opts: RecordOptions): Promise<RecordResultWithStepS
 			resolveStop = done
 		})
 		let stopped = false
+		/** 幂等停机入口：触发 stopPromise，收尾逻辑统一等它（Stop IPC/AbortSignal 共用）。 */
 		const stop = () => {
 			if (stopped) return
 			stopped = true
 			// 幂等关闭入口：Stop IPC、AbortSignal 与 drive 收尾可能几乎同时到达。
 			resolveStop?.()
 		}
+		/** AbortSignal → stop 的桥（信号只发一次，stop 自身幂等）。 */
 		const onAbort = () => stop()
 		opts.stopSignal?.addEventListener('abort', onAbort, { once: true })
 		// IPC stop 可以早于录制初始化完成；已经 abort 的信号不会再发一次事件。
@@ -1750,6 +1784,7 @@ export type RecordOnPageOptions = Omit<RecordOptions, 'page' | 'attachOnly' | 'h
 	skipNavigate?: boolean
 }
 
+/** 接到已有 Page 上录制（Electron 内嵌页）。默认 attachOnly + skipNavigate。 */
 export async function recordOnPage(opts: RecordOnPageOptions): Promise<RecordResultWithStepShots> {
 	return record({
 		...opts,
@@ -1760,64 +1795,7 @@ export async function recordOnPage(opts: RecordOnPageOptions): Promise<RecordRes
 	})
 }
 
-/* ------------------------------------------------------------------ */
-/* 稳定点 / 静默                                                       */
-/* ------------------------------------------------------------------ */
-
-/** 连续 N 帧「布局指纹」不变才算稳定（对应架构里的「连续 2 帧无布局变化」） */
-async function settleFrameStability(page: Page): Promise<void> {
-	await page
-		.evaluate(
-			(frames) =>
-				new Promise<void>((resolve) => {
-					const doc = document.documentElement
-					const measure = () =>
-						`${doc.scrollWidth}x${doc.scrollHeight}x${document.querySelectorAll('*').length}`
-					let last = measure()
-					let stable = 0
-					let guard = 0
-					const tick = () => {
-						if (++guard > 120) return resolve()
-						const current = measure()
-						if (current === last) {
-							if (++stable >= frames) return resolve()
-						} else {
-							stable = 0
-							last = current
-						}
-						requestAnimationFrame(tick)
-					}
-					requestAnimationFrame(tick)
-				}),
-			STABLE_FRAMES,
-		)
-		.catch(() => {
-			/* 页面在导航：稳定性检查跳过 */
-		})
-}
-
-/** 事件流静默：距最后一个事件 ≥ silenceMs（有上限，不卡死） */
-async function waitForSilence(getLastEventTs: () => number, silenceMs: number): Promise<void> {
-	const started = Date.now()
-	while (Date.now() - started < MAX_SETTLE_MS) {
-		if (Date.now() - getLastEventTs() >= silenceMs) return
-		await sleep(40)
-	}
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((done) => setTimeout(done, ms))
-}
-
-/** 坐标保留 2 位小数（CSS px，不乘 dpr） */
-function round2(value: number): number {
-	return Math.round(value * 100) / 100
-}
-
-function clamp(value: number, min: number, max: number): number {
-	return Math.min(max, Math.max(min, value))
-}
-
+/** URL → 标题兜底：取路径段（非根），否则主机名；解析失败原样返回。 */
 function titleFromUrl(rawUrl: string): string {
 	try {
 		const url = new URL(rawUrl)

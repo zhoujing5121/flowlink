@@ -1,7 +1,10 @@
 /**
  * 仅注释提交校验（openspec: refactor-module-decoupling-and-layout，设计 D11/D12）。
  *
- * 用法：node scripts/assert-comment-only.mjs <基线提交> <路径…>
+ * 用法：node scripts/assert-comment-only.mjs <基线提交|index> <路径…>
+ *
+ * 基线可以是 git 提交号，也可以是 `index`（当前暂存区，用于结构改动已暂存、
+ * 尚未提交时的注释批次校验）。
  *
  * 把基线提交与工作区的每个文件分别经 esbuild 规范化（剥离全部注释与空白、
  * 压缩为等价最小形式，legalComments:'none' 保证不留任何注释）后逐字节比较。
@@ -34,7 +37,8 @@ function normalize(source, loader) {
 }
 
 function showFile(rev, path) {
-	return execFileSync("git", ["show", `${rev}:${path}`], {
+	const spec = rev === "index" ? `:${path}` : `${rev}:${path}`;
+	return execFileSync("git", ["show", spec], {
 		maxBuffer: 64 * 1024 * 1024,
 		encoding: "utf8",
 	});

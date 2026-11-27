@@ -103,6 +103,7 @@ export function withTabSwitches(
 /* 2. 对话框插入                                                        */
 /* ------------------------------------------------------------------ */
 
+/** 取条目时间戳的统一入口（动作条目时间在 action 里，对话框/页面条目直接在顶层）。 */
 function itemTs(item: PlannedItem): number {
 	return item.kind === 'action' ? item.action.ts : item.ts
 }
@@ -145,6 +146,7 @@ export function insertDialogs(
 	return { items: out, consumed }
 }
 
+/** 把一条已消费的对话框事件打包为规划条目（回放时据此显式 accept/dismiss 一次）。 */
 function dialogItem(dialog: RecordedDialog): PlannedItem {
 	return {
 		kind: 'dialog',
@@ -277,11 +279,13 @@ export function synthesizeOptionalNavigations(events: RawEvent[]): CoalescedActi
  * `isOptional` 的 navigate 绝不并入 openTab——并入会丢掉可选标记和回放时的跳过判定。
  */
 export function refineSteps(steps: Step[]): Step[] {
+	/** 合并分组键：同指纹 + 同 frame 路径 + 同标签页的目标步骤视为同一个元素（连续输入合并的依据）。 */
 	const keyOf = (step: Step): string | undefined => {
 		if (!('target' in step) || !step.target) return undefined
 		const ref = step.target as ElementRef
 		return `${ref.fingerprint.stableHash}|${JSON.stringify(ref.frame?.path ?? [])}|${step.page?.index ?? 0}`
 	}
+	/** 可编辑元素判别（input/textarea/contenteditable）：只有它们参与连续输入合并。 */
 	const isEditable = (step: Step): boolean => {
 		if (!('target' in step) || !step.target) return false
 		const ref = step.target as ElementRef

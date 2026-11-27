@@ -198,12 +198,19 @@ export interface InPageCollectArg {
  */
 export const NAME_KEEPALIVE_SOURCE = 'globalThis.__name = globalThis.__name || ((fn) => fn); true'
 
+/**
+ * 页面内指纹候选收集主函数（经 evaluate 序列化进页面执行）。
+ * 按稳定属性策略遍历 DOM（含 shadow DOM），为指纹全等的元素打标记并产出候选。
+ * 注意：本函数及其内部辅助运行在页面上下文，不得引用页面外的闭包变量。
+ */
 export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandidate[] {
 	const policy = arg.policy
 	const skipTags = ['script', 'style', 'head', 'meta', 'link', 'noscript', 'template', 'html']
+	/** 空白折叠 + 去首尾空格；属性值与可访问名比较前的统一归一。 */
 	const normalize = (value: string | null | undefined): string =>
 		(value ?? '').replace(/\s+/g, ' ').trim()
 
+	/** 动态值判别：换行/UUID/长 hex/长数字串/时间戳形态的属性值不进指纹（回放必失配）。 */
 	const isDynamicValue = (value: string): boolean => {
 		if (!value) return false
 		if (value.indexOf('\n') >= 0) return true
@@ -214,6 +221,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return false
 	}
 
+	/** 属性稳定性判别：录制器临时标记与策略拒绝表之外，按允许表（精确/前缀）放行。 */
 	const isStableAttr = (name: string): boolean => {
 		const lower = name.toLowerCase()
 		if (lower.indexOf('data-rr-') === 0) return false
@@ -228,6 +236,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return false
 	}
 
+	/** 按 isStableAttr 过滤并剔除空值/动态值后，产出该元素的小写键属性表（进指纹）。 */
 	const stableAttrs = (el: Element): Record<string, string> => {
 		const out: Record<string, string> = {}
 		for (const attr of Array.from(el.attributes)) {
@@ -340,6 +349,10 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return normalize(el.textContent)
 	}
 
+	/**
+	 * 可见性判定：优先 checkVisibility（含 opacity/CSS 显示性），老内核退回
+	 * 几何判断（有布局盒即视为可见）。
+	 */
 	const isVisible = (el: Element): boolean => {
 		const anyEl = el as Element & { checkVisibility?: (opts?: object) => boolean }
 		if (typeof anyEl.checkVisibility === 'function') {
@@ -363,6 +376,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 		return out
 	}
 
+	/** 指纹全等判定：tag/role/可访问名必须一致，稳定属性逐键全等、不补偿差异。 */
 	const matches = (el: Element): boolean => {
 		const tag = el.tagName.toLowerCase()
 		if (tag !== arg.tag.toLowerCase()) return false
@@ -389,6 +403,7 @@ export function collectFingerprintCandidates(arg: InPageCollectArg): InPageCandi
 	const out: InPageCandidate[] = []
 	let counter = 0
 
+	/** 深度优先遍历（开放与 closed shadow 都进），命中即打标记并产出候选，达到 limit 截断。 */
 	const visit = (root: Document | ShadowRoot | Element): void => {
 		if (out.length >= arg.limit) return
 		// 按 DOM 遍历顺序收集，达到上限立即停止，保证候选数量有界且顺序稳定。

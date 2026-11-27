@@ -44,6 +44,7 @@ interface NormalizedOptions {
 	levels: ResolveLevel[]
 }
 
+/** 补齐调用方省略的解析选项（阶梯顺序、可见性、AI 兜底等），统一默认值来源。 */
 function withDefaults(options?: ResolveOptions): NormalizedOptions {
 	return {
 		requireVisible: options?.requireVisible ?? true,
@@ -107,6 +108,7 @@ async function validateAiLocator(
 	}
 }
 
+/** 等待 Page/Frame 的 DOM 就绪（有上限、不抛错）：导航进行中时交给后续候选等待兜底。 */
 async function waitForLoadState(scope: Scope, timeoutMs: number): Promise<void> {
 	// 已加载完会立即返回；页面正在导航时最多等 timeoutMs（不抛错，交给后面的候选等待兜底）
 	await scope

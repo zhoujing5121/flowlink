@@ -81,6 +81,10 @@ export class ArtifactWriter {
 	readonly flowDir: string
 	readonly runDir: string
 
+	/**
+	 * 依据 root/flowId/runId 决定目录布局（runs 布局 vs 单次布局），单次与批量
+	 * 执行共用一个写入入口；不立即建目录（首次写入时随 safePath 创建）。
+	 */
 	constructor(
 		root: string,
 		flowId: string,
@@ -112,6 +116,7 @@ export class ArtifactWriter {
 		return abs
 	}
 
+	/** 写 UTF-8 文本工件；返回绝对路径（报告与证据引用它）。relPath 越界即抛错。 */
 	async writeText(relPath: string, content: string): Promise<string> {
 		const abs = this.safePath(relPath)
 		await mkdir(dirname(abs), { recursive: true })
@@ -119,6 +124,7 @@ export class ArtifactWriter {
 		return abs
 	}
 
+	/** 写二进制工件（截图 PNG 等）；越界即抛错。 */
 	async writeBuffer(relPath: string, content: Buffer): Promise<string> {
 		const abs = this.safePath(relPath)
 		await mkdir(dirname(abs), { recursive: true })
@@ -174,6 +180,7 @@ export class ArtifactWriter {
 		return abs
 	}
 
+	/** 写回放结果报告（固定名 result.json，报告查看器按约定读取）。 */
 	async writeResult(report: unknown): Promise<string> {
 		return this.writeText('result.json', `${JSON.stringify(report, null, 2)}\n`)
 	}

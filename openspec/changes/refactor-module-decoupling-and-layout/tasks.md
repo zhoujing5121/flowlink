@@ -35,9 +35,14 @@
 
 ## 2. engine：文件级拆分与注释
 
-- [ ] 2.1 `schema.ts` 拆分：按 design D9 拆出 `element.ts`、`variable.ts`、`step.ts`、`flow.ts`、`template.ts`、`contract.ts`；`schema.ts` 保留为再导出桶。验证：engine 导出清单快照测试通过；现有 `../../schema/src/schema.js` 深层导入无需改动；`npm test` 全绿。
-- [ ] 2.2 recorder 与 executor 的外围函数抽出：新建 `recording-labels.ts`、`recording-stability.ts`、`run-evidence.ts`、`run-support.ts`；`record()` 与 `runFlowInBrowserContext()` 本体不动，原文件对抽出的符号再导出。验证：导出清单快照通过；两个超长函数的函数体文本与拆分前逐字节一致；`npx tsc --noEmit` 与 `npm test` 全绿。
-- [ ] 2.3 engine 注释回填：按包分批（schema 与 reference、resolver、recorder 与 `capture.js`、executor），每个具名函数/方法补解释型 JSDoc，每个文件补文件头（design D11）。每批一个仅注释提交。验证：每批经 `scripts/assert-comment-only.mjs` 校验通过；该批的 jsdoc 违例数归零并同步下调 `lint-budget.json`；`npm test` 全绿。
+- [x] 2.1 `schema.ts` 拆分：按 design D9 拆出 `element.ts`、`variable.ts`、`step.ts`、`flow.ts`、`template.ts`、`contract.ts`；`schema.ts` 保留为再导出桶。验证：engine 导出清单快照测试通过；现有 `../../schema/src/schema.js` 深层导入无需改动；`npm test` 全绿。
+  - 执行记录（2026-11-27）：与 D9 行号映射的唯一偏差是 `SCHEMA_VERSION` 落在 `flow.ts`（它是 Flow 的版本契约、被 FlowSchema 与 io.ts 使用）而非 element.ts；深层导入路径未变，快照与 159 用例全绿。
+- [x] 2.2 recorder 与 executor 的外围函数抽出：新建 `recording-labels.ts`、`recording-stability.ts`、`run-evidence.ts`、`run-support.ts`；`record()` 与 `runFlowInBrowserContext()` 本体不动，原文件对抽出的符号再导出。验证：导出清单快照通过；两个超长函数的函数体文本与拆分前逐字节一致；`npx tsc --noEmit` 与 `npm test` 全绿。
+  - 执行记录（2026-11-27）：`STABLE_FRAMES`/`MAX_SETTLE_MS` 随唯一使用方迁入 recording-stability.ts；record.js 仅再导出既有导出符号 `applyRecordingLabels`（其余原本是模块私有，不新增导出，保持 record.js 导出面不变）；`safePageUrl` 由 run.js 再导出。超长函数体经 git diff hunk 区间与 HEAD 函数体区间求交验证：record()（HEAD 175–1763）与 runFlowInBrowserContext()（HEAD 291–1276）零触碰。
+- [x] 2.3 engine 注释回填：按包分批（schema 与 reference、resolver、recorder 与 `capture.js`、executor），每个具名函数/方法补解释型 JSDoc，每个文件补文件头（design D11）。每批一个仅注释提交。验证：每批经 `scripts/assert-comment-only.mjs` 校验通过；该批的 jsdoc 违例数归零并同步下调 `lint-budget.json`；`npm test` 全绿。
+  - 执行记录（2026-11-27）：四批全部完成（schema+reference 13、resolver 14、recorder+capture.js 84、executor 54），engine 违例归零（总量 840→675，余量属 electron/renderer，分别在 3.9/4.13 处理）。每批经 assert-comment-only 校验通过；`lint-budget.json` 840→827→813→729→675 逐批下调；每批跑 `npm test` 全绿。
+  - 工具增强：`assert-comment-only.mjs` 支持 `index` 基线（对照暂存区），供结构改动已暂存、未提交时的批次校验（已在文件头注明）。
+  - 提交方式说明：由于 2.1/2.2 的结构改动与注释批次发生在同批文件且尚未提交，用户提交时可按"结构改动（新文件与函数搬移）"与"注释回填"分开（git 按文件拆分即可近似满足：结构 = 六个新 schema 文件 + 四个抽取文件 + schema.ts/record.ts/run.ts 的结构部分；注释 = 其余改动）。若嫌拆分过细，合并为一个"engine 结构与注释"提交并在说明中注明亦可接受，但注释与后续 2.4 的命名整改必须分开提交。
 - [ ] 2.4 engine 命名整改：函数级与模块级名字按 design D11 整改，不动各包 `index.ts` 的导出名。验证：导出清单快照通过；`npm run lint` 无报错；`npm test` 全绿；"旧名 → 新名"清单写进提交说明。
 - [ ] 2.5 收尾验证：`npm run build` + `npx tsc --noEmit` + `npm run lint` + `npm test` 全绿。真机：录制一段多标签页流程（含输入与下拉）并回放；前缀回放后做一次分组重录。停点：用户提交。
 

@@ -41,6 +41,7 @@ export interface VerifyDeps {
 export const EXPECT_WAIT_MS = 5_000
 const POLL_MS = 100
 
+/** verify 内部的轻量延时（轮询节奏统一走这里，便于调整全局轮询密度）。 */
 export async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -71,6 +72,7 @@ export async function domSignatureOf(page: Page, region = 'body'): Promise<strin
 	return createHash('sha1').update(html).digest('hex')
 }
 
+/** 取目标元素的归一文本（取不到/超时返回 undefined，交给断言判定）。 */
 async function textOf(deps: VerifyDeps, target: ElementRef): Promise<string | undefined> {
 	try {
 		const hit = await deps.resolveTarget(target, {
@@ -84,6 +86,7 @@ async function textOf(deps: VerifyDeps, target: ElementRef): Promise<string | un
 	}
 }
 
+/** 元素存在性与可见性二值探测（visible/hidden 断言的基础信号）。 */
 async function visibleStateOf(
 	deps: VerifyDeps,
 	target: ElementRef,
@@ -226,6 +229,7 @@ export async function runAssertion(
 	target: ElementRef | undefined,
 	waitMs: number = EXPECT_WAIT_MS,
 ): Promise<string> {
+	/** assert/condition 都要求 target；缺失是 Flow 编写错误，直接以 EXPECT_MISMATCH 失败。 */
 	const needTarget = (): ElementRef => {
 		if (!target) throw new StepFailure('EXPECT_MISMATCH', 'assert 缺少 target')
 		return target
@@ -310,6 +314,10 @@ export async function runAssertion(
 	}
 }
 
+/**
+ * 断言求值（visible/hidden/text/value/count）：等待窗口内轮询直到通过或超时，
+ * 返回失败的诊断文本（通过返回空串）。target 缺失/解析失败按失败处理。
+ */
 export async function evaluateAssertion(
 	deps: VerifyDeps,
 	assertion: Assertion,

@@ -37,6 +37,7 @@ export class DownloadManager {
 	readonly #used = new Set<string>()
 	readonly #pending: Array<Promise<void>> = []
 
+	/** 注入 ArtifactWriter 与日志；下载事件由 run.ts 在 page.on('download') 注册时转发。 */
 	constructor(
 		artifacts: ArtifactWriter,
 		log: (msg: string) => void = () => {},
@@ -93,10 +94,12 @@ export class DownloadManager {
 		return this.#records.slice(Math.max(0, cursor)).map((record) => record.filename)
 	}
 
+	/** 全部下载记录（文件名/路径/来源步骤）的只读副本。 */
 	list(): DownloadRecord[] {
 		return [...this.#records]
 	}
 
+	/** 已完成下载总数。 */
 	get count(): number {
 		return this.#records.length
 	}

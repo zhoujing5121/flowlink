@@ -73,6 +73,10 @@
 	var outbox = []
 	var flushTimer = null
 
+	/**
+	 * 出站队列的重试冲洗：binding 尚未就绪时保留事件、50ms 后重试。
+	 * 每个 Document 只保留一个重试定时器；有界队列防导航异常时内存增长。
+	 */
 	function scheduleFlush() {
 		// 每个 Document 只保留一个重试定时器。启动或导航期间 binding 暂时缺失是正常情况，
 		// 因此先把队列限制在有界范围内并重试，不能让页面初始化依赖 Node binding 先就绪。
@@ -89,6 +93,7 @@
 		}, 50)
 	}
 
+	/** 直接经 exposeBinding 回调发往 Node 侧；Promise 拒绝静默（Node 侧已记数）。 */
 	function push(payload) {
 		try {
 			var ret = window.__rrEmit(payload)
@@ -98,6 +103,7 @@
 		}
 	}
 
+	/** 事件出口：binding 可用即直发，否则进重试队列（丢弃最旧项保内存有界）。 */
 	function emit(payload) {
 		if (typeof window.__rrEmit === 'function') {
 			push(payload)
@@ -113,16 +119,19 @@
 	/* 事实采集（纯函数，Node 侧也复用）                                   */
 	/* ---------------------------------------------------------------- */
 
+	/** 文本归一：空白（含 nbsp）折叠为单空格并去首尾；可访问名/候选文本统一用它。 */
 	function normalize(text) {
 		return String(text == null ? '' : text)
 			.replace(/[\s\u00a0]+/g, ' ')
 			.trim()
 	}
 
+	/** 坐标 2 位小数（与 IR 的 CSS px 精度约定一致）。 */
 	function round(n) {
 		return Math.round(n * 100) / 100
 	}
 
+	/** 截断过长的候选文本（text 候选不携带整段正文）。 */
 	function clip(text, max) {
 		var s = normalize(text)
 		return s.length > max ? s.slice(0, max) : s
@@ -223,6 +232,7 @@
 	/** 邻近文本锚点：左邻 / 上邻 / 父容器自有文本（给 AI 或人工看的弱锚点） */
 	function nearbyTextOf(el) {
 		var out = []
+		/** 收集一条去重后的邻近文本（最多 4 条、每条 ≤80 字符）。 */
 		function pushText(text) {
 			var t = clip(text, 80)
 			if (t && out.indexOf(t) === -1 && out.length < 4) out.push(t)
@@ -249,6 +259,7 @@
 		return out
 	}
 
+	/** 保序去重（候选/文本列表的通用收尾）。 */
 	function dedupe(list) {
 		var out = []
 		for (var i = 0; i < list.length; i++) {
@@ -299,6 +310,10 @@
 		return facts
 	}
 
+	/**
+	 * 给元素打会话内唯一标记（data-rr-uid）：采集侧发 uid、Node 侧凭 uid 把元素
+	 * 找回来建 ElementRef。已有标记直接复用（同一元素多次动作不换号）。
+	 */
 	function markUid(el) {
 		try {
 			var existing = el.getAttribute('data-rr-uid')
@@ -337,6 +352,10 @@
 		'[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],' +
 		'[role=searchbox],[aria-haspopup],[aria-expanded]'
 
+	/**
+	 * 目标重定向：事件真正命中的是交互语义祖先（role=button/tab/menuitem 等）
+	 * 而不是内层 span/svg——回放定位与用户心智都在祖先上。
+	 */
 	function retarget(el) {
 		if (!el || el.nodeType !== 1) return el
 		var hit = null
@@ -373,6 +392,7 @@
 		}
 	}
 
+	/** 键盘事件修饰键集合 → IR 的四类组合键（CapsLock 等不入 IR）。 */
 	function modifiersOf(event) {
 		var mods = []
 		if (event.altKey) mods.push('Alt')
@@ -584,6 +604,7 @@
 	var hoverElement = null
 	var hoverStamps = typeof WeakMap === 'function' ? new WeakMap() : null
 
+	/** 取消进行中的 hover 驻留判定（指针移出 / 新动作到达时调用，避免残留定时器误发）。 */
 	function cancelHoverDwell() {
 		if (hoverTimer) {
 			clearTimeout(hoverTimer)
@@ -633,6 +654,7 @@
 	var scrollState = typeof WeakMap === 'function' ? new WeakMap() : null
 	var pendingScroll = null
 
+	/** 冲洗待发滚动：时间戳取第一段滚动的起点（保证"点击前自动滚动"过滤仍然有效）。 */
 	function flushScroll() {
 		if (!pendingScroll) return
 		var payload = pendingScroll
@@ -756,6 +778,7 @@
 	window.__rrClearUids = function () {
 		// 只递归清理开放的 shadow root；封闭 root 按设计不可访问，只能管理其宿主上的标记。
 		var removed = 0
+		/** 递归清理一棵文档/ShadowRoot 子树上的全部 uid 标记。 */
 		function clearIn(root) {
 			var list
 			try {

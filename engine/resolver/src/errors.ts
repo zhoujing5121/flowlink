@@ -26,6 +26,10 @@ export class ElementNotFoundError extends Error {
 	readonly target: ElementRef
 	readonly details: Record<string, unknown>
 
+	/**
+	 * code 供程序化分支（自愈升级、重试策略），message/details 供报告展示；
+	 * target 原样保留失败时的元素引用（诊断与自愈候选用）。
+	 */
 	constructor(
 		code: ResolverErrorCode,
 		target: ElementRef,

@@ -1,3 +1,11 @@
+/**
+ * Flow 文件 IO：磁盘/内存边界上的迁移、解析、校验与原子写入。
+ *
+ * 职责：把任意版本的磁盘数据升级到当前 schema（migrateFlow），过 Zod 与
+ * 跨字段契约（parseFlow），并以临时文件 + rename 的方式落盘（saveFlow）。
+ * 不负责 Flow 的运行时变换；调用方拿到的 Flow 永远是当前版本且已过契约校验。
+ * 主要使用方：主进程 flow 读写、executor 自愈写回、录制落盘。
+ */
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -10,6 +18,7 @@ import { assignLabels, deriveLocator, mapLegacyType, validationToRulesText, type
  */
 export class FlowValidationError extends Error {
 	readonly issues: string[]
+	/** source 只是报错上下文（文件路径或 "<memory>"），不参与判定。 */
 	constructor(source: string, issues: string[]) {
 		super(`flow 校验失败（${source}）:\n  - ${issues.join('\n  - ')}`)
 		this.name = 'FlowValidationError'
@@ -127,6 +136,10 @@ function collectVariableSeeds(steps: unknown): {
 } {
 	const seeds = new Map<string, LabelSeed>()
 	const locators = new Map<string, string>()
+	/**
+	 * 记录一个变量的命名证据与 locator：同一变量多处引用时只取首次出现
+	 * （map 已有则跳过），locator 也取首次出现步骤的系统/页面上下文。
+	 */
 	const note = (name: string, target: unknown, pageIndex: number, step: Record<string, unknown>): void => {
 		if (seeds.has(name)) return
 		const kindHint = kindHintForName(name)
@@ -142,6 +155,10 @@ function collectVariableSeeds(steps: unknown): {
 			),
 		)
 	}
+	/**
+	 * 递归遍历步骤（含嵌套 group）；effectivePage 让未显式声明 page 的
+	 * 子步骤继承父链上的标签页序号。
+	 */
 	const visitStep = (raw: unknown, pageIndex: number): void => {
 		const step = (raw ?? {}) as Record<string, unknown>
 		const pageIndexOfStep = typeof step['page'] === 'object' && step['page'] !== null
@@ -149,6 +166,11 @@ function collectVariableSeeds(steps: unknown): {
 			: undefined
 		const effectivePage = typeof pageIndexOfStep === 'number' ? pageIndexOfStep : pageIndex
 		const target = step['target']
+		/**
+		 * 对一个字符串值里的全部 {{name}} 引用逐个记证据。步骤上承载模板引用的
+		 * 字段全集如下：各动作的输入值 + expect/assertion 的比对目标；新增会写入
+		 * {{name}} 的字段时必须同步这里，否则该变量的命名证据会缺失。
+		 */
 		const noteAll = (value: unknown): void => {
 			for (const name of templateNamesOf(value)) note(name, target, effectivePage, step)
 		}

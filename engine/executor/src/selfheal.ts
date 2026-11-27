@@ -26,6 +26,7 @@ export interface ElementFacts {
 	placeholder?: string
 }
 
+/** 归一候选文本：空白折叠后为空视同缺失（指纹比较不掺进空白噪声）。 */
 function collapse(value: string | undefined): string | undefined {
 	if (value === undefined) return undefined
 	const trimmed = value.replace(/\s+/g, ' ').trim()
@@ -58,6 +59,7 @@ export function pickCandidateFromFacts(
 	// 只选择一个最稳定的可用定位方式，不把同一元素的所有表示都追加进去；
 	// 下方顺序同时代表各定位方式的可信优先级。
 	const used = new Set(usedValues.map((v) => v.trim()))
+	/** 去重闸：值（或 role:name 组合）已被更高优先级候选占用时不再追加。 */
 	const push = (candidate: Candidate): Candidate | null => {
 		const key =
 			typeof candidate.value === 'string'
@@ -125,6 +127,7 @@ export function pickCandidateFromFacts(
 	return null
 }
 
+/** 候选值键：字符串值直接用，role/name 对象值拼成 role:name（写回去重的比较键）。 */
 function candidateValueKey(candidate: Candidate): string {
 	return typeof candidate.value === 'string'
 		? candidate.value

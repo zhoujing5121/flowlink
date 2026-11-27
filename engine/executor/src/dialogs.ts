@@ -41,6 +41,7 @@ export class DialogManager {
 	readonly #failures: string[] = []
 	readonly #log: (msg: string) => void
 
+	/** mode 决定托管策略（auto-accept / dismiss / manual 等待 IR 的 dialog 步骤）。 */
 	constructor(mode: DialogMode, log: (msg: string) => void = () => {}) {
 		this.mode = mode
 		this.#log = log
@@ -69,10 +70,12 @@ export class DialogManager {
 		this.#pending.push({ dialog, page, info, at: Date.now() })
 	}
 
+	/** 待处理对话框数（manual 模式下 run 循环用它判断是否需要等待 dialog 步骤）。 */
 	get pendingCount(): number {
 		return this.#pending.length
 	}
 
+	/** 待处理对话框快照（诊断/报告展示用；数组是副本，改动不影响管理器）。 */
 	pendingList(): PendingDialog[] {
 		return [...this.#pending]
 	}

@@ -70,6 +70,10 @@ export class PageManager {
 	readonly #onPage: ((page: Page, index: number) => void) | undefined
 	readonly #openPage: ((url?: string) => Promise<Page>) | undefined
 
+	/**
+	 * 挂接 context 的 page 事件并把现有页面登记为槽位（index 0 = 起点）。
+	 * onPage/onOpenPage 注入宿主差异（Electron 内嵌页的自定义打开路径）。
+	 */
 	constructor(
 		context: BrowserContext,
 		log: (msg: string) => void = () => {},
@@ -93,6 +97,7 @@ export class PageManager {
 		}
 	}
 
+	/** 登记新页面为下一个槽位（同一 Page 去重复用原槽位，索引不漂移）。 */
 	#append(page: Page): PageSlot {
 		// 页面事件和显式 open() 可能报告同一个 Page；保留原槽位，
 		// 不为同一页面重复分配索引。
@@ -113,14 +118,17 @@ export class PageManager {
 		return this.#slots
 	}
 
+	/** 已登记页面总数（含已关闭槽位）。 */
 	get count(): number {
 		return this.#slots.length
 	}
 
+	/** 仍存活的页面数（switchTab/open/close 的合法范围依据）。 */
 	get openCount(): number {
 		return this.#slots.filter((slot) => !slot.closed).length
 	}
 
+	/** 当前激活槽位序号（IR 的 page.index 语义）。 */
 	get currentIndex(): number {
 		return this.#current
 	}
@@ -205,6 +213,7 @@ export class PageManager {
 		return slot
 	}
 
+	/** 打开新标签页（宿主注入 openPage 时走宿主路径，否则 context.newPage），并切为当前。 */
 	async open(url?: string): Promise<PageSlot> {
 		const page = this.#openPage ? await this.#openPage(url) : await this.#context.newPage()
 		const slot = this.#append(page)
@@ -215,6 +224,7 @@ export class PageManager {
 		return slot
 	}
 
+	/** 关闭指定（或当前）标签页：槽位保留保证索引稳定，指针移到最近存活页。 */
 	async close(index?: number): Promise<void> {
 		// 关闭后仍保留槽位，确保后续页面沿用历史索引；
 		// 这里只把当前指针移到仍存活的页面。

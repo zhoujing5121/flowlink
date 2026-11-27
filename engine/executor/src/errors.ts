@@ -16,6 +16,10 @@ export class StepFailure extends Error {
 	readonly code: ErrorCode
 	readonly detail?: string
 
+	/**
+	 * code 是稳定的机器可读错误码（报告/自愈/重试分支用它），message 面向用户，
+	 * detail 承载可选的技术细节（原始 Playwright 消息等）。
+	 */
 	constructor(code: ErrorCode, message: string, detail?: string) {
 		super(message)
 		this.name = 'StepFailure'
@@ -28,6 +32,7 @@ export class StepFailure extends Error {
 export class TemplateError extends Error {
 	readonly variable?: string
 
+	/** variable 是渲染时缺失的变量名（诊断直接指认；无则属语法错误）。 */
 	constructor(message: string, variable?: string) {
 		super(message)
 		this.name = 'TemplateError'
@@ -45,6 +50,7 @@ const ACTIONABILITY_RE =
 	/intercepts pointer events|element is not visible|Element is not visible|not stable|element is not enabled|Element is not enabled|not editable|Element is not editable|outside of the viewport|element is not attached|Element is not attached|element is detached|waiting for locator|strict mode violation/i
 const TIMEOUT_RE = /Timeout \d+ms exceeded|timed out/i
 
+/** 任意抛出值 → 展示文本：Error 取 message，字符串原样，其余 JSON 化（失败兜底 String）。 */
 function messageOf(err: unknown): string {
 	if (err instanceof Error) return err.message
 	if (typeof err === 'string') return err

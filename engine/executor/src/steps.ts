@@ -17,6 +17,7 @@ export interface FlatStep {
 	depth: number
 }
 
+/** 全局唯一 step id：父链前缀（组 id 以 / 连接）+ 本步 id，报告与日志用。 */
 export function stepIdOf(prefix: string, id: string): string {
 	return prefix.length > 0 ? `${prefix}/${id}` : id
 }
@@ -25,6 +26,7 @@ export function stepIdOf(prefix: string, id: string): string {
 export function flattenSteps(steps: Step[], prefix = '', depth = 0): FlatStep[] {
 	const out: FlatStep[] = []
 	// 使用全局展开序号作为 artifact 索引，因此会包含此前各个 group 中的步骤。
+	/** 递归展开一段步骤列表：group 透传 ownerGroupId 与深度，叶子产出 FlatStep。 */
 	const visit = (
 		list: Step[],
 		listPrefix: string,
@@ -55,6 +57,7 @@ export function prefixSteps(steps: Step[], executableCount: number): Step[] {
 	if (!Number.isInteger(executableCount) || executableCount < 0) {
 		throw new Error('executableCount 必须是非负整数')
 	}
+	/** 递归截取：组按剩余配额整体切（部分子步骤可保留），保证不超 executableCount。 */
 	const take = (items: Step[], limit: number): { steps: Step[]; used: number } => {
 		const result: Step[] = []
 		let used = 0
@@ -76,6 +79,7 @@ export function prefixSteps(steps: Step[], executableCount: number): Step[] {
 	// 悬空分支引用清理：condition 可位于组内任意位置，目标为步骤 id；
 	// 指向前缀 Flow 中不存在的步骤（被截断的后续组等）时删除该字段（缺省 = 顺序继续）。
 	const stepIds = new Set<string>()
+	/** 展开后的全部叶子步骤 id（含组内），供分支目标的存在性校验。 */
 	const collectStepIds = (items: Step[]): void => {
 		for (const step of items) {
 			if (step.kind === 'group') collectStepIds(step.steps)
@@ -83,6 +87,7 @@ export function prefixSteps(steps: Step[], executableCount: number): Step[] {
 		}
 	}
 	collectStepIds(result)
+	/** 清理悬空分支目标：trueStepId/falseStepId 指向被截断步骤时删除该字段。 */
 	const sanitizeConditionTargets = (items: Step[]): void => {
 		for (const step of items) {
 			if (step.kind === 'group') {

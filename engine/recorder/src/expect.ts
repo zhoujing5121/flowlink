@@ -75,10 +75,15 @@ export function pickExpectTarget(nodes: SignatureNode[]): SignatureNode | undefi
 	return scored[0]?.node
 }
 
+/** 有可见文本的节点才参与 textChange 证据比较（空文本节点无法区分"有字→没字"）。 */
 function hasText(node: SignatureNode): boolean {
 	return typeof node.text === 'string' && node.text.trim().length > 0
 }
 
+/**
+ * 页面主签名节点打分：role 越靠前（ROLE_PRIORITY）越像"用户认得的主内容"，
+ * 分数取负、越小越优先——与 candidates 的 score 升序约定一致。
+ */
 function scoreNode(node: SignatureNode): number {
 	let score = 0
 	const role = node.role
@@ -123,6 +128,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const HEX_RE = /^[0-9a-f]{16,}$/i
 const NUMERIC_RE = /^\d+$/
 
+/** URL 段动态性判别：纯数字/UUID/长 hex 段随请求变化，不能做 urlChange 的稳定证据。 */
 function isDynamicSegment(segment: string): boolean {
 	if (!segment) return false
 	if (NUMERIC_RE.test(segment)) return true

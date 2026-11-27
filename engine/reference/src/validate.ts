@@ -50,6 +50,7 @@ export interface ValidateResult {
 	injectedEmpty: string[]
 }
 
+/** 取对象的显示名：label 优先，缺省回退机器键——违规清单要用用户认识的名称指认对象。 */
 function objectLabel(obj: ReferenceObjectInput): string {
 	const label = typeof obj.label === 'string' ? obj.label.trim() : ''
 	return label || obj.name

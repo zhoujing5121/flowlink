@@ -89,156 +89,11 @@ export interface RunOutcome {
 	heals: HealInput[]
 }
 
-/** 页面内取元素事实（给自愈写回生成候选用） */
-function factsOf(el: Element): ElementFacts {
-	const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
-	const ariaLabel = el.getAttribute('aria-label') ?? undefined
-	return {
-		tag: el.tagName.toLowerCase(),
-		id: el.getAttribute('id') ?? undefined,
-		testid:
-			el.getAttribute('data-testid') ??
-			el.getAttribute('data-test') ??
-			el.getAttribute('data-cy') ??
-			undefined,
-		role: el.getAttribute('role') ?? undefined,
-		accessibleName: ariaLabel ?? (text.length > 0 ? text : undefined),
-		nameAttr: el.getAttribute('name') ?? undefined,
-		text,
-		ariaLabel,
-		placeholder: el.getAttribute('placeholder') ?? undefined,
-	}
-}
+// 页面证据采集与支撑原语已抽到 run-evidence / run-support；safePageUrl 由 run.js 再导出。
+import { activeElementSig, armMutationProbe, captureSnapshot, factsOf, readMutationCount } from './run-evidence.js'
+import { dialogManagerHistoryChanged, flashLocator, safePageUrl, withTimeout } from './run-support.js'
 
-/** 页面快速快照（失败 artifact 用；不含大段 HTML，避免 artifact 爆掉） */
-async function captureSnapshot(page: Page): Promise<unknown> {
-	const base = await page
-		.evaluate(() => ({
-			url: location.href,
-			title: document.title,
-			viewport: { width: window.innerWidth, height: window.innerHeight },
-			scroll: { x: window.scrollX, y: window.scrollY },
-			activeElement: document.activeElement ? document.activeElement.tagName : null,
-			text: (document.body ? document.body.innerText : '').slice(0, 4_000),
-		}))
-		.catch(() => ({ url: page.url(), title: '', viewport: null, scroll: null, text: '' }))
-	let ariaSnapshot = ''
-	try {
-		ariaSnapshot = (await page.ariaSnapshot({ mode: 'ai' })).slice(0, 20_000)
-	} catch {
-		/* 页面已崩溃/关闭时忽略 */
-	}
-	return { ...base, ariaSnapshot }
-}
-
-async function armMutationProbe(page: Page): Promise<void> {
-	await page
-		.evaluate(() => {
-			const w = window as unknown as {
-				__rrProbe?: { disconnect: () => void }
-				__rrMut?: number
-			}
-			if (w.__rrProbe) w.__rrProbe.disconnect()
-			w.__rrMut = 0
-			const observer = new MutationObserver((records) => {
-				for (const record of records) {
-					// L2 打的临时标记不算"页面有变化"
-					if (record.type === 'attributes') {
-						const name = record.attributeName ?? ''
-						if (name.startsWith('data-rr-')) continue
-					}
-					w.__rrMut = (w.__rrMut ?? 0) + 1
-				}
-			})
-			observer.observe(document, {
-				subtree: true,
-				childList: true,
-				attributes: true,
-				characterData: true,
-			})
-			w.__rrProbe = observer
-		})
-		.catch(() => {
-			/* 页面还没 ready 时忽略，NO_EFFECT 探测退化为只看 url */
-		})
-}
-
-/**
- * 活动元素签名。
- * 用途：点击可聚焦元素会引起 focus ring 重绘（像素变了但产品上"什么都没发生"），
- * 所以 NO_EFFECT 判定要把"焦点变化"单独识别出来，否则所有按钮点击都会被误判成 NO_EFFECT。
- */
-async function activeElementSig(page: Page): Promise<string> {
-	return page
-		.evaluate(() => {
-			const el = document.activeElement
-			if (!el) return ''
-			const html = el as HTMLElement
-			return `${el.tagName}#${html.id ?? ''}`
-		})
-		.catch(() => '')
-}
-
-/** 取当前 page 的 URL；页面已关闭/崩溃时返回 undefined（用于登录过期提示判断） */
-export function safePageUrl(page: Page | undefined): string | undefined {
-	if (!page) return undefined
-	try {
-		return page.url()
-	} catch {
-		return undefined
-	}
-}
-
-function dialogManagerHistoryChanged(before: number, after: number): boolean {
-	return after > before
-}
-
-/**
- * 给"可能被原生对话框阻塞"的页面操作加超时上限。
- * 页面 JS 被 alert/confirm 阻塞时，`evaluate`/`screenshot` 会一直等到 Playwright 超时，
- * 让整个 run 看起来像卡死；这里用 race 兜住，超时返回 fallback 由调用方决定怎么处理。
- */
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-	return Promise.race([promise, sleep(ms).then(() => fallback)])
-}
-
-async function readMutationCount(page: Page): Promise<number> {
-	return page
-		.evaluate(() => {
-			const w = window as unknown as { __rrMut?: number }
-			return w.__rrMut ?? 0
-		})
-		.catch(() => 0)
-}
-
-/**
- * 给目标元素加一圈临时高亮，让业务人员看得见"现在要操作哪里"。
- * 用 elementHandle.evaluate，iframe 内元素也生效（在所属文档里加 outline）。
- */
-async function flashLocator(locator: Locator, delayMs: number): Promise<void> {
-	const handle = await locator.elementHandle({ timeout: 1500 }).catch(() => null)
-	if (!handle) {
-		await sleep(delayMs)
-		return
-	}
-	const paint = (color: string | null) =>
-		handle
-			.evaluate((el: Element, c: string | null) => {
-				const style = (el as HTMLElement).style
-				if (c) {
-					style.outline = `3px solid ${c}`
-					style.outlineOffset = '2px'
-				} else {
-					style.outline = ''
-					style.outlineOffset = ''
-				}
-			}, color)
-			.catch(() => undefined)
-	await paint('#ff6b00')
-	await sleep(delayMs)
-	await paint(null)
-	await handle.dispose().catch(() => undefined)
-}
+export { safePageUrl } from './run-support.js'
 
 /**
  * 在**已经启动的浏览器**里跑一次 flow：自己建 context（带登录态/视口覆盖）、跑完步骤、
@@ -288,6 +143,11 @@ export interface FlowContextRunOutcome {
 	currentPageIndex: number
 }
 
+/**
+ * 在宿主提供的浏览器上下文里跑一次 flow（Electron 内嵌页 / 批量共享浏览器）：
+ * 自建 context、逐步执行、收尾（存登录态 → 关对话框 → 落下载）→ 关 context。
+ * 不启动/关闭浏览器本体；结果与报告结构同 executeRun 保持一致。
+ */
 export async function runFlowInBrowserContext(
 	input: FlowContextRunInput,
 ): Promise<FlowContextRunOutcome> {
@@ -393,6 +253,7 @@ export async function runFlowInBrowserContext(
 		let page: Page = pages.current()
 
 		// 每个页都要：默认超时 / 对话框 handler / 崩溃监听（新标签页同样生效）
+		/** 给页面装 run 级管理（默认超时 / 对话框 handler / 崩溃监听），新标签页同样生效。 */
 		const wirePage = (target: Page): void => {
 			// 新旧标签页统一安装超时、对话框和崩溃监听，避免新页逃过 run 级管理。
 			target.setDefaultTimeout(timeoutMs)
@@ -480,6 +341,10 @@ export async function runFlowInBrowserContext(
 				}
 			: undefined
 
+		/**
+		 * 本 run 的元素解析入口：阶梯顺序/可见性/AI 兜底按 opts2 覆盖，AI 兜底
+		 * 失败自动重快照重试一次（aria-ref 导航后失效是已知的可重试错误）。
+		 */
 		const resolveTarget = async (
 			target: ElementRef,
 			opts2: {
@@ -749,6 +614,7 @@ export async function runFlowInBrowserContext(
 
 			const stepStart = Date.now()
 			const stepLog: string[] = []
+			/** 步骤级日志：进 StepDetail（报告逐条可见），同时透传 run 日志。 */
 			const stepLogPush = (msg: string): void => {
 				stepLog.push(msg)
 				pushLog(msg)
@@ -1303,6 +1169,7 @@ export async function executeRunOnPage(
 	const artifacts = new ArtifactWriter(opts.artifactsRoot ?? './artifacts', flow.id, runId)
 	const startedAt = new Date().toISOString()
 	const runStart = Date.now()
+	/** 共享执行器的 run 级日志出口（不落 result.json，只透传宿主）。 */
 	const pushLog = (msg: string): void => {
 		opts.onLog?.(`[${flow.id}] ${msg}`)
 	}
@@ -1362,6 +1229,10 @@ export async function executeRunOnPage(
 	return { result, report, heals }
 }
 
+/**
+ * 单次执行主入口：负责 Chromium 完整生命周期（launch → run → close），
+ * 汇总步骤结果为 RunResult/RunReport 并做自愈写回；batch/内嵌页走共享执行器。
+ */
 export async function executeRun(
 	opts: PlayOptions,
 	runId: string = makeId('run'),
@@ -1374,6 +1245,7 @@ export async function executeRun(
 	const runStart = Date.now()
 
 	const logLines: string[] = []
+	/** run 级日志：进 result.json 的 log 数组，同时透传 onLog。 */
 	const pushLog = (msg: string): void => {
 		logLines.push(msg)
 		opts.onLog?.(`[${flow.id}] ${msg}`)

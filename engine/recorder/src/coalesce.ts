@@ -53,6 +53,11 @@ const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift', 'CapsLock', 'A
 /** 这些事件若出现在 dragStart 与 drop 之间，说明拖拽手势已被打断，配对作废 */
 const DRAG_BREAKING_KINDS = new Set(['click', 'contextmenu', 'input', 'change', 'keydown', 'scroll', 'hover', 'navigation'])
 
+/**
+ * 合流主函数：把原始事件按 bufferMs 时间窗分桶，窗口关闭时把桶内事件交给
+ * 各构造器/配对规则（点击、连续输入、双击、拖拽、组合键、导航、滚动、hover），
+ * 产出可直接成步的 CoalescedAction 序列。纯函数：不改输入数组。
+ */
 export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): CoalescedAction[] {
 	const bufferMs = opts.bufferMs ?? DEFAULT_BUFFER_MS
 	// 不原地排序调用方队列：record() 可能还要用原始顺序保存诊断事件。
@@ -331,6 +336,7 @@ export function coalesceEvents(events: RawEvent[], opts: CoalesceOptions = {}): 
 /* 构造器                                                              */
 /* ------------------------------------------------------------------ */
 
+/** 单击事件 → click 动作；没有元素事实的点击（如 document 空白）不成步。 */
 function clickAction(event: RawEvent): CoalescedAction | null {
 	if (!event.facts) return null
 	const button = buttonName(event.data?.button)
@@ -350,6 +356,7 @@ function clickAction(event: RawEvent): CoalescedAction | null {
 	}
 }
 
+/** 单次输入事件 → input 动作（值合并由后续 input/change 连续事件处理）。 */
 function inputAction(event: RawEvent): CoalescedAction {
 	return {
 		kind: 'input',
@@ -365,6 +372,7 @@ function inputAction(event: RawEvent): CoalescedAction {
 	}
 }
 
+/** select 元素上的 change 事件 → select 动作（带元素事实；值可多选数组）。 */
 function selectAction(event: RawEvent): CoalescedAction {
 	return {
 		kind: 'select',
@@ -384,6 +392,7 @@ function selectAction(event: RawEvent): CoalescedAction {
 /* 谓词与工具                                                          */
 /* ------------------------------------------------------------------ */
 
+/** 取最后一个动作（配对/合并类规则都只看"最近一步"）。 */
 function lastAction(actions: CoalescedAction[]): CoalescedAction | undefined {
 	return actions[actions.length - 1]
 }
@@ -407,6 +416,7 @@ function sameTarget(
 	return !!leftPath && leftPath === rightPath && left.tag === right.tag
 }
 
+/** 事件是否发生在 select 元素上（select 的 change 不能当 input 合并，回放语义不同）。 */
 function isSelectEvent(event: RawEvent): boolean {
 	return event.facts?.tag === 'select'
 }
@@ -431,12 +441,14 @@ function hasFollowingInput(events: RawEvent[], index: number, windowMs: number, 
 	return false
 }
 
+/** DOM MouseEvent.button 数值 → IR 的按钮名；缺省即左键。 */
 function buttonName(button: number | undefined): 'left' | 'right' | 'middle' {
 	if (button === 1) return 'middle'
 	if (button === 2) return 'right'
 	return 'left'
 }
 
+/** 过滤掉 IR 不认识的修饰键，只保留四类可回放的组合键（CapsLock 等噪声不入 IR）。 */
 function normalizeModifiers(mods: string[] | undefined): Array<'Alt' | 'Control' | 'Meta' | 'Shift'> {
 	const out: Array<'Alt' | 'Control' | 'Meta' | 'Shift'> = []
 	for (const mod of mods ?? []) {
@@ -449,6 +461,10 @@ function normalizeModifiers(mods: string[] | undefined): Array<'Alt' | 'Control'
 /* 后置过滤                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 后置过滤：合并完成后裁掉不产生 IR 步骤的噪声（成对滚动只留一段、
+ * 被后续动作覆盖的中间 hover 等），保持动作序列可直接成步。
+ */
 function postFilter(actions: CoalescedAction[]): CoalescedAction[] {
 	const kept: CoalescedAction[] = []
 	for (let i = 0; i < actions.length; i++) {

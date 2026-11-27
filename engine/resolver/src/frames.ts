@@ -16,6 +16,7 @@ import { resolveL1, type L1Options } from './l1.js'
 import type { Scope } from './types.js'
 import { matchesUrlPattern, rebaseUrl } from './url.js'
 
+/** 作用域类型守卫：Playwright Frame 没有 mainFrame()，以此区分 Page 与 Frame。 */
 export function isPage(scope: Scope): scope is Page {
 	return typeof (scope as Page).mainFrame === 'function' && !('parentFrame' in scope)
 }
@@ -49,6 +50,10 @@ export interface FrameEnterOptions extends L1Options {
 	baseUrl?: string
 }
 
+/**
+ * 按 framePath 的单段定位一个 frame：frameElement 段用 L1 解析宿主元素后切内，
+ * index 段按序号取；urlPattern 段只做校验（在 enterFramePath 里循环处理）。
+ */
 async function findBySegment(
 	scope: Scope,
 	segment: FrameSegment,

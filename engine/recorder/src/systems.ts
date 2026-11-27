@@ -19,6 +19,7 @@ export interface SystemIdentity {
 	domain?: string
 }
 
+/** 主机名/别名 → systemId 用的 slug 化：非字母数字归并为连字符，去首尾连字符。 */
 function slug(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
@@ -30,6 +31,10 @@ function slug(value: string): string {
  *   `{ systemId: slug(别名), systemName: 别名, domain: 主机名 }`，
  *   使 N 个主机名收敛到同一逻辑系统；
  * - 未命中 → 今天的裸主机名行为：hostname slug + hostname 名称。
+ */
+/**
+ * 从 URL 解析逻辑系统身份：别名表把多个主机名收敛为同一 systemId；
+ * 非http(s) 地址归为 Browser；解析失败兜底 unknown-system（录制不因此中断）。
  */
 export function resolveSystem(raw: string, aliases?: Record<string, string>): SystemIdentity {
 	let url: URL

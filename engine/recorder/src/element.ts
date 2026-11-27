@@ -380,6 +380,7 @@ export function deriveCandidates(input: RawElementFacts): Candidate[] {
 	return sortCandidates(dedupeCandidates(out))
 }
 
+/** 候选全灭时的保底定位：nodePath 能用就用 xpath，连路径都没有就退回裸 tag 的 css。 */
 function fallbackCandidate(input: RawElementFacts): Candidate {
 	const xpath = xpathFromNodePath(input.nodePath)
 	if (xpath) return { kind: 'xpath', value: xpath, score: SCORE.xpath, source: 'record' }
@@ -388,6 +389,7 @@ function fallbackCandidate(input: RawElementFacts): Candidate {
 
 const NON_TEXT_CANDIDATE_TAGS = new Set(['input', 'select', 'textarea', 'img', 'html', 'body'])
 
+/** 这些标签的可见文本不是「用户看到的按钮/链接文字」，text 候选对它们没有意义。 */
 function isTextCandidateTag(tag: string): boolean {
 	return !NON_TEXT_CANDIDATE_TAGS.has(tag)
 }
@@ -470,10 +472,12 @@ export function cssIdent(value: string): string {
 	return out
 }
 
+/** 截断过长文本（label/text 候选的 value 不应携带整页文字）。 */
 function truncate(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
+/** 坐标保留 2 位小数（与 IR 的 CSS px 约定一致，不乘 dpr）。 */
 function round(value: number): number {
 	return Math.round(value * 100) / 100
 }

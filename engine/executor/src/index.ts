@@ -104,6 +104,10 @@ export async function playOnPage(opts: PlayOnPageOptions, runId?: string): Promi
 	return outcome.result
 }
 
+/**
+ * 跑一次 Flow（自建 context，带登录态/视口），可选自愈写回 flow 文件。
+ * writeBack=true 时必须提供 flowPath——写回的是经过 parseFlow 校验的当前版本。
+ */
 export async function playFlow(opts: PlayOptions): Promise<RunResult> {
 	const runId = makeId('run')
 	const outcome = await executeRun(opts, runId)
